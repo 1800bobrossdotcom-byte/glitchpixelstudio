@@ -4223,7 +4223,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.49";
+export const APP_VERSION = "1.2.50";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -8601,12 +8601,28 @@ export default function SpectraAfter() {
             0 0 0 1px rgba(255,200,255,0.12) !important;
         }
         .neon-mode .sp-btn:active,
-        .neon-mode .sp-tile:active {
-          transform: translateY(1px);
+        .neon-mode .sp-tile:active,
+        .neon-mode .sp-panel-glass button:active {
+          /* v1.2.50 — hold-to-magnify: button pops to 1.35× while held
+             instead of pressing down. Lifts above siblings + glows so
+             the user knows exactly which control they have. */
+          transform: scale(1.35);
+          z-index: 50;
+          position: relative;
           box-shadow:
-            inset 0 2px 4px rgba(0,0,0,0.55),
-            inset 0 -1px 0 rgba(255,255,255,0.1),
-            0 1px 4px rgba(176,20,240,0.3) !important;
+            inset 0 1px 0 rgba(255,255,255,0.5),
+            inset 0 -2px 0 rgba(0,0,0,0.5),
+            0 10px 22px rgba(176,20,240,0.55),
+            0 0 0 1px rgba(255,200,255,0.25) !important;
+        }
+        .neon-mode .sp-btn,
+        .neon-mode .sp-tile,
+        .neon-mode .sp-panel-glass button {
+          transition: transform 160ms cubic-bezier(.2,.9,.25,1.1),
+                      box-shadow 160ms ease,
+                      background 160ms ease,
+                      border-color 160ms ease;
+          transform-origin: center center;
         }
         /* Beef text contrast against the live FX backdrop. */
         .neon-mode .sp-panel-glass button,
@@ -8627,8 +8643,7 @@ export default function SpectraAfter() {
             rgba(8,0,18,0.05) 100%) !important;
           backdrop-filter: blur(1.5px) saturate(1.1);
           -webkit-backdrop-filter: blur(1.5px) saturate(1.1);
-          border: 1px solid rgba(231,174,255,0.35) !important;
-          border-radius: 6px !important;
+          border: 1px solid rgba(231,174,255,0.35) !important;          border-radius: 6px !important;
           color: rgba(255,235,255,0.98) !important;
           box-shadow:
             inset 0 1px 0 rgba(255,255,255,0.40),
@@ -10778,9 +10793,11 @@ function Knob({
   const display = step >= 1 ? Math.round(value).toString() : value.toFixed(2);
 
   const startRef = useRef<{ y: number; v: number } | null>(null);
+  const [held, setHeld] = useState(false);
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     startRef.current = { y: e.clientY, v: value };
+    setHeld(true);
   };
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!startRef.current) return;
@@ -10797,6 +10814,7 @@ function Knob({
   const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     e.currentTarget.releasePointerCapture(e.pointerId);
     startRef.current = null;
+    setHeld(false);
   };
   const onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
     const range = max - min;
@@ -10812,6 +10830,16 @@ function Knob({
     <div style={{
       display: "flex", flexDirection: "column", alignItems: "center",
       gap: 4, userSelect: "none", padding: "2px 4px",
+      // v1.2.50 — hold-to-magnify: while a knob is being dragged it
+      // pops to 1.9× and lifts above siblings so the value/indicator
+      // are huge and easy to read with a thumb. Snaps back on release.
+      transform: held ? "scale(1.9)" : "scale(1)",
+      transformOrigin: "center center",
+      transition: "transform 180ms cubic-bezier(.2,.9,.25,1.1), filter 180ms ease",
+      zIndex: held ? 50 : 1,
+      position: "relative",
+      filter: held ? "drop-shadow(0 8px 18px rgba(176,20,240,0.55))" : "none",
+      willChange: "transform",
     }}>
       {/* Label above (engraved) */}
       <div style={{
