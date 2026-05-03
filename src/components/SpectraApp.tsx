@@ -4217,7 +4217,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.46";
+export const APP_VERSION = "1.2.47";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4748,6 +4748,13 @@ export default function SpectraAfter() {
       return;
     }
     faceFxRef.current.active = true;
+    // v1.2.47: BG label means "FX paints background, person stays clean".
+    // Empirically the SelfieSegmenter category mask we get from
+    // MediaPipe Tasks Vision (LITE asset) yields fm=1 inside the
+    // PERSON, so to paint the BACKGROUND we want shader to compute
+    // (1 - fm). The shader does that when uFaceInvert == 1, so BG
+    // → invert = true. (v1.2.46 had this same line but also flipped
+    // the JS polarity, double-inverting back to wrong; now reverted.)
     faceFxRef.current.invert = faceFxMode === "BG";
 
     let cancelled = false;
@@ -4798,13 +4805,12 @@ export default function SpectraAfter() {
             segmenter.segmentForVideo(v, performance.now(), (result) => {
               const cat = result.categoryMask;
               if (!cat) return;
-              // v1.2.46: MediaPipe Tasks Vision SelfieSegmenter category
-              // mask outputs 0 = PERSON, 255 = BACKGROUND for the LITE
-              // model that we ship — the previous code assumed the
-              // opposite, which is why FACE mode was painting the BG
-              // and BG mode was painting the person. Flip the polarity
-              // on the JS side so the shader's fm = 1 inside the person,
-              // matching what `uFaceInvert = (mode === "BG")` expects.
+              // v1.2.47: MediaPipe Tasks Vision SelfieSegmenter category
+              // mask outputs category 0 = background, non-zero = person.
+              // Keep person = 255 so the shader's `fm` reads 1 INSIDE
+              // the person, and the BG/FACE mapping is handled by the
+              // single `uFaceInvert` flag set above. (v1.2.46 flipped
+              // this and double-inverted; reverted here.)
               const u8: Uint8Array | null = cat.getAsUint8Array ? cat.getAsUint8Array() : null;
               const f32: Float32Array | null = !u8 && cat.getAsFloat32Array ? cat.getAsFloat32Array() : null;
               const mw = cat.width, mh = cat.height;
@@ -4812,14 +4818,12 @@ export default function SpectraAfter() {
               const rgba = new Uint8ClampedArray(mw * mh * 4);
               if (u8) {
                 for (let i = 0, j = 0; i < u8.length; i++, j += 4) {
-                  // person == low category id, background == high → invert.
-                  const m = u8[i] > 0 ? 0 : 255;
+                  const m = u8[i] > 0 ? 255 : 0;
                   rgba[j] = m; rgba[j+1] = m; rgba[j+2] = m; rgba[j+3] = 255;
                 }
               } else if (f32) {
                 for (let i = 0, j = 0; i < f32.length; i++, j += 4) {
-                  // f32 confidence is 0 at person, 1 at bg → invert to (1 - x).
-                  const m = Math.round((1.0 - Math.min(1, Math.max(0, f32[i]))) * 255);
+                  const m = Math.round(Math.min(1, Math.max(0, f32[i])) * 255);
                   rgba[j] = m; rgba[j+1] = m; rgba[j+2] = m; rgba[j+3] = 255;
                 }
               }
