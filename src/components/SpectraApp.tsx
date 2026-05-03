@@ -4130,7 +4130,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.33";
+export const APP_VERSION = "1.2.34";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -6370,16 +6370,22 @@ export default function SpectraAfter() {
 
       // Layer modes were removed — both PXL (pixel-sort) and MOSH (datamosh)
       // are always armed and live. The per-effect AMOUNT/INTENS knobs gate
-      // whether they actually contribute (zero == bypass). We still consult
-      // the legacy refs in case other code paths rely on them being true.
+      // whether they actually contribute (zero == bypass). The triple-armed
+      // camera-drive composite (generator displaces + overlays the camera)
+      // only kicks in when the user has actually dialed in BOTH effects —
+      // otherwise the camera passes through clean (no rainbow/invert ghost).
       const armedLayers = comboLayersRef.current;
       void armedLayers;
-      const pxlArmed = true;
-      const moshArmed = true;
+      const pxlArmed = (sortAmtRef.current ?? 0) > 0.02;
+      const moshArmed = (datamoshRef.current ?? 0) > 0.02;
       const tripleArmedCameraDrive = pxlArmed && moshArmed;
 
       // Generator mode keeps camera alive and composites both when camera frames exist.
-      if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+      // Skip the heavy displacement + generator-overlay pass entirely when the
+      // user hasn't dialed in any blend FX — otherwise the default BLEND view
+      // shows a permanent rainbow + inverted ghost over the camera.
+      const blendEngaged = pxlArmed || moshArmed;
+      if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0 && blendEngaged) {
         let cc = genCompositeCanvasRef.current;
         if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
         if (cc.width !== targetW || cc.height !== targetH) {
@@ -6470,6 +6476,9 @@ export default function SpectraAfter() {
         } else {
           texSource = gc; srcW = gc.width; srcH = gc.height;
         }
+      } else if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0) {
+        // BLEND requested but no FX dialed in — pass camera through clean.
+        texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
       } else {
         texSource = gc; srcW = gc.width; srcH = gc.height;
       }
