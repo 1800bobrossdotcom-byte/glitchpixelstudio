@@ -4088,10 +4088,37 @@ async function saveBlobToDevice(blob: Blob, filename: string): Promise<void> {
     recursive: true,
   });
 
+  // ALSO write to the public Documents folder so the file is visible in
+  // the system Files app (and Gallery for media), even if the user
+  // dismisses the Share sheet without picking a target. This is the
+  // "prompt to save to phone files" path — the file IS already on the
+  // phone, the share sheet just lets the user route a copy elsewhere.
+  try {
+    await Filesystem.writeFile({
+      path: `Spectra/${filename}`,
+      data: base64,
+      directory: Directory.Documents,
+      recursive: true,
+    });
+  } catch (err) {
+    // Some Android scoped-storage configs reject Documents writes; fall
+    // back to ExternalStorage so the file still lands somewhere visible.
+    try {
+      await Filesystem.writeFile({
+        path: `Spectra/${filename}`,
+        data: base64,
+        directory: Directory.ExternalStorage,
+        recursive: true,
+      });
+    } catch (err2) {
+      void err; void err2;
+    }
+  }
+
   try {
     await Share.share({
       title: "GPS export",
-      text: filename,
+      text: `${filename} — also saved to Documents/Spectra/`,
       url: written.uri,
       dialogTitle: "Save / Share GPS export",
     });
