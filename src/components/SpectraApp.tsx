@@ -4223,7 +4223,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.51";
+export const APP_VERSION = "1.2.52";
 
 // v1.2.51 — extended to 30 minutes for paid-tier QA / debugging passes.
 const GRACE_TOTAL_MS = 30 * 60 * 1000; // 30 minutes (testing)
@@ -4848,6 +4848,19 @@ export default function SpectraAfter() {
               const tmp = document.createElement("canvas");
               tmp.width = mw; tmp.height = mh;
               tmp.getContext("2d")!.putImageData(new ImageData(rgba, mw, mh), 0, 0);
+              // v1.2.52 — CRITICAL: clear the mask canvas before each draw.
+              // In v1.2.51 we made mask alpha equal to the mask value (so the
+              // canvas could double as an alpha matte for the gen/upload
+              // composite). That made the background pixels transparent in
+              // tmp, which means the default `source-over` drawImage no
+              // longer overwrites prior-frame pixels in the destination —
+              // the mask was monotonically accumulating into the union of
+              // every person position ever seen. That manifested as a frozen,
+              // ever-growing silhouette in the gen+cam composite, and as a
+              // broken roto after switching back to camera mode (the bloated
+              // mask covered most of the frame). Clearing every tick forces
+              // the mask to reflect ONLY the current segmenter output.
+              maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
               maskCtx.drawImage(tmp, 0, 0, maskCanvas.width, maskCanvas.height);
               // Upload to WebGL face texture.
               const gl = glRef.current;
