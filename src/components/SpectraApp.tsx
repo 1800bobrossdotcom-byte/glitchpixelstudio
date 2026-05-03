@@ -4223,7 +4223,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.48";
+export const APP_VERSION = "1.2.49";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -8488,11 +8488,13 @@ export default function SpectraAfter() {
           overflow-y: auto;
           overscroll-behavior: contain;
           z-index: 5;
-          /* Glass-bottom-boat panel — the FX layer reads through clearly. */
-          background: linear-gradient(180deg, rgba(15,0,28,0.06) 0%, rgba(8,0,18,0.10) 38%, rgba(8,0,18,0.18) 100%) !important;
-          backdrop-filter: blur(4px) saturate(1.3);
-          -webkit-backdrop-filter: blur(4px) saturate(1.3);
-          border-top: 1px solid rgba(231,174,255,0.55) !important;
+          /* v1.2.49 — full glass-bottom-boat: drop the panel tint to a
+             whisper so the FX layer reads through almost unobstructed.
+             The blur + tilt do the heavy visual lifting now. */
+          background: linear-gradient(180deg, rgba(15,0,28,0.02) 0%, rgba(8,0,18,0.04) 38%, rgba(8,0,18,0.08) 100%) !important;
+          backdrop-filter: blur(2.5px) saturate(1.25);
+          -webkit-backdrop-filter: blur(2.5px) saturate(1.25);
+          border-top: 1px solid rgba(231,174,255,0.35) !important;
           box-shadow:
             0 -10px 36px rgba(176,20,240,0.25),
             inset 0 1px 0 rgba(255,255,255,0.18),
@@ -8508,6 +8510,34 @@ export default function SpectraAfter() {
           /* Open rack pops up to at most 38dvh so image is still ≥ 62%
              visible. Inner content scrolls inside that band. */
           max-height: 38dvh;
+        }
+        /* v1.2.49 — racks themselves were fully-opaque deep purple
+           chassis (the biggest opacity offender); make them whisper
+           glass too so the FX layer reads through every rack body and
+           inner workspace. Inline gradient stays for the lg/dock layout
+           where racks aren't in glass mode. */
+        .neon-mode .sp-rack {
+          background: linear-gradient(180deg,
+            rgba(42,10,74,0.10) 0%,
+            rgba(26,5,48,0.08) 60%,
+            rgba(15,2,32,0.12) 100%) !important;
+          backdrop-filter: blur(2px) saturate(1.15);
+          -webkit-backdrop-filter: blur(2px) saturate(1.15);
+          border: 1px solid rgba(231,174,255,0.18) !important;
+          box-shadow:
+            0 4px 14px rgba(0,0,0,0.35),
+            inset 0 1px 0 rgba(255,255,255,0.05) !important;
+        }
+        .neon-mode .sp-rack-inner {
+          background:
+            repeating-linear-gradient(90deg, rgba(255,255,255,0.012) 0 1px, transparent 1px 3px),
+            linear-gradient(180deg, rgba(28,28,34,0.08) 0%, rgba(20,20,26,0.06) 50%, rgba(14,14,20,0.10) 100%) !important;
+          backdrop-filter: blur(1.5px) saturate(1.1);
+          -webkit-backdrop-filter: blur(1.5px) saturate(1.1);
+          border: 1px solid rgba(231,174,255,0.10) !important;
+          box-shadow:
+            inset 0 1px 2px rgba(0,0,0,0.35),
+            inset 0 -1px 0 rgba(255,255,255,0.03) !important;
         }
         @media (min-width: 1024px) {
           .neon-mode .sp-canvas-pane {
@@ -8532,17 +8562,14 @@ export default function SpectraAfter() {
         .neon-mode .sp-tile,
         .neon-mode button.sp-btn,
         .neon-mode button.sp-tile {
-          /* Glass-bottom-boat: just a whisper of tint so the live FX
-             reads clearly through every button face. The chunky
-             3D feel comes from the bevel + glow + border, not from
-             a heavy fill. */
+          /* v1.2.49 — buttons go nearly clear; just bevel + border define them. */
           background: linear-gradient(180deg,
-            rgba(80,30,120,0.10) 0%,
-            rgba(20,5,40,0.04) 50%,
-            rgba(8,0,18,0.10) 100%) !important;
-          backdrop-filter: blur(2px) saturate(1.15);
-          -webkit-backdrop-filter: blur(2px) saturate(1.15);
-          border: 1px solid rgba(231,174,255,0.55) !important;
+            rgba(80,30,120,0.04) 0%,
+            rgba(20,5,40,0.02) 50%,
+            rgba(8,0,18,0.04) 100%) !important;
+          backdrop-filter: blur(1.5px) saturate(1.1);
+          -webkit-backdrop-filter: blur(1.5px) saturate(1.1);
+          border: 1px solid rgba(231,174,255,0.40) !important;
           border-radius: 6px !important;
           color: rgba(255,235,255,0.98) !important;
           box-shadow:
@@ -8593,15 +8620,14 @@ export default function SpectraAfter() {
            and we want them all to read as the same poured-glass slabs.
            These rules are last so !important wins over inline styles. */
         .neon-mode .sp-panel-glass button {
-          /* Same glass-bottom-boat treatment for in-rack buttons:
-             near-clear face so knobs/labels read clearly through. */
+          /* v1.2.49 — in-rack buttons match the new whisper-glass tint. */
           background: linear-gradient(180deg,
-            rgba(80,30,120,0.10) 0%,
-            rgba(20,5,40,0.04) 50%,
-            rgba(8,0,18,0.12) 100%) !important;
-          backdrop-filter: blur(2px) saturate(1.15);
-          -webkit-backdrop-filter: blur(2px) saturate(1.15);
-          border: 1px solid rgba(231,174,255,0.45) !important;
+            rgba(80,30,120,0.04) 0%,
+            rgba(20,5,40,0.02) 50%,
+            rgba(8,0,18,0.05) 100%) !important;
+          backdrop-filter: blur(1.5px) saturate(1.1);
+          -webkit-backdrop-filter: blur(1.5px) saturate(1.1);
+          border: 1px solid rgba(231,174,255,0.35) !important;
           border-radius: 6px !important;
           color: rgba(255,235,255,0.98) !important;
           box-shadow:
