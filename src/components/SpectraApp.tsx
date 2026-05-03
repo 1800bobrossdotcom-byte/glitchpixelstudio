@@ -4039,7 +4039,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.19";
+export const APP_VERSION = "1.2.20";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4306,6 +4306,12 @@ export default function SpectraAfter() {
   const lowPowerRef = useRef(false);
   const lowPowerSkipRef = useRef(false);
   useEffect(() => { lowPowerRef.current = lowPowerOn; }, [lowPowerOn]);
+
+  // ── NEON MODE: glass / transparent panels + tilt parallax.
+  //    Off by default — opt-in display tweak. Auto-disables tilt parallax
+  //    while recording or in LOW POWER to keep captures and battery clean.
+  const [neonMode, setNeonMode] = useState(false);
+  const tiltRootRef = useRef<HTMLDivElement>(null);
   // ── TIER info modal toggle (read-only feature matrix).
   const [tierInfoOpen, setTierInfoOpen] = useState(false);
 
@@ -4325,14 +4331,18 @@ export default function SpectraAfter() {
 
   // Tick the grace counter once per second while foregrounded and unlocked.
   // Pauses automatically when the tab/app is hidden (visibilitychange).
+  // Effect deps intentionally exclude graceRemaining — we use the functional
+  // setState form so the interval doesn't have to be torn down each tick.
   useEffect(() => {
-    if (entitlement !== null) return; // already unlocked → no tick needed
-    if (graceRemaining <= 0) return;  // already exhausted → lock screen will show
+    if (entitlement !== null) return; // unlocked → no tick needed
     let last = Date.now();
     let stopped = false;
     const tick = () => {
       if (stopped) return;
-      if (document.visibilityState !== "visible") { last = Date.now(); return; }
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        last = Date.now();
+        return;
+      }
       const now = Date.now();
       const dt = now - last;
       last = now;
@@ -4350,7 +4360,71 @@ export default function SpectraAfter() {
       window.clearInterval(id);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [entitlement, graceRemaining]);
+  }, [entitlement]);
+
+  // ── NEON MODE tilt parallax: read DeviceOrientation and write CSS vars.
+  // Heavily smoothed so panels glide instead of jitter. Auto-disabled when
+  // recording or in low-power. Permission prompt is iOS-only; on Android the
+  // listener attaches directly.
+  useEffect(() => {
+    if (!neonMode) {
+      // Reset CSS vars when neon mode is off so panels sit flat.
+      const r = tiltRootRef.current;
+      if (r) { r.style.setProperty("--tilt-x", "0deg"); r.style.setProperty("--tilt-y", "0deg"); r.style.setProperty("--tilt-tx", "0px"); r.style.setProperty("--tilt-ty", "0px"); }
+      return;
+    }
+    let smoothG = 0; // gamma (left/right tilt, -90..90)
+    let smoothB = 0; // beta  (front/back tilt, -180..180)
+    let raf = 0;
+    let lastG = 0, lastB = 0;
+    const onOrient = (e: DeviceOrientationEvent) => {
+      const g = typeof e.gamma === "number" ? e.gamma : 0;
+      const b = typeof e.beta === "number" ? e.beta : 0;
+      // Clamp beta to ±45 for sane parallax.
+      lastG = Math.max(-45, Math.min(45, g));
+      lastB = Math.max(-45, Math.min(45, b - 30)); // subtract resting hold angle
+    };
+    const loop = () => {
+      // Pause parallax while recording or in low power — the FX should
+      // stay clean and the device shouldn't waste cycles.
+      const paused = lowPowerRef.current || (typeof document !== "undefined" && (document as Document & { fullscreenElement?: Element | null }).fullscreenElement != null);
+      const targetG = paused ? 0 : lastG;
+      const targetB = paused ? 0 : lastB;
+      // Smooth: ~0.08 per frame ≈ 12-frame ramp.
+      smoothG += (targetG - smoothG) * 0.08;
+      smoothB += (targetB - smoothB) * 0.08;
+      const r = tiltRootRef.current;
+      if (r) {
+        // Cap visual rotation to ~2°, translation to ~6px.
+        const rotY = (smoothG / 45) * 2; // degrees
+        const rotX = -(smoothB / 45) * 2;
+        const tx = -(smoothG / 45) * 6;  // px (opposite direction = parallax)
+        const ty = (smoothB / 45) * 6;
+        r.style.setProperty("--tilt-x", `${rotX.toFixed(2)}deg`);
+        r.style.setProperty("--tilt-y", `${rotY.toFixed(2)}deg`);
+        r.style.setProperty("--tilt-tx", `${tx.toFixed(2)}px`);
+        r.style.setProperty("--tilt-ty", `${ty.toFixed(2)}px`);
+      }
+      raf = window.requestAnimationFrame(loop);
+    };
+    // iOS 13+ requires explicit permission. On Android the call returns
+    // undefined and the listener attaches normally.
+    type DOEvtCtor = typeof DeviceOrientationEvent & { requestPermission?: () => Promise<"granted"|"denied"> };
+    const doe = (typeof DeviceOrientationEvent !== "undefined" ? DeviceOrientationEvent : null) as DOEvtCtor | null;
+    const attach = () => {
+      window.addEventListener("deviceorientation", onOrient, { passive: true });
+      raf = window.requestAnimationFrame(loop);
+    };
+    if (doe && typeof doe.requestPermission === "function") {
+      doe.requestPermission().then(s => { if (s === "granted") attach(); }).catch(() => { /* denied */ });
+    } else {
+      attach();
+    }
+    return () => {
+      window.removeEventListener("deviceorientation", onOrient);
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+  }, [neonMode]);
 
   // Apply unlock code (dev path; replaced by Play Billing in next release).
   const applyUnlockCode = useCallback((code: string) => {
@@ -7527,7 +7601,39 @@ export default function SpectraAfter() {
   const camStatusColor = camStatus === "active" ? "#52C97A" : camStatus === "requesting" ? "#E8A020" : camStatus === "error" ? "#E03D3D" : "rgba(200,180,220,0.35)";
 
   return (
-    <div className="flex flex-col h-dvh overflow-hidden text-white" style={{ fontFamily: "'Courier New', monospace", background: "#000" }}>
+    <div
+      ref={tiltRootRef}
+      className={"flex flex-col h-dvh overflow-hidden text-white" + (neonMode ? " neon-mode" : "")}
+      style={{ fontFamily: "'Courier New', monospace", background: "#000" }}
+    >
+      <style>{`
+        /* ── NEON MODE — glass UI + tilt parallax ────────────── */
+        .neon-mode .sp-panel-glass {
+          background: linear-gradient(180deg, rgba(15,0,28,0.34) 0%, rgba(8,0,18,0.42) 100%) !important;
+          backdrop-filter: blur(14px) saturate(1.35);
+          -webkit-backdrop-filter: blur(14px) saturate(1.35);
+          border-top: 1px solid rgba(231,174,255,0.35) !important;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 -8px 32px rgba(176,20,240,0.12);
+          transform: translate3d(var(--tilt-tx, 0px), var(--tilt-ty, 0px), 0)
+                     rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
+          transform-origin: 50% 0%;
+          transform-style: preserve-3d;
+          transition: background 0.3s ease;
+          will-change: transform;
+        }
+        /* Inverse parallax on the canvas pane = depth illusion. */
+        .neon-mode .sp-canvas-pane {
+          transform: translate3d(calc(var(--tilt-tx, 0px) * -0.4), calc(var(--tilt-ty, 0px) * -0.4), 0);
+          transition: transform 0.05s linear;
+          will-change: transform;
+        }
+        /* Beef text contrast against glitchy backdrop. */
+        .neon-mode .sp-panel-glass button,
+        .neon-mode .sp-panel-glass label,
+        .neon-mode .sp-panel-glass span {
+          text-shadow: 0 0 3px rgba(0,0,0,0.85), 0 1px 0 rgba(0,0,0,0.7);
+        }
+      `}</style>
       {introVisible && <SpectraIntro onDone={() => setIntroVisible(false)} />}
       <BugReportModal open={bugOpen} onClose={() => setBugOpen(false)} />
       <BootScreen progress={bootProgress} done={bootDone} />
@@ -7849,7 +7955,7 @@ export default function SpectraAfter() {
       <div className="flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden">
 
         {/* Camera viewport — top half on mobile, left pane on desktop */}
-        <div className="flex-none h-[45dvh] lg:h-auto lg:flex-1 relative bg-black overflow-hidden flex items-center justify-center">
+        <div className="sp-canvas-pane flex-none h-[45dvh] lg:h-auto lg:flex-1 relative bg-black overflow-hidden flex items-center justify-center">
           <div style={{ position: "relative", aspectRatio: "1 / 1", height: "100%", maxHeight: "100%", maxWidth: "100%" }}>
             {/* Scanlines overlay */}
             <div style={{
@@ -8092,7 +8198,7 @@ export default function SpectraAfter() {
         {/* Settings panel — bottom half on mobile (scrollable), right pane on desktop */}
         <div
           ref={panelRef}
-          className="flex-1 min-h-0 overflow-y-auto lg:w-[23rem] lg:flex-none"
+          className="sp-panel-glass flex-1 min-h-0 overflow-y-auto lg:w-[23rem] lg:flex-none"
           style={{ background: "linear-gradient(180deg,#0F001C 0%,#080012 100%)", borderTop: `1px solid rgba(61,10,92,0.9)`, position: "relative" }}
           onPointerDown={(e) => {
             if (!panelRef.current || panelRef.current.scrollTop > 0) return;
@@ -8972,6 +9078,18 @@ export default function SpectraAfter() {
                     flex: 1, fontSize: 10, minWidth: 110,
                   }}
                 >{lowPowerOn ? "❄ LOW POWER ON" : "❄ LOW POWER"}</button>
+                <button
+                  className="sp-tile"
+                  onClick={() => setNeonMode(v => !v)}
+                  title="Glass UI + tilt parallax (experimental)"
+                  style={{
+                    ...modeBtnStyle,
+                    ...(neonMode ? modeBtnActive : {}),
+                    flex: 1, fontSize: 10, minWidth: 110,
+                    color: neonMode ? "rgba(255,180,255,0.98)" : "rgba(231,174,255,0.85)",
+                    textShadow: neonMode ? "0 0 6px rgba(255,120,255,0.6)" : "none",
+                  }}
+                >{neonMode ? "✦ NEON ON" : "✦ NEON MODE"}</button>
                 <button
                   className="sp-tile"
                   onClick={() => setTierInfoOpen(true)}
