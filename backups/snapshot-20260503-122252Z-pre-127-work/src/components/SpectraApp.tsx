@@ -3359,7 +3359,7 @@ function BootScreen({ progress, done }: { progress: number; done: boolean }) {
     <div
       className="fixed inset-0 z-50 flex flex-col items-center justify-center"
       style={{
-        background: "radial-gradient(circle at 50% 50%, #2A2DFF 0%, #1A1CF2 45%, #0E1199 100%)",
+        background: "radial-gradient(circle at 50% 50%, #1A0030 0%, #0C0018 45%, #04000A 100%)",
         opacity: done ? 0 : 1,
         pointerEvents: done ? "none" : "all",
         transition: "opacity 0.7s ease",
@@ -3804,7 +3804,7 @@ function SpectraIntro({ onDone }: { onDone: () => void }) {
     <div
       style={{
         position: "fixed", inset: 0, zIndex: 9999,
-        background: "#1A1CF2",
+        background: "#000",
         display: "flex", alignItems: "center", justifyContent: "center",
         opacity,
         transition: "opacity 700ms ease-out",
@@ -3933,66 +3933,6 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 }
 
 // ══════════════════════════════════════════════════════════════
-//  saveBlobToDevice — cross-platform save
-//  Web: triggers <a download>. Capacitor (Android/iOS): writes the
-//  blob to the cache directory and pops the native share sheet so the
-//  user can route it to Photos / Files / a chat app. Without this the
-//  on-device download anchor is silently ignored on the WebView.
-// ══════════════════════════════════════════════════════════════
-async function saveBlobToDevice(blob: Blob, filename: string): Promise<void> {
-  const isNative = (() => {
-    try { return Capacitor.isNativePlatform?.() === true; } catch { return false; }
-  })();
-
-  if (!isNative) {
-    // Browser path — anchor click.
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      try { document.body.removeChild(a); } catch {}
-      URL.revokeObjectURL(url);
-    }, 1000);
-    return;
-  }
-
-  // Capacitor path — base64 → cache file → Share sheet.
-  const base64 = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error);
-    reader.onload = () => {
-      const result = String(reader.result || "");
-      // result is "data:<mime>;base64,<payload>"
-      const comma = result.indexOf(",");
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.readAsDataURL(blob);
-  });
-
-  const written = await Filesystem.writeFile({
-    path: filename,
-    data: base64,
-    directory: Directory.Cache,
-    recursive: true,
-  });
-
-  try {
-    await Share.share({
-      title: "GPS export",
-      text: filename,
-      url: written.uri,
-      dialogTitle: "Save / Share GPS export",
-    });
-  } catch (err) {
-    // User dismissed the sheet — not an error worth surfacing.
-    void err;
-  }
-}
-
-// ══════════════════════════════════════════════════════════════
 //  MAIN COMPONENT
 // ══════════════════════════════════════════════════════════════
 export default function SpectraAfter() {
@@ -4018,8 +3958,6 @@ export default function SpectraAfter() {
   // ── First-load intro + bug report modal
   const [introVisible, setIntroVisible] = useState(true);
   const [bugOpen, setBugOpen] = useState(false);
-  // ── Processing overlay (GIF/video encode + save). null = hidden.
-  const [processingStatus, setProcessingStatus] = useState<{ label: string; pct?: number } | null>(null);
 
   // ── Source
   const [cameraActive, setCameraActive] = useState(false);
@@ -6288,10 +6226,13 @@ export default function SpectraAfter() {
       stream.getTracks().forEach(t => t.stop());
       videoComposeCanvasRef.current = null;
       const blob = new Blob(videoChunksRef.current, { type: rec.mimeType || "video/webm" });
-      if (blob.size === 0) { setProcessingStatus(null); return; }
-      const filename = `gps-${(MODES.find(m => m.id === mode)?.short ?? "PXL").toLowerCase()}-${Date.now()}.webm`;
-      setProcessingStatus({ label: "Saving video…" });
-      saveBlobToDevice(blob, filename).finally(() => setProcessingStatus(null));
+      if (blob.size === 0) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `spectra-${(MODES.find(m => m.id === mode)?.short ?? "PXL").toLowerCase()}-${Date.now()}.webm`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
 
     videoComposeRafRef.current = requestAnimationFrame(drawLoop);
@@ -6363,10 +6304,9 @@ export default function SpectraAfter() {
     const frames = gifFrames.current.slice();
     gifFrames.current = [];
     if (frames.length < 2) return;
-    setProcessingStatus({ label: `Encoding GIF (${frames.length} frames)…` });
     setTimeout(() => {
       const size = gifSizeRef.current;
-      if (!size) { setProcessingStatus(null); return; }
+      if (!size) return;
       const { w: gw, h: gh } = size;
       // ── Perfect-loop trim ──────────────────────────────────
       // Walk the back half of the recording, comparing each candidate
@@ -6382,9 +6322,11 @@ export default function SpectraAfter() {
       const delayCs = gifDelayCsRef.current;
       const data = encodeGIF(gw, gh, looped, delayCs, gifDitherRef.current);
       const blob = new Blob([data as unknown as BlobPart], { type: "image/gif" });
-      const filename = `gps-${(MODES.find(m => m.id === mode)?.short ?? "PXL").toLowerCase()}-${Date.now()}.gif`;
-      setProcessingStatus({ label: "Saving GIF…" });
-      saveBlobToDevice(blob, filename).finally(() => setProcessingStatus(null));
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `spectra-${(MODES.find(m => m.id === mode)?.short ?? "PXL").toLowerCase()}-${Date.now()}.gif`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     }, 50);
   }, [exportFormat, mode]);
 
@@ -6442,10 +6384,12 @@ export default function SpectraAfter() {
     const useJpeg = exportQuality === "standard";
     tmp.toBlob(blob => {
       if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
       const ext = useJpeg ? "jpg" : "png";
-      const filename = `gps-${outW}x${outH}-${Date.now()}.${ext}`;
-      setProcessingStatus({ label: "Saving photo…" });
-      saveBlobToDevice(blob, filename).finally(() => setProcessingStatus(null));
+      a.href = url; a.download = `spectra-${outW}x${outH}-${Date.now()}.${ext}`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     }, useJpeg ? "image/jpeg" : "image/png", useJpeg ? 0.92 : undefined);
   }, [composeFrame, exportProfile, exportQuality, getExportDimensions, getExportMaxDim]);
 
@@ -7017,53 +6961,6 @@ export default function SpectraAfter() {
       <BugReportModal open={bugOpen} onClose={() => setBugOpen(false)} />
       <BootScreen progress={bootProgress} done={bootDone} />
 
-      {/* ── Processing overlay (GIF/video encode + save) */}
-      {processingStatus && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 9998,
-          background: "rgba(3,5,16,0.78)",
-          backdropFilter: "blur(4px)",
-          display: "flex", flexDirection: "column",
-          alignItems: "center", justifyContent: "center",
-          fontFamily: "var(--font-nunito,'Nunito',sans-serif)",
-          color: "#F4F6FF", letterSpacing: "1.2px",
-          pointerEvents: "all",
-        }}>
-          <style>{`@keyframes gpsBufBar{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}`}</style>
-          <div style={{
-            fontWeight: 800, fontSize: 14, textTransform: "uppercase",
-            color: "#6F7DFF", textShadow: "0 0 12px rgba(26,28,242,0.6)",
-            marginBottom: 14,
-          }}>{processingStatus.label}</div>
-          <div style={{
-            width: "min(70vw, 320px)", height: 8, borderRadius: 6,
-            background: "rgba(111,125,255,0.15)",
-            border: "1px solid rgba(111,125,255,0.4)",
-            overflow: "hidden", position: "relative",
-            boxShadow: "0 0 14px rgba(26,28,242,0.35)",
-          }}>
-            {typeof processingStatus.pct === "number" ? (
-              <div style={{
-                width: `${Math.max(0, Math.min(100, processingStatus.pct))}%`,
-                height: "100%",
-                background: "linear-gradient(90deg, #1A1CF2 0%, #6F7DFF 50%, #FF8500 100%)",
-                transition: "width 200ms ease",
-              }}/>
-            ) : (
-              <div style={{
-                position: "absolute", top: 0, bottom: 0, width: "40%",
-                background: "linear-gradient(90deg, transparent 0%, #6F7DFF 50%, transparent 100%)",
-                animation: "gpsBufBar 1.1s linear infinite",
-              }}/>
-            )}
-          </div>
-          <div style={{
-            marginTop: 10, fontSize: 10, color: "rgba(244,246,255,0.55)",
-            letterSpacing: "2px",
-          }}>GPS • don’t close the app</div>
-        </div>
-      )}
-
       {/* Hidden video */}
       <video ref={videoRef} style={{ display: "none" }} playsInline muted autoPlay/>
       <input ref={projectFileInputRef} type="file" accept=".spectra,application/json" style={{ display: "none" }}
@@ -7075,13 +6972,15 @@ export default function SpectraAfter() {
         paddingTop: 6, paddingBottom: 6,
         background: "linear-gradient(180deg, #0E1A3E 0%, #0A1430 100%)",
         borderBottom: "1px solid rgba(111,125,255,0.45)",
-        display: "flex", justifyContent: "space-between",
-        alignItems: "center", padding: "6px 10px", gap: 8,
+        display: "grid", gridTemplateColumns: "1fr auto 1fr",
+        alignItems: "center", padding: "6px 10px",
         flexShrink: 0, zIndex: 20,
         boxShadow: "0 2px 12px rgba(0,0,0,0.85), 0 0 18px rgba(26,28,242,0.18)",
       }}>
-        {/* Left — stacked GPS wordmark: 40x40 logo + two-line title */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        {/* Left — standalone build has no /apps route, render an empty spacer for layout grid */}
+        <span style={{ justifySelf: "start" }} />
+        {/* Center — stacked GPS wordmark: 40x40 logo + two-line title */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, justifySelf: "center" }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={GPS_APP_ICON} alt="GPS" width={40} height={40} style={{
             width: 40, height: 40, borderRadius: 9, objectFit: "cover",
@@ -7103,7 +7002,7 @@ export default function SpectraAfter() {
           </div>
         </div>
         {/* Right */}
-        <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+        <div style={{ display: "flex", gap: 6, justifySelf: "end", alignItems: "center" }}>
           <button
             className="sp-btn"
             onClick={() => {
@@ -7351,9 +7250,7 @@ export default function SpectraAfter() {
                           setSourceMode("generator");
                           if (!cameraActive) void startCamera();
                         } else if (sm === "upload") {
-                          // Don't switch mode until a file is actually picked —
-                          // setting it preemptively leaves the renderer in an
-                          // empty "upload" state if the user cancels the picker.
+                          setSourceMode("upload");
                           sourceFileInputRef.current?.click();
                         }
                       }}
