@@ -4130,7 +4130,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.39";
+export const APP_VERSION = "1.2.40";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -6696,9 +6696,16 @@ export default function SpectraAfter() {
       && fboARef.current !== null && fboBRef.current !== null
       && fboTexARef.current !== null && fboTexBRef.current !== null;
     if (useCombo) {
-      for (let i = 0; i < liveLayers.length; i++) {
-        const layer = liveLayers[i];
-        const isLast = i === liveLayers.length - 1;
+      // Only render armed layers. Modes like MOSH (9) have a non-zero
+      // intensity floor (`0.3 + fxA*0.7`) inside the shader, so passing
+      // an unarmed layer through still drips a translucent ghost over
+      // the camera — that's what made PXL look like "an inverted
+      // chunk" instead of a real pixel-sort. Skipping silent layers
+      // entirely keeps PXL's output untouched on the way to the screen.
+      const armedLayers = liveLayers.filter((L) => (L.gain ?? 0) > 0.02);
+      for (let i = 0; i < armedLayers.length; i++) {
+        const layer = armedLayers[i];
+        const isLast = i === armedLayers.length - 1;
         gl.activeTexture(gl.TEXTURE0);
         if (i === 0) {
           gl.bindTexture(gl.TEXTURE_2D, curTex);
