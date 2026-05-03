@@ -4223,7 +4223,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.56";
+export const APP_VERSION = "1.2.57";
 
 // v1.2.51 — extended to 30 minutes for paid-tier QA / debugging passes.
 const GRACE_TOTAL_MS = 30 * 60 * 1000; // 30 minutes (testing)
@@ -4614,6 +4614,19 @@ export default function SpectraAfter() {
   // gl.uniform* call when the value is unchanged. For float vectors we
   // pack components into a delimited string for a cheap equality check.
   const uniCacheRef = useRef(new Map<WebGLUniformLocation, number | string>());
+
+  // v1.2.57 — Phase 4 GFX. Track per-texture sized state so we can use
+  // texSubImage2D for the steady-state per-frame uploads (camera + mask)
+  // instead of texImage2D, which avoids a driver-side reallocation +
+  // texture-completeness check on every frame. We re-seed with
+  // texImage2D only when the source dimensions change (rare).
+  const cameraTexSizedRef = useRef({ w: 0, h: 0 });
+  const maskTexSizedRef = useRef({ w: 0, h: 0 });
+  // v1.2.57 — alternate audio analyser updates so the FFT + RMS loop
+  // runs at ~30 Hz instead of 60 Hz. Audio energy doesn't change
+  // meaningfully faster than that and the cached gate is what the
+  // shader sees. Frees CPU on the render thread.
+  const audioFrameToggleRef = useRef(0);
 
   // v1.2.55 — BATTERY-AWARE FRAMERATE CAP. When the device is below 20%
   // and not actively charging, flip batteryLowRef on so the render loop's
@@ -6149,7 +6162,16 @@ export default function SpectraAfter() {
       try {
         gl.activeTexture(gl.TEXTURE2);
         gl.bindTexture(gl.TEXTURE_2D, maskTex);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
+        // v1.2.57 — texSubImage2D fast path for the mask too. Re-seed
+        // with texImage2D only when the mask canvas is resized (rare
+        // — only when the user changes mask brush mode or layout).
+        const mw = maskCanvas.width, mh = maskCanvas.height;
+        if (mw !== maskTexSizedRef.current.w || mh !== maskTexSizedRef.current.h) {
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
+          maskTexSizedRef.current = { w: mw, h: mh };
+        } else {
+          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
+        }
       } catch (err) {
         // Some Android WebGL drivers reject canvas-source LUMINANCE uploads.
         // Fall back to disabling the mask path so the FX shader keeps running.
@@ -6160,7 +6182,13 @@ export default function SpectraAfter() {
     }
 
     // --- Audio analyser: update audioLevelRef ---
-    if (audioAnalyserRef.current && audioDataArrayRef.current) {
+    // v1.2.57 — Run the FFT + RMS pass every other frame (~30 Hz at
+    // 60 fps render). Audio energy doesn't change meaningfully faster
+    // than that and the cached refs are what the shader sees, so the
+    // visual reactivity is identical while CPU drops measurably.
+    audioFrameToggleRef.current ^= 1;
+    const _doAudio = audioFrameToggleRef.current === 0;
+    if (_doAudio && audioAnalyserRef.current && audioDataArrayRef.current) {
       // @ts-expect-error: TypeScript type mismatch, runtime is correct
       audioAnalyserRef.current.getByteTimeDomainData(audioDataArrayRef.current);
       // Compute RMS (root mean square) for audio level
@@ -6199,8 +6227,10 @@ export default function SpectraAfter() {
       const beatTarget = beatGap > 0 ? Math.min(1, beatGap * 4) : 0;
       if (beatTarget > audioBeatRef.current) audioBeatRef.current = beatTarget;
       else audioBeatRef.current *= 0.90;
-    } else {
+    } else if (!audioAnalyserRef.current) {
       // Decay everything when audio is off so generator returns to ambient.
+      // (We only enter this branch when audio is genuinely off — not on
+      // the half-rate skip frames, which leave the cached refs intact.)
       audioLevelRef.current  *= 0.92;
       audioBassRef.current   *= 0.92;
       audioTrebleRef.current *= 0.92;
@@ -6898,17 +6928,29 @@ export default function SpectraAfter() {
     const prevTex = textures.current[1 - frameIdxRef.current];
 
     if (hasVideo && texSource) {
-      if (firstFrameRef.current) {
+      // v1.2.57 — texSubImage2D fast path. Seed both ping-pong slots
+      // with texImage2D on the first frame (or whenever the source
+      // dimensions change), then switch to texSubImage2D for the
+      // steady-state uploads — saves a driver-side reallocation +
+      // texture-completeness check per frame.
+      type Sized = { videoWidth?: number; videoHeight?: number; width?: number; height?: number };
+      const ts = texSource as unknown as Sized;
+      const sw = ts.videoWidth ?? ts.width ?? 0;
+      const sh = ts.videoHeight ?? ts.height ?? 0;
+      const sizeChanged = sw !== cameraTexSizedRef.current.w || sh !== cameraTexSizedRef.current.h;
+      if (firstFrameRef.current || sizeChanged) {
         for (let i = 0; i < 2; i++) {
           gl.activeTexture(gl.TEXTURE0 + i);
           gl.bindTexture(gl.TEXTURE_2D, textures.current[i]);
           gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texSource);
         }
         firstFrameRef.current = false;
+        cameraTexSizedRef.current = { w: sw, h: sh };
+      } else {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, curTex);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, texSource);
       }
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, curTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texSource);
     }
 
     gl.activeTexture(gl.TEXTURE1);
@@ -7105,9 +7147,20 @@ export default function SpectraAfter() {
     }
 
     // Copy rendered framebuffer to previous frame texture for temporal feedback effects
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, prevTex);
-    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, canvas.width, canvas.height);
+    // v1.2.57 — Skip the full-canvas copy when no FX actually samples
+    // uPrevFrame this frame. Only uTimeSmear / uDatamosh / uChrash read
+    // the previous-frame texture (uLiquid is curl-noise only). When all
+    // three are below their shader-side thresholds the copy is wasted
+    // fillrate. Saves a 1080p+ readback per frame on idle modes.
+    const _needsPrevCopy =
+      (timeSmearRef.current > 0.001) ||
+      (datamoshRef.current > 0.02) ||
+      (chrashRef.current > 0.001);
+    if (_needsPrevCopy) {
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, prevTex);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, canvas.width, canvas.height);
+    }
 
     frameIdxRef.current = 1 - frameIdxRef.current;
 
