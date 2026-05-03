@@ -8462,12 +8462,9 @@ export default function SpectraAfter() {
               }}>
                 {([
                   [0,"NORMAL"],[1,"NIGHT"],[2,"THERMAL"],[3,"EDGE"],
-                  [4,"MOTION"],[5,"CMYK"],[6,"HALFT"],[8,"GLITCH"],
-                  [10,"KALEID"],[11,"POSTER"],[12,"CHROMA"],[13,"FEEDBK"],
-                  [14,"BLKROT"],[15,"CORRUPT"],[16,"SLICER"],[17,"VORTEX"],
-                  [18,"PRISM"],[19,"ACID"],[20,"DITHER"],[21,"STUTTR"],
-                  [22,"MELT"],[23,"STATIC"],[24,"MIRROR"],[25,"SQUASH"],
-                  [26,"RIFT"],
+                  [4,"MOTION"],[5,"CMYK"],[6,"HALFT"],[11,"POSTER"],
+                  [13,"FEEDBK"],[14,"BLKROT"],[19,"ACID"],[20,"DITHER"],
+                  [22,"MELT"],[24,"MIRROR"],
                 ] as [ModeId,string][]).map(([id, lbl]) => {
                   const on = !comboMode && mode === id;
                   return (
