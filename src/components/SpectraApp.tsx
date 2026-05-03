@@ -4130,7 +4130,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.36";
+export const APP_VERSION = "1.2.37";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -5232,6 +5232,54 @@ export default function SpectraAfter() {
   const [pullArmed, setPullArmed] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const pullStartYRef = useRef<number|null>(null);
+
+  // ── 2.5D slot-machine wheel for SynthPanel racks ──────────────────
+  // On every scroll/resize, walk all `.sp-rack` cards in the panel
+  // container and apply a perspective-aware transform based on the
+  // rack's distance from the visible center. The card nearest the
+  // center stays flat & fully opaque; siblings tilt back along X,
+  // shrink, and fade — giving the whole list the feel of a slot reel.
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    let raf = 0;
+    const apply = () => {
+      raf = 0;
+      const cRect = el.getBoundingClientRect();
+      const cy = cRect.top + cRect.height / 2;
+      const racks = el.querySelectorAll<HTMLElement>(".sp-rack");
+      racks.forEach((r) => {
+        const rRect = r.getBoundingClientRect();
+        const itemCy = rRect.top + rRect.height / 2;
+        // Normalised distance from center: 0 at center, ±1 at edges.
+        const norm = Math.max(-1.4, Math.min(1.4, (itemCy - cy) / (cRect.height * 0.55)));
+        const a = Math.abs(norm);
+        const rotX = -norm * 22;            // slot-reel tilt
+        const transY = -norm * 6;           // tiny vertical lift
+        const transZ = -a * 70;             // recede away
+        const scale = 1 - a * 0.12;
+        const opacity = 1 - a * 0.45;
+        r.style.transform = `translate3d(0, ${transY}px, ${transZ}px) rotateX(${rotX}deg) scale(${scale})`;
+        r.style.opacity = String(Math.max(0.22, opacity));
+        r.style.transformOrigin = "center center";
+        r.style.willChange = "transform, opacity";
+      });
+    };
+    const schedule = () => { if (!raf) raf = requestAnimationFrame(apply); };
+    apply();
+    el.addEventListener("scroll", schedule, { passive: true });
+    const ro = new ResizeObserver(schedule);
+    ro.observe(el);
+    // Re-run when the rack count or open-panel changes (children mutate).
+    const mo = new MutationObserver(schedule);
+    mo.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    return () => {
+      el.removeEventListener("scroll", schedule);
+      ro.disconnect();
+      mo.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, []);
   const [presetName, setPresetName] = useState("");
   const [presets, setPresets] = useState<SpectraPreset[]>([]);
   const [quickSlots, setQuickSlots] = useState<Array<string | null>>(() => Array.from({ length: 8 }, () => null));
@@ -6608,7 +6656,11 @@ export default function SpectraAfter() {
       return { mode: L.mode, gain: g };
     });
     const anyArmed = liveLayers.some((L) => (L.gain ?? 0) > 0.02);
-    const useCombo = comboModeRef.current && liveLayers.length > 0 && anyArmed
+    // FX SETTINGS picker (modeRef) is the GLOBAL override. Whenever the user
+    // selects a non-NORMAL visual mode (NIGHT/THERMAL/EDGE/CMYK/etc.) it must
+    // win over the PXL+MOSH combo rack so the chosen look is what's on screen.
+    const fxOverride = (modeRef.current ?? 0) !== 0;
+    const useCombo = comboModeRef.current && liveLayers.length > 0 && anyArmed && !fxOverride
       && fboARef.current !== null && fboBRef.current !== null
       && fboTexARef.current !== null && fboTexBRef.current !== null;
     if (useCombo) {
@@ -8204,6 +8256,31 @@ export default function SpectraAfter() {
       style={{ fontFamily: "'Courier New', monospace", background: "#000" }}
     >
       <style>{`
+        /* ── 2.5D SLOT-MACHINE WHEEL FOR SYNTHPANELS ──
+           The settings pane is the wheel container; each .sp-rack is a slot
+           that gets perspective-tilted in JS based on distance from center.
+           Scroll-snap pulls the nearest rack into the centered position. */
+        .sp-panel-glass {
+          perspective: 1100px;
+          perspective-origin: 50% 50%;
+          scroll-snap-type: y proximity;
+          scroll-padding-top: 25%;
+          scroll-padding-bottom: 25%;
+        }
+        .sp-rack {
+          scroll-snap-align: center;
+          transition: transform 120ms cubic-bezier(.22,.9,.32,1.2),
+                      opacity   120ms ease;
+          transform-style: preserve-3d;
+          backface-visibility: hidden;
+        }
+        /* Open rack pulls forward and stays flat so its content is fully
+           usable while the wheel still tilts the neighbours away. */
+        .sp-rack.sp-rack-open {
+          transform: translate3d(0, 0, 0) rotateX(0deg) scale(1.02) !important;
+          opacity: 1 !important;
+          z-index: 2;
+        }
         /* ── NEON MODE — CHUNKY GLASS EVERYTHING + tilt parallax ──
            Strategy: keep the original flex layout (so nothing
            can escape the body region), but overlap the panel
