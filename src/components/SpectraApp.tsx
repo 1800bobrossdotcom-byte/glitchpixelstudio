@@ -3442,7 +3442,7 @@ function SpectraLogo({ size = 32, chromaShift = 2 }: { size?: number; chromaShif
 // concentric chromatic rings whose conic gradient sweeps to indicate load.
 // The icon itself does a chromatic-aberration "settle" — RGB channels
 // converge to perfect alignment as progress hits 100.
-function BootScreen({ progress, done }: { progress: number; done: boolean }) {
+function BootScreen({ progress, done, onSkip }: { progress: number; done: boolean; onSkip: () => void }) {
   const chroma = (1 - progress / 100) * 9; // px split per channel
   const status = progress < 22 ? "SYS.INIT" : progress < 52 ? "SHADER.COMPILE" : progress < 84 ? "GL.PIPELINE" : "VISION.READY";
   const sweepDeg = (progress / 100) * 360;
@@ -3591,6 +3591,45 @@ function BootScreen({ progress, done }: { progress: number; done: boolean }) {
       }}>
         {status}
       </div>
+
+      {/* Visible linear progress bar — confirms the loader is alive */}
+      <div style={{
+        marginTop: 22, width: 220, height: 6,
+        background: "rgba(231,174,255,0.12)",
+        borderRadius: 3, overflow: "hidden",
+        boxShadow: "inset 0 0 6px rgba(0,0,0,0.6)",
+      }}>
+        <div style={{
+          width: `${Math.min(100, Math.max(0, progress))}%`,
+          height: "100%",
+          background: "linear-gradient(90deg, rgba(255,30,200,0.95), rgba(120,90,255,0.95), rgba(40,220,255,0.95))",
+          boxShadow: "0 0 8px rgba(211,75,255,0.7)",
+          transition: "width 0.12s linear",
+        }}/>
+      </div>
+      <div style={{
+        marginTop: 8, fontFamily:"'Courier New',monospace", fontSize: 10,
+        letterSpacing: "3px", color: "rgba(231,174,255,0.7)",
+      }}>
+        {Math.floor(progress).toString().padStart(3,"0")} / 100
+      </div>
+
+      {/* Tap-to-skip — appears after a short delay so users aren't stuck */}
+      {progress >= 25 && (
+        <button
+          onClick={onSkip}
+          style={{
+            marginTop: 18,
+            background: "transparent",
+            border: "1px solid rgba(231,174,255,0.45)",
+            color: "rgba(231,174,255,0.85)",
+            fontFamily: "'Courier New',monospace",
+            fontSize: 10, letterSpacing: "3px",
+            padding: "6px 14px", borderRadius: 4,
+            cursor: "pointer",
+          }}
+        >TAP TO ENTER ▶</button>
+      )}
     </div>
   );
 }
@@ -4039,7 +4078,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.20";
+export const APP_VERSION = "1.2.21";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4861,7 +4900,37 @@ export default function SpectraAfter() {
       if (p >= 100) { p = 100; clearInterval(iv); setTimeout(() => setBootDone(true), 400); }
       setBootProgress(Math.min(100, p));
     }, 80);
-    return () => clearInterval(iv);
+    // Watchdog: force-complete after 4s no matter what so the splash
+    // can never hang indefinitely on a stalled state update.
+    const watchdog = window.setTimeout(() => {
+      clearInterval(iv);
+      setBootProgress(100);
+      setBootDone(true);
+      try { console.warn("[GPS] boot watchdog fired — force-completing splash"); } catch { /* noop */ }
+    }, 4000);
+    return () => { clearInterval(iv); window.clearTimeout(watchdog); };
+  }, []);
+
+  // Surface JS exceptions / unhandled promise rejections to a small
+  // on-screen overlay so silent crashes don't leave users staring at a
+  // blank or stuck loading screen.
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  useEffect(() => {
+    const onErr = (e: ErrorEvent) => {
+      const msg = (e?.error && (e.error.stack || e.error.message)) || e.message || "unknown error";
+      setRuntimeError(String(msg).slice(0, 800));
+    };
+    const onRej = (e: PromiseRejectionEvent) => {
+      const r = e?.reason;
+      const msg = (r && (r.stack || r.message)) || String(r) || "unhandled rejection";
+      setRuntimeError(String(msg).slice(0, 800));
+    };
+    window.addEventListener("error", onErr);
+    window.addEventListener("unhandledrejection", onRej);
+    return () => {
+      window.removeEventListener("error", onErr);
+      window.removeEventListener("unhandledrejection", onRej);
+    };
   }, []);
 
   // ── WebGL init ───────────────────────────────────────────
@@ -7636,7 +7705,33 @@ export default function SpectraAfter() {
       `}</style>
       {introVisible && <SpectraIntro onDone={() => setIntroVisible(false)} />}
       <BugReportModal open={bugOpen} onClose={() => setBugOpen(false)} />
-      <BootScreen progress={bootProgress} done={bootDone} />
+      <BootScreen progress={bootProgress} done={bootDone} onSkip={() => { setBootProgress(100); setBootDone(true); }} />
+
+      {/* Runtime error overlay — only shows if window.error or unhandled
+          rejection fires. Lets us see crashes instead of a blank screen. */}
+      {runtimeError && (
+        <div
+          style={{
+            position: "fixed", left: 8, right: 8, bottom: 8, zIndex: 99999,
+            background: "rgba(40,0,8,0.96)",
+            border: "1px solid rgba(255,80,120,0.7)",
+            color: "rgba(255,210,210,0.98)",
+            fontFamily: "'Courier New',monospace", fontSize: 10,
+            padding: 10, borderRadius: 4,
+            maxHeight: "40vh", overflowY: "auto",
+            boxShadow: "0 0 20px rgba(255,40,80,0.5)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+            <strong style={{ letterSpacing: 2 }}>RUNTIME ERROR</strong>
+            <button
+              onClick={() => setRuntimeError(null)}
+              style={{ background: "transparent", border: "1px solid rgba(255,210,210,0.5)", color: "inherit", padding: "2px 8px", cursor: "pointer", fontSize: 9 }}
+            >DISMISS ✕</button>
+          </div>
+          <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{runtimeError}</pre>
+        </div>
+      )}
 
       {/* ── TIER info modal ── */}
       {tierInfoOpen && (
