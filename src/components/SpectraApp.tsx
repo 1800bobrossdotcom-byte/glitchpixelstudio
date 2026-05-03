@@ -351,11 +351,16 @@ function drawPixelGenerator(canvas: HTMLCanvasElement, p: GenParams): void {
   // style still gets its own phase from styleHueShift+variant+seed so
   // neighbouring layers diverge. advX/advY are also driven by multi-octave
   // LFOs so position drifts on a fluid path rather than a straight line.
-  // The result is "always moving, never the same place twice" motion.
-  const ph0 = styleHueShift * Math.PI * 4 + variant * 1.27 + (seed % 17) * 0.37;
-  const ph1 = ph0 * 1.618 + 1.91;
-  const ph2 = ph0 * 0.382 + 4.27;
-  const ph3 = ph0 * 2.414 + 2.55;
+  // An EVOLUTIONARY phase (period ~minutes) slow-modulates each base
+  // phase, so the character of the motion itself drifts over time and a
+  // 30-second clip never replays the same micropattern.
+  const evoPh = tAnim * 0.0037 + variant * 0.91;
+  const evo1 = Math.sin(evoPh)         * 1.7;
+  const evo2 = Math.cos(evoPh * 0.618) * 1.3;
+  const ph0 = styleHueShift * Math.PI * 4 + variant * 1.27 + (seed % 17) * 0.37 + evo1;
+  const ph1 = ph0 * 1.618 + 1.91 + evo2;
+  const ph2 = ph0 * 0.382 + 4.27 - evo1 * 0.6;
+  const ph3 = ph0 * 2.414 + 2.55 + evo2 * 0.4;
   const dirAngle  = ph0
                   + Math.sin(tAnim * 0.063 + ph1) * 1.6
                   + Math.cos(tAnim * 0.029 + ph2) * 1.1
@@ -2294,6 +2299,8 @@ uniform float uRgbG;         // RGBNDR green-channel oscillator depth
 uniform float uRgbB;         // RGBNDR blue-channel oscillator depth
 uniform float uRgbBars;      // RGBNDR SMPTE color-bar overlay strength
 uniform float uRgbSwap;      // RGBNDR channel permutation: 0 RGB,1 GBR,2 BRG,3 BGR,4 RBG,5 GRB
+uniform float uRupture;      // RUPTURE (cyberboy666/_rupture_-style analog destroy combo)
+uniform float uHSync;        // H-sync slip: per-row horizontal tear-and-shift
 uniform float uMoshIFrame;   // iframe suppression emulation
 uniform float uMoshMotion;   // motion vector carry / propagation
 uniform float uMoshBleed;    // color texture bleed amount
@@ -2422,6 +2429,11 @@ void main() {
     else if (angF < 1.5) step1 = vec2(0.0, px.y);     // VERT
     else if (angF < 2.5) step1 = vec2(px.x, px.y);    // DIAG ↗
     else                 step1 = vec2(px.x, -px.y);   // DIAG ↘
+    // Stride scaling: SEGMENT knob now extends sample STRIDE so 64 taps
+    // can cover up to ~1024 px of the source line, not just 64. Without
+    // this the sort streaks are invisible on 1080p phone screens.
+    float stride = mix(1.0, 16.0, clamp(uSortSegment, 0.0, 1.0)) * (0.6 + uSortAmt * 1.4);
+    step1 *= stride;
     // 8..64 sample run, scaled by SortAmt and Segment so dialing the
     // amount up creates LONGER streaks (not bigger displacements).
     // GLSL ES 1.00 requires constant loop bounds, so we use 64 hard
@@ -3343,6 +3355,57 @@ void main() {
         else              bars = vec3(0.07);
       }
       post = mix(post, bars, clamp(uRgbBars, 0.0, 1.0) * 0.75);
+    }
+  }
+  // ── H-SYNC SLIP (per-row tear-and-shift, scanline-locked) ────────
+  // Cheap-and-mean horizontal-sync emulation: each scanline picks a
+  // hash-driven offset whose probability scales with the knob. Most rows
+  // pass through; a few jump by up to ~25% of the screen width.
+  if (uHSync > 0.001) {
+    float row = floor(vUv.y * uResolution.y);
+    float seed = floor(uTime * (3.0 + uHSync * 12.0));
+    float roll = rand(vec2(row * 0.013, seed * 0.071));
+    float thresh = 1.0 - clamp(uHSync, 0.0, 1.0) * 0.45;
+    if (roll > thresh) {
+      float jump = (rand(vec2(row * 0.029, seed * 0.041)) - 0.5) * uHSync * 0.5;
+      vec2 sUv = clamp(vec2(vUv.x + jump, vUv.y), 0.0, 1.0);
+      vec3 slipped = texture2D(uCamera, sUv).rgb;
+      post = mix(post, slipped, clamp(uHSync * 1.2, 0.0, 1.0));
+    }
+  }
+  // ── RUPTURE (cyberboy666/_rupture_ destroy combo) ──────────────
+  // Composite-signal-destruction emulation. One knob drives THREE
+  // simultaneous failure modes, escalating with the value:
+  //   - DROPOUT: random horizontal black bars (lost sync)
+  //   - CHROMA CRASH: full-frame chroma corruption spikes
+  //   - SYNC BURST: bursty vertical jumps that smear the frame
+  if (uRupture > 0.001) {
+    float r = clamp(uRupture, 0.0, 1.0);
+    float t = floor(uTime * (8.0 + r * 24.0));
+    // 1. Random black dropout bars
+    float row = floor(vUv.y * uResolution.y / max(2.0, 8.0 - r * 6.0));
+    float dropRoll = rand(vec2(row * 0.017, t * 0.031));
+    float dropThresh = 1.0 - r * 0.18;
+    if (dropRoll > dropThresh) {
+      post = mix(post, vec3(0.0), clamp(r * 1.4, 0.0, 1.0));
+    }
+    // 2. Chroma crash — hash-driven per-frame channel scramble
+    float crashRoll = rand(vec2(t * 0.13, 7.31));
+    if (crashRoll > 1.0 - r * 0.55) {
+      vec3 sc;
+      sc.r = post.b * (0.4 + rand(vec2(t,1.0)) * 1.2);
+      sc.g = post.r * (0.4 + rand(vec2(t,2.0)) * 1.2);
+      sc.b = post.g * (0.4 + rand(vec2(t,3.0)) * 1.2);
+      post = mix(post, sc, clamp(r, 0.0, 0.95));
+    }
+    // 3. Sync burst — vertical UV jump + horizontal smear of source
+    float burstRoll = rand(vec2(t * 0.21, 11.7));
+    if (burstRoll > 1.0 - r * 0.35) {
+      float jy = (rand(vec2(t, 13.1)) - 0.5) * r * 0.18;
+      float jx = (rand(vec2(t, 17.3)) - 0.5) * r * 0.14;
+      vec2 bUv = clamp(vUv + vec2(jx, jy), 0.0, 1.0);
+      vec3 burst = texture2D(uCamera, bUv).rgb;
+      post = mix(post, burst, clamp(r * 1.1, 0.0, 1.0));
     }
   }
   gl_FragColor = vec4(clamp(post, 0.0, 1.0), 1.0);
@@ -4292,6 +4355,11 @@ export default function SpectraAfter() {
   const [rgbB, setRgbB] = useState(0);
   const [rgbBars, setRgbBars] = useState(0);
   const [rgbSwap, setRgbSwap] = useState(0); // 0 RGB,1 GBR,2 BRG,3 BGR,4 RBG,5 GRB
+  // RUPTURE/HSYNC — _rupture_-style composite-signal destruction. RUPTURE
+  // is a single combo knob driving dropout + chroma crash + sync burst;
+  // HSYNC is a per-row tear-and-shift slip emulation.
+  const [rupture, setRupture] = useState(0);
+  const [hsync, setHsync] = useState(0);
   const [moshIFrame, setMoshIFrame] = useState(0.7);
   const [moshMotion, setMoshMotion] = useState(0.55);
   const [moshBleed, setMoshBleed] = useState(0.45);
@@ -4614,6 +4682,7 @@ export default function SpectraAfter() {
       "uSortKey","uSortLow","uSortHigh","uSortDirection","uSortSegment","uSortRandom","uSortWobble","uSortMode",
       "uSortInterval","uSortAngle",
       "uRgbR","uRgbG","uRgbB","uRgbBars","uRgbSwap",
+      "uRupture","uHSync",
       "uMoshIFrame","uMoshMotion","uMoshBleed","uMoshMap","uMoshDistort",
       "uModeParams[0]"];
       // Mask texture for touch FX
@@ -4624,7 +4693,7 @@ export default function SpectraAfter() {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, 256, 256, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, null);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 256, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
       maskTextureRef.current = maskTex;
     const u: Record<string,WebGLUniformLocation|null> = {};
     names.forEach(n => { u[n] = gl.getUniformLocation(prog, n); });
@@ -4756,6 +4825,8 @@ export default function SpectraAfter() {
   const rgbBRef = useRef(rgbB);
   const rgbBarsRef = useRef(rgbBars);
   const rgbSwapRef = useRef(rgbSwap);
+  const ruptureRef = useRef(rupture);
+  const hsyncRef = useRef(hsync);
   const moshIFrameRef = useRef(moshIFrame);
   const moshMotionRef = useRef(moshMotion);
   const moshBleedRef = useRef(moshBleed);
@@ -4908,6 +4979,8 @@ export default function SpectraAfter() {
   useEffect(()=>{ rgbBRef.current=rgbB; },[rgbB]);
   useEffect(()=>{ rgbBarsRef.current=rgbBars; },[rgbBars]);
   useEffect(()=>{ rgbSwapRef.current=rgbSwap; },[rgbSwap]);
+  useEffect(()=>{ ruptureRef.current=rupture; },[rupture]);
+  useEffect(()=>{ hsyncRef.current=hsync; },[hsync]);
   // Auto-bump sortAmt when entering PIXEL SORT mode so the rack knobs
   // produce a visible result without the user having to crank AMOUNT
   // from zero first.
@@ -4980,7 +5053,7 @@ export default function SpectraAfter() {
       try {
         gl.activeTexture(gl.TEXTURE2);
         gl.bindTexture(gl.TEXTURE_2D, maskTex);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gl.LUMINANCE, gl.UNSIGNED_BYTE, maskCanvas);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
       } catch (err) {
         // Some Android WebGL drivers reject canvas-source LUMINANCE uploads.
         // Fall back to disabling the mask path so the FX shader keeps running.
@@ -5119,10 +5192,13 @@ export default function SpectraAfter() {
       );
 
       // Heavy one-pole low-pass — slow lerp toward target so values never
-      // snap. Push smooths fast-up / slow-down so taps feel like soft pulses.
+      // snap. Tilt is smoothed AGGRESSIVELY (k=0.025) so accelerometer
+      // micro-jitter doesn't translate into a perceptible loopy wobble in
+      // the generator field. Push smooths fast-up / slow-down so taps
+      // feel like soft pulses.
       genDriveSmoothRef.current += (driveRaw - genDriveSmoothRef.current) * 0.04;
-      genTiltXSmoothRef.current += (tiltXraw - genTiltXSmoothRef.current) * 0.05;
-      genTiltYSmoothRef.current += (tiltYraw - genTiltYSmoothRef.current) * 0.05;
+      genTiltXSmoothRef.current += (tiltXraw - genTiltXSmoothRef.current) * 0.025;
+      genTiltYSmoothRef.current += (tiltYraw - genTiltYSmoothRef.current) * 0.025;
       // Push channel = physical impulse + audio beat (additive, fast-up/slow-down).
       const pushTarget = Math.min(1, pushRaw + audioBeat * 0.85);
       const pushK = pushTarget > genPushSmoothRef.current ? 0.20 : 0.03;
@@ -5132,12 +5208,22 @@ export default function SpectraAfter() {
       const tiltY = genTiltYSmoothRef.current;
       const push  = genPushSmoothRef.current;
 
-      // Organic ambient flow (very slow LFO) so the field always evolves
-      // even when motion is zero — no perceived "reset" pauses.
+      // Organic ambient flow — sum of THREE incommensurate sines per
+      // axis (irrational frequency ratios) so the curve never closes a
+      // loop within any practical session length. Amplitudes sum to ~0.18
+      // so the field is always perceptibly drifting even with zero tilt,
+      // but the motion stays fluid (no high-frequency wobble) and
+      // evolves — successive seconds never repeat the previous second.
       genFlowXRef.current += 0.0011;
       genFlowYRef.current += 0.00083;
-      const flowX = Math.sin(genFlowXRef.current) * 0.12;
-      const flowY = Math.cos(genFlowYRef.current) * 0.12;
+      const fxA = genFlowXRef.current;
+      const fyA = genFlowYRef.current;
+      const flowX = Math.sin(fxA)              * 0.090
+                  + Math.sin(fxA * 1.6180 + 1.7) * 0.055
+                  + Math.sin(fxA * 0.4142 + 4.1) * 0.040;
+      const flowY = Math.cos(fyA)              * 0.090
+                  + Math.cos(fyA * 1.4142 + 2.3) * 0.055
+                  + Math.cos(fyA * 0.6180 + 5.2) * 0.040;
 
       // Time only ever moves forward, monotonically at a constant
       // wall-clock rate (≈60fps step). Per-layer speed scaling happens
@@ -5700,6 +5786,8 @@ export default function SpectraAfter() {
     gl.uniform1f(u.uRgbB, rgbBRef.current);
     gl.uniform1f(u.uRgbBars, rgbBarsRef.current);
     gl.uniform1f(u.uRgbSwap, rgbSwapRef.current);
+    gl.uniform1f(u.uRupture, ruptureRef.current);
+    gl.uniform1f(u.uHSync, hsyncRef.current);
     gl.uniform1f(u.uMoshIFrame, moshIFrameRef.current);
     gl.uniform1f(u.uMoshMotion, moshMotionRef.current);
     gl.uniform1f(u.uMoshBleed, moshBleedRef.current);
@@ -8021,8 +8109,12 @@ export default function SpectraAfter() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
                 <SynthSelector label="SWAP" options={["RGB","GBR","BRG","BGR","RBG","GRB"]} value={Math.round(rgbSwap)} onChange={(v) => setRgbSwap(v)}/>
               </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 8, marginTop: 8, justifyItems: "center" }}>
+                <Knob label="RUPTURE" value={rupture} min={0} max={1} step={0.01} defaultValue={0.0} onChange={setRupture}/>
+                <Knob label="H-SYNC"  value={hsync}   min={0} max={1} step={0.01} defaultValue={0.0} onChange={setHsync}/>
+              </div>
               <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(231,174,255,0.55)", textAlign: "center" }}>
-                per-channel oscillator channel-bend · SMPTE bar overlay · channel rewiring
+                per-channel oscillator channel-bend · SMPTE bar overlay · channel rewiring · _rupture_ destroy combo
               </div>
             </SynthPanel>
 
