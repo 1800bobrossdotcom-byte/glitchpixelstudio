@@ -4217,7 +4217,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.43";
+export const APP_VERSION = "1.2.44";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -5371,13 +5371,16 @@ export default function SpectraAfter() {
         const rRect = r.getBoundingClientRect();
         const itemCy = rRect.top + rRect.height / 2;
         // Normalised distance from center: 0 at center, ±1 at edges.
-        const norm = Math.max(-1.4, Math.min(1.4, (itemCy - cy) / (cRect.height * 0.55)));
+        const norm = Math.max(-2.0, Math.min(2.0, (itemCy - cy) / (cRect.height * 0.42)));
         const a = Math.abs(norm);
-        const rotX = -norm * 22;            // slot-reel tilt
-        const transY = -norm * 6;           // tiny vertical lift
-        const transZ = -a * 70;             // recede away
-        const scale = 1 - a * 0.12;
-        const opacity = 1 - a * 0.45;
+        // Heavier perspective so off-center racks recede dramatically and
+        // their visual footprint shrinks — the wheel saves vertical space
+        // by trading it for z-depth.
+        const rotX = -norm * 38;            // slot-reel tilt
+        const transY = -norm * 4;           // tiny vertical lift
+        const transZ = -a * 220;            // recede away (deep z)
+        const scale = Math.max(0.55, 1 - a * 0.32);
+        const opacity = 1 - a * 0.55;
         r.style.transform = `translate3d(0, ${transY}px, ${transZ}px) rotateX(${rotX}deg) scale(${scale})`;
         r.style.opacity = String(Math.max(0.22, opacity));
         r.style.transformOrigin = "center center";
@@ -8446,11 +8449,11 @@ export default function SpectraAfter() {
           margin-top: 0 !important;
           position: absolute !important;
           left: 0; right: 0; bottom: 0;
-          /* Only ~1/4 of the screen — we can only do one thing at a
-             time, so don't hog the FX view. Inner content scrolls.
-             When a panel is open, expand to ~50dvh so the controls
-             have room to breathe; collapsed accordion stays tiny. */
-          max-height: 28dvh;
+          /* Carousel is capped to 1/4 of the viewport so the camera/FX
+             always reads at ≥ 75% full. The wheel uses heavy z-depth
+             (see .sp-rack transform in JS) so off-center racks recede
+             instead of needing more vertical scroll real-estate. */
+          max-height: 24dvh;
           overflow-y: auto;
           overscroll-behavior: contain;
           z-index: 5;
@@ -8471,7 +8474,9 @@ export default function SpectraAfter() {
           will-change: transform;
         }
         .neon-mode .sp-panel-glass.glass-expanded {
-          max-height: 55dvh;
+          /* Open rack pops up to at most 38dvh so image is still ≥ 62%
+             visible. Inner content scrolls inside that band. */
+          max-height: 38dvh;
         }
         @media (min-width: 1024px) {
           .neon-mode .sp-canvas-pane {
@@ -10614,8 +10619,8 @@ function SynthPanel({
   return (
     <div className={"sp-rack" + (collapsible ? (isOpen ? " sp-rack-open" : " sp-rack-closed") : "")} style={{
       position: "relative",
-      margin: collapsible ? "4px 6px" : "8px 10px 10px",
-      padding: collapsible ? "4px 8px" : "8px 12px 12px",
+      margin: collapsible ? "2px 5px" : "8px 10px 10px",
+      padding: collapsible ? "2px 6px" : "8px 12px 12px",
       borderRadius: 10,
       // deep purple chassis
       background: `
@@ -10641,7 +10646,7 @@ function SynthPanel({
         aria-expanded={collapsible ? isOpen : undefined}
         style={{
           margin: isOpen && !collapsible ? "0 0 8px" : (collapsible ? 0 : "0 0 8px"),
-          padding: "3px 8px",
+          padding: collapsible ? "2px 8px" : "3px 8px",
           borderRadius: 5,
           background: "linear-gradient(180deg, #0A0312 0%, #160726 100%)",
           border: "1px solid rgba(0,0,0,0.65)",
@@ -10681,8 +10686,8 @@ function SynthPanel({
       {/* Brushed-metal inner workspace — hidden when accordion-collapsed. */}
       {isOpen && (
       <div className="sp-rack-inner" style={{
-        marginTop: 6,
-        padding: "7px 6px 6px",
+        marginTop: 4,
+        padding: "5px 5px 5px",
         borderRadius: 6,
         background: `
           repeating-linear-gradient(90deg, rgba(255,255,255,0.025) 0 1px, transparent 1px 3px),
