@@ -4217,7 +4217,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.45";
+export const APP_VERSION = "1.2.46";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4458,7 +4458,10 @@ export default function SpectraAfter() {
 
   // ── Source
   const [cameraActive, setCameraActive] = useState(false);
-  const [cameraFacing, setCameraFacing] = useState<"environment"|"user">("environment");
+  // v1.2.46: boot facing the user — combined with FACE FX = BG and a
+  // little SORT amount, the app shows its mask + glitch effect on the
+  // viewer's first frame so the value prop is immediately visible.
+  const [cameraFacing, setCameraFacing] = useState<"environment"|"user">("user");
   const [sourceError, setSourceError] = useState<string|null>(null);
   const [shaderError, setShaderError] = useState<string|null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -4600,7 +4603,9 @@ export default function SpectraAfter() {
   //    FACE → only the person/face area receives FX, background stays clean
   //    BG   → only the background receives FX, person stays clean
   type FaceFxMode = "OFF" | "FACE" | "BG";
-  const [faceFxMode, setFaceFxMode] = useState<FaceFxMode>("OFF");
+  // v1.2.46: default to BG so the viewer's body is preserved and FX
+  // chew the background — instant demo of the AI-segmented mask.
+  const [faceFxMode, setFaceFxMode] = useState<FaceFxMode>("BG");
   const [faceFxToast, setFaceFxToast] = useState<string | null>(null);
   const faceFxRef = useRef<{ active: boolean; invert: boolean; texValid: boolean; cx: number; cy: number; r: number; }>({
     active: false, invert: false, texValid: false, cx: 0.5, cy: 0.42, r: 0.28,
@@ -4793,22 +4798,28 @@ export default function SpectraAfter() {
             segmenter.segmentForVideo(v, performance.now(), (result) => {
               const cat = result.categoryMask;
               if (!cat) return;
-              // selfie segmenter outputs category 0 = bg, non-zero = person.
-              // Some builds expose getAsUint8Array (LITE), others Float32Array.
+              // v1.2.46: MediaPipe Tasks Vision SelfieSegmenter category
+              // mask outputs 0 = PERSON, 255 = BACKGROUND for the LITE
+              // model that we ship — the previous code assumed the
+              // opposite, which is why FACE mode was painting the BG
+              // and BG mode was painting the person. Flip the polarity
+              // on the JS side so the shader's fm = 1 inside the person,
+              // matching what `uFaceInvert = (mode === "BG")` expects.
               const u8: Uint8Array | null = cat.getAsUint8Array ? cat.getAsUint8Array() : null;
               const f32: Float32Array | null = !u8 && cat.getAsFloat32Array ? cat.getAsFloat32Array() : null;
               const mw = cat.width, mh = cat.height;
               if (!u8 && !f32) { try { cat.close?.(); } catch { /* noop */ } return; }
-              // Build an RGBA bitmap (R = mask, A = 255) at the model's res.
               const rgba = new Uint8ClampedArray(mw * mh * 4);
               if (u8) {
                 for (let i = 0, j = 0; i < u8.length; i++, j += 4) {
-                  const m = u8[i] > 0 ? 255 : 0;
+                  // person == low category id, background == high → invert.
+                  const m = u8[i] > 0 ? 0 : 255;
                   rgba[j] = m; rgba[j+1] = m; rgba[j+2] = m; rgba[j+3] = 255;
                 }
               } else if (f32) {
                 for (let i = 0, j = 0; i < f32.length; i++, j += 4) {
-                  const m = Math.round(Math.min(1, Math.max(0, f32[i])) * 255);
+                  // f32 confidence is 0 at person, 1 at bg → invert to (1 - x).
+                  const m = Math.round((1.0 - Math.min(1, Math.max(0, f32[i]))) * 255);
                   rgba[j] = m; rgba[j+1] = m; rgba[j+2] = m; rgba[j+3] = 255;
                 }
               }
@@ -4970,7 +4981,11 @@ export default function SpectraAfter() {
 
 
   // ── Glitch FX settings (multi-layer)
-  const [sortAmt, setSortAmt] = useState(0.0);
+  // v1.2.46: seed pixel-sort at 0.5 so the boot screen instantly shows
+  // the signature glitch on whatever the camera sees (combined with
+  // user-facing camera + FACE FX = BG, the person stays clean and the
+  // background gets sorted).
+  const [sortAmt, setSortAmt] = useState(0.5);
   const [scanTear, setScanTear] = useState(0.0);
   const [rgbDrift, setRGBDrift] = useState(0.0);
   const [blockGlitch, setBlockGlitch] = useState(0.0);
@@ -7380,14 +7395,15 @@ export default function SpectraAfter() {
 
     setParamsByMode(defaultsForAllModes());
     setSourceMode("camera");
-    setCameraFacing("environment");
+    // v1.2.46: reset matches the new boot state — user-facing.
+    setCameraFacing("user");
     setSourceError(null);
     clearUploadSource();
     touchRef.current.active = false;
     currentStrokeRef.current = null;
     setStrokes([]);
     setDrawActive(false);
-    await startCamera(true, "environment");
+    await startCamera(true, "user");
   }, [clearUploadSource, startCamera]);
 
   // ── GIF export ────────────────────────────────────────────
@@ -8129,7 +8145,8 @@ export default function SpectraAfter() {
       setSourceMode("camera");
       setGenPalette("MONO");
       setGenAutoCycle(false);
-      setCameraFacing("environment");
+      // v1.2.46: boot user-facing for the same reason as the state default.
+      setCameraFacing("user");
 
       setGain(0.5);
       setBrightness(1.0);
