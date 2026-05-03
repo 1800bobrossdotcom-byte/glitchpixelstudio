@@ -4130,7 +4130,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.38";
+export const APP_VERSION = "1.2.39";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -8301,17 +8301,38 @@ export default function SpectraAfter() {
         }
         .sp-rack {
           scroll-snap-align: center;
-          transition: transform 120ms cubic-bezier(.22,.9,.32,1.2),
-                      opacity   120ms ease;
+          transition: transform 160ms cubic-bezier(.22,.9,.32,1.2),
+                      opacity   160ms ease,
+                      padding   180ms ease,
+                      margin    180ms ease;
           transform-style: preserve-3d;
           backface-visibility: hidden;
         }
         /* Open rack pulls forward and stays flat so its content is fully
            usable while the wheel still tilts the neighbours away. */
         .sp-rack.sp-rack-open {
-          transform: translate3d(0, 0, 0) rotateX(0deg) scale(1.02) !important;
+          transform: translate3d(0, 0, 0) rotateX(0deg) scale(1.03) !important;
           opacity: 1 !important;
           z-index: 2;
+        }
+        /* Pop-up animation: when an inner workspace mounts (rack opened),
+           it grows from a flat slab into the full panel and fades in.
+           When the rack closes, React unmounts the inner so the chassis
+           collapses back via the transition above — the perceived
+           "minimize" effect. */
+        @keyframes sp-rack-pop {
+          0%   { transform: translateY(-6px) scaleY(0.6); opacity: 0; filter: blur(2px); }
+          60%  { transform: translateY(1px)  scaleY(1.02); opacity: 1; filter: blur(0); }
+          100% { transform: translateY(0)    scaleY(1);    opacity: 1; filter: blur(0); }
+        }
+        .sp-rack-inner {
+          transform-origin: top center;
+          animation: sp-rack-pop 220ms cubic-bezier(.22,1.2,.36,1) both;
+          will-change: transform, opacity;
+        }
+        /* Closed rack: chevron + title-only, very tight footprint. */
+        .sp-rack.sp-rack-closed {
+          opacity: 0.85;
         }
         /* ── NEON MODE — CHUNKY GLASS EVERYTHING + tilt parallax ──
            Strategy: keep the original flex layout (so nothing
@@ -10516,9 +10537,9 @@ function SynthPanel({
   return (
     <div className={"sp-rack" + (collapsible ? (isOpen ? " sp-rack-open" : " sp-rack-closed") : "")} style={{
       position: "relative",
-      margin: collapsible ? "6px 8px" : "10px 10px 12px",
-      padding: collapsible ? "6px 10px" : "10px 14px 14px",
-      borderRadius: 12,
+      margin: collapsible ? "4px 6px" : "8px 10px 10px",
+      padding: collapsible ? "4px 8px" : "8px 12px 12px",
+      borderRadius: 10,
       // deep purple chassis
       background: `
         linear-gradient(180deg, #2A0A4A 0%, #1A0530 60%, #0F0220 100%)
@@ -10542,9 +10563,9 @@ function SynthPanel({
         role={collapsible ? "button" : undefined}
         aria-expanded={collapsible ? isOpen : undefined}
         style={{
-          margin: isOpen && !collapsible ? "0 0 10px" : (collapsible ? 0 : "0 0 10px"),
-          padding: "5px 10px",
-          borderRadius: 6,
+          margin: isOpen && !collapsible ? "0 0 8px" : (collapsible ? 0 : "0 0 8px"),
+          padding: "3px 8px",
+          borderRadius: 5,
           background: "linear-gradient(180deg, #0A0312 0%, #160726 100%)",
           border: "1px solid rgba(0,0,0,0.65)",
           boxShadow: "inset 0 1px 2px rgba(0,0,0,0.65), inset 0 -1px 0 rgba(255,255,255,0.04)",
@@ -10564,7 +10585,7 @@ function SynthPanel({
             }}>▶</span>
           )}
           <div style={{
-            fontSize: 11, letterSpacing: "2.5px", textTransform: "uppercase",
+            fontSize: 10, letterSpacing: "2px", textTransform: "uppercase",
             fontFamily: "'Courier New',monospace", fontWeight: 700,
             color: "rgba(255,210,140,0.95)",
             textShadow: "0 0 6px rgba(232,160,32,0.7)",
@@ -10583,9 +10604,9 @@ function SynthPanel({
       {/* Brushed-metal inner workspace — hidden when accordion-collapsed. */}
       {isOpen && (
       <div className="sp-rack-inner" style={{
-        marginTop: 10,
-        padding: "10px 8px 8px",
-        borderRadius: 8,
+        marginTop: 6,
+        padding: "7px 6px 6px",
+        borderRadius: 6,
         background: `
           repeating-linear-gradient(90deg, rgba(255,255,255,0.025) 0 1px, transparent 1px 3px),
           linear-gradient(180deg, #1C1C22 0%, #14141A 50%, #0E0E14 100%)
