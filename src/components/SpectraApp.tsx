@@ -4129,7 +4129,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.26";
+export const APP_VERSION = "1.2.27";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4638,12 +4638,13 @@ export default function SpectraAfter() {
               if (gl && tex) {
                 gl.activeTexture(gl.TEXTURE4);
                 gl.bindTexture(gl.TEXTURE_2D, tex);
-                // The selfie cam is mirrored in shader via uMirror; the
-                // mask comes from the raw video, so flipY keeps it
-                // correctly aligned with vUv.
-                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
+                // Camera tex is uploaded WITHOUT FLIP_Y, so to match
+                // the camera's vertical orientation the mask must
+                // also be uploaded WITHOUT FLIP_Y. Previously this was
+                // flipped, which pushed the person's head off the top
+                // of the mask and chopped the upper third of the roto.
                 gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
                 faceFxRef.current.texValid = true;
               }
             });
@@ -7942,10 +7943,10 @@ export default function SpectraAfter() {
           margin-top: -25dvh !important;
           position: relative;
           z-index: 1;
-          /* MUCH lighter gradient so the FX shine through the panel. */
-          background: linear-gradient(180deg, rgba(15,0,28,0.14) 0%, rgba(8,0,18,0.22) 38%, rgba(8,0,18,0.32) 100%) !important;
-          backdrop-filter: blur(14px) saturate(1.8);
-          -webkit-backdrop-filter: blur(14px) saturate(1.8);
+          /* Glass-bottom-boat panel — the FX layer reads through clearly. */
+          background: linear-gradient(180deg, rgba(15,0,28,0.06) 0%, rgba(8,0,18,0.10) 38%, rgba(8,0,18,0.18) 100%) !important;
+          backdrop-filter: blur(4px) saturate(1.3);
+          -webkit-backdrop-filter: blur(4px) saturate(1.3);
           border-top: 1px solid rgba(231,174,255,0.55) !important;
           box-shadow:
             0 -10px 36px rgba(176,20,240,0.25),
@@ -7981,31 +7982,40 @@ export default function SpectraAfter() {
         .neon-mode .sp-tile,
         .neon-mode button.sp-btn,
         .neon-mode button.sp-tile {
+          /* Glass-bottom-boat: just a whisper of tint so the live FX
+             reads clearly through every button face. The chunky
+             3D feel comes from the bevel + glow + border, not from
+             a heavy fill. */
           background: linear-gradient(180deg,
-            rgba(60,20,90,0.28) 0%,
-            rgba(20,5,40,0.18) 50%,
-            rgba(8,0,18,0.32) 100%) !important;
-          backdrop-filter: blur(10px) saturate(1.6);
-          -webkit-backdrop-filter: blur(10px) saturate(1.6);
-          border: 1px solid rgba(231,174,255,0.5) !important;
+            rgba(80,30,120,0.10) 0%,
+            rgba(20,5,40,0.04) 50%,
+            rgba(8,0,18,0.10) 100%) !important;
+          backdrop-filter: blur(2px) saturate(1.15);
+          -webkit-backdrop-filter: blur(2px) saturate(1.15);
+          border: 1px solid rgba(231,174,255,0.55) !important;
           border-radius: 6px !important;
-          color: rgba(255,225,255,0.96) !important;
+          color: rgba(255,235,255,0.98) !important;
           box-shadow:
-            inset 0 1px 0 rgba(255,255,255,0.32),
+            inset 0 1px 0 rgba(255,255,255,0.45),
             inset 0 -2px 0 rgba(0,0,0,0.45),
-            inset 0 0 24px rgba(176,20,240,0.18),
-            0 4px 14px rgba(176,20,240,0.28),
-            0 0 0 1px rgba(255,180,255,0.08) !important;
-          text-shadow: 0 0 4px rgba(0,0,0,0.85), 0 1px 0 rgba(0,0,0,0.7);
+            inset 0 0 18px rgba(176,20,240,0.22),
+            0 4px 14px rgba(176,20,240,0.32),
+            0 0 0 1px rgba(255,180,255,0.10) !important;
+          /* Crisp halo around every glyph so text stays legible over
+             whatever colors are pumping through behind it. */
+          text-shadow:
+            0 0 4px rgba(0,0,0,0.95),
+            0 0 2px rgba(0,0,0,0.95),
+            0 1px 0 rgba(0,0,0,0.85) !important;
           transition: transform 0.08s ease, box-shadow 0.18s ease, background 0.18s ease;
         }
         .neon-mode .sp-btn:hover,
         .neon-mode .sp-tile:hover {
           background: linear-gradient(180deg,
-            rgba(80,30,120,0.36) 0%,
-            rgba(30,10,55,0.22) 50%,
-            rgba(12,0,28,0.4) 100%) !important;
-          border-color: rgba(255,200,255,0.75) !important;
+            rgba(120,40,170,0.18) 0%,
+            rgba(40,15,75,0.10) 50%,
+            rgba(20,0,40,0.18) 100%) !important;
+          border-color: rgba(255,200,255,0.85) !important;
           box-shadow:
             inset 0 1px 0 rgba(255,255,255,0.42),
             inset 0 -2px 0 rgba(0,0,0,0.5),
@@ -8033,27 +8043,33 @@ export default function SpectraAfter() {
            and we want them all to read as the same poured-glass slabs.
            These rules are last so !important wins over inline styles. */
         .neon-mode .sp-panel-glass button {
+          /* Same glass-bottom-boat treatment for in-rack buttons:
+             near-clear face so knobs/labels read clearly through. */
           background: linear-gradient(180deg,
-            rgba(60,20,90,0.32) 0%,
-            rgba(20,5,40,0.20) 50%,
-            rgba(8,0,18,0.36) 100%) !important;
-          backdrop-filter: blur(8px) saturate(1.5);
-          -webkit-backdrop-filter: blur(8px) saturate(1.5);
-          border: 1px solid rgba(231,174,255,0.42) !important;
+            rgba(80,30,120,0.10) 0%,
+            rgba(20,5,40,0.04) 50%,
+            rgba(8,0,18,0.12) 100%) !important;
+          backdrop-filter: blur(2px) saturate(1.15);
+          -webkit-backdrop-filter: blur(2px) saturate(1.15);
+          border: 1px solid rgba(231,174,255,0.45) !important;
           border-radius: 6px !important;
-          color: rgba(255,225,255,0.96) !important;
+          color: rgba(255,235,255,0.98) !important;
           box-shadow:
-            inset 0 1px 0 rgba(255,255,255,0.32),
+            inset 0 1px 0 rgba(255,255,255,0.40),
             inset 0 -2px 0 rgba(0,0,0,0.45),
-            inset 0 0 22px rgba(176,20,240,0.18),
-            0 4px 12px rgba(176,20,240,0.28) !important;
+            inset 0 0 18px rgba(176,20,240,0.22),
+            0 4px 12px rgba(176,20,240,0.32) !important;
+          text-shadow:
+            0 0 4px rgba(0,0,0,0.95),
+            0 0 2px rgba(0,0,0,0.95),
+            0 1px 0 rgba(0,0,0,0.85) !important;
         }
         .neon-mode .sp-panel-glass button:hover {
           background: linear-gradient(180deg,
-            rgba(80,30,120,0.40) 0%,
-            rgba(30,10,55,0.24) 50%,
-            rgba(12,0,28,0.44) 100%) !important;
-          border-color: rgba(255,200,255,0.7) !important;
+            rgba(120,40,170,0.18) 0%,
+            rgba(40,15,75,0.10) 50%,
+            rgba(20,0,40,0.20) 100%) !important;
+          border-color: rgba(255,200,255,0.8) !important;
           box-shadow:
             inset 0 1px 0 rgba(255,255,255,0.45),
             inset 0 -2px 0 rgba(0,0,0,0.5),
