@@ -1,6 +1,7 @@
 ﻿"use client";
 // (Capacitor mirror — no next/link)
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useRef, useState, useEffect, useCallback, useMemo, useContext, createContext } from "react";
+import type { Dispatch, SetStateAction } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Media } from "@capacitor-community/media";
@@ -4129,7 +4130,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.29";
+export const APP_VERSION = "1.2.30";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4350,6 +4351,14 @@ export default function SpectraAfter() {
   // dispatched from saveBlobToDevice and shows a transient banner so
   // the user knows the file landed on their phone (no Share sheet).
   const [savedToast, setSavedToast] = useState<{ filename: string; path: string } | null>(null);
+  // ── Accordion state for the glass-mode panel: only one SynthPanel
+  // open at a time, default all collapsed so the bottom 1/4 of the
+  // screen can show the full panel list as title strips.
+  const [openPanelTitle, setOpenPanelTitle] = useState<string | null>(null);
+  const accordionCtx = useMemo(
+    () => ({ openTitle: openPanelTitle, setOpenTitle: setOpenPanelTitle }),
+    [openPanelTitle]
+  );
   useEffect(() => {
     const onSaved = (e: Event) => {
       const ce = e as CustomEvent<{ filename: string; path: string }>;
@@ -8015,7 +8024,9 @@ export default function SpectraAfter() {
           position: absolute !important;
           left: 0; right: 0; bottom: 0;
           /* Only ~1/4 of the screen — we can only do one thing at a
-             time, so don't hog the FX view. Inner content scrolls. */
+             time, so don't hog the FX view. Inner content scrolls.
+             When a panel is open, expand to ~50dvh so the controls
+             have room to breathe; collapsed accordion stays tiny. */
           max-height: 28dvh;
           overflow-y: auto;
           overscroll-behavior: contain;
@@ -8033,8 +8044,11 @@ export default function SpectraAfter() {
                      rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
           transform-origin: 50% 0%;
           transform-style: preserve-3d;
-          transition: background 0.3s ease;
+          transition: background 0.3s ease, max-height 0.28s ease;
           will-change: transform;
+        }
+        .neon-mode .sp-panel-glass.glass-expanded {
+          max-height: 55dvh;
         }
         @media (min-width: 1024px) {
           .neon-mode .sp-canvas-pane {
@@ -8161,6 +8175,11 @@ export default function SpectraAfter() {
           right: 12px !important;
           bottom: calc(28dvh + 12px) !important;
           z-index: 10 !important;
+          transition: bottom 0.28s ease;
+        }
+        .neon-mode .sp-panel-glass.glass-expanded ~ * .sp-photo-btn-neon,
+        body:has(.neon-mode .sp-panel-glass.glass-expanded) .sp-photo-btn-neon {
+          bottom: calc(55dvh + 12px) !important;
         }
         /* SynthPanel borders + Knob caps in NEON mode also get a hint
            of glass so the rack chrome itself melts into the panel
@@ -8876,7 +8895,7 @@ export default function SpectraAfter() {
         {/* Settings panel — bottom half on mobile (scrollable), right pane on desktop */}
         <div
           ref={panelRef}
-          className="sp-panel-glass flex-1 min-h-0 overflow-y-auto lg:w-[23rem] lg:flex-none"
+          className={"sp-panel-glass flex-1 min-h-0 overflow-y-auto lg:w-[23rem] lg:flex-none" + (neonMode && openPanelTitle ? " glass-expanded" : "")}
           style={{ background: "linear-gradient(180deg,#0F001C 0%,#080012 100%)", borderTop: `1px solid rgba(61,10,92,0.9)`, position: "relative" }}
           onPointerDown={(e) => {
             if (!panelRef.current || panelRef.current.scrollTop > 0) return;
@@ -8902,6 +8921,9 @@ export default function SpectraAfter() {
             setPullArmed(false);
           }}
         >
+          {(neonMode ? (children: React.ReactNode) => (
+            <SynthPanelAccordionContext.Provider value={accordionCtx}>{children}</SynthPanelAccordionContext.Provider>
+          ) : (children: React.ReactNode) => <>{children}</>)(<>
           <div style={{
             height: pullDistance,
             opacity: pullDistance > 0 ? 1 : 0,
@@ -9774,6 +9796,7 @@ export default function SpectraAfter() {
           </Section>
 
           <div style={{ height: 28 }}/>
+          </>)}
         </div>
       </div>
 
@@ -10154,12 +10177,34 @@ function SynthSelector({
 // ───────────────────────────────────────────────────────────────────────
 // SynthPanel — chunky brushed-metal chassis with screws + amber title strip
 // ───────────────────────────────────────────────────────────────────────
+// Accordion coordinator. When a SynthPanel is rendered inside a
+// provider, only one panel is open at a time and tapping the title
+// strip toggles it. Without a provider, all panels render expanded
+// (legacy / desktop layout).
+const SynthPanelAccordionContext = createContext<{
+  openTitle: string | null;
+  setOpenTitle: Dispatch<SetStateAction<string | null>>;
+} | null>(null);
+
 function SynthPanel({
   title, subtitle, accent, children,
 }: {
   title: string; subtitle?: string; accent?: string; children: React.ReactNode;
 }) {
   const accentColor = accent ?? "rgba(231,174,255,0.95)";
+  // ── Accordion integration. If a parent has provided
+  // SynthPanelAccordionContext (e.g. the glass-mode panel container),
+  // this rack becomes collapsible: tapping the title strip toggles it
+  // open as the single active panel and closes any sibling. Default
+  // collapsed → user sees a tidy stack of title strips and only the
+  // panel they want to fiddle with shows controls.
+  const acc = useContext(SynthPanelAccordionContext);
+  const collapsible = !!acc;
+  const isOpen = collapsible ? acc!.openTitle === title : true;
+  const onToggle = () => {
+    if (!collapsible) return;
+    acc!.setOpenTitle(prev => prev === title ? null : title);
+  };
   const screw = (top?: string | number, left?: string | number, right?: string | number, bottom?: string | number) => (
     <div style={{
       position: "absolute",
@@ -10177,10 +10222,10 @@ function SynthPanel({
     </div>
   );
   return (
-    <div className="sp-rack" style={{
+    <div className={"sp-rack" + (collapsible ? (isOpen ? " sp-rack-open" : " sp-rack-closed") : "")} style={{
       position: "relative",
-      margin: "10px 10px 12px",
-      padding: "10px 14px 14px",
+      margin: collapsible ? "6px 8px" : "10px 10px 12px",
+      padding: collapsible ? "6px 10px" : "10px 14px 14px",
       borderRadius: 12,
       // deep purple chassis
       background: `
@@ -10198,22 +10243,41 @@ function SynthPanel({
       {screw(undefined, 6, undefined, 6)}
       {screw(undefined, undefined, 6, 6)}
 
-      {/* Amber-LCD title strip */}
-      <div style={{
-        margin: "0 0 10px",
-        padding: "5px 10px",
-        borderRadius: 6,
-        background: "linear-gradient(180deg, #0A0312 0%, #160726 100%)",
-        border: "1px solid rgba(0,0,0,0.65)",
-        boxShadow: "inset 0 1px 2px rgba(0,0,0,0.65), inset 0 -1px 0 rgba(255,255,255,0.04)",
-        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-      }}>
-        <div style={{
-          fontSize: 11, letterSpacing: "2.5px", textTransform: "uppercase",
-          fontFamily: "'Courier New',monospace", fontWeight: 700,
-          color: "rgba(255,210,140,0.95)",
-          textShadow: "0 0 6px rgba(232,160,32,0.7)",
-        }}>{title}</div>
+      {/* Amber-LCD title strip — clickable when used inside the
+          accordion, giving the rack a chevron to indicate state. */}
+      <div
+        onClick={onToggle}
+        role={collapsible ? "button" : undefined}
+        aria-expanded={collapsible ? isOpen : undefined}
+        style={{
+          margin: isOpen && !collapsible ? "0 0 10px" : (collapsible ? 0 : "0 0 10px"),
+          padding: "5px 10px",
+          borderRadius: 6,
+          background: "linear-gradient(180deg, #0A0312 0%, #160726 100%)",
+          border: "1px solid rgba(0,0,0,0.65)",
+          boxShadow: "inset 0 1px 2px rgba(0,0,0,0.65), inset 0 -1px 0 rgba(255,255,255,0.04)",
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+          cursor: collapsible ? "pointer" : "default",
+          userSelect: "none",
+        }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
+          {collapsible && (
+            <span style={{
+              fontSize: 10,
+              color: "rgba(255,210,140,0.85)",
+              transform: isOpen ? "rotate(90deg)" : "rotate(0deg)",
+              transition: "transform 0.15s ease",
+              display: "inline-block",
+              width: 10,
+            }}>▶</span>
+          )}
+          <div style={{
+            fontSize: 11, letterSpacing: "2.5px", textTransform: "uppercase",
+            fontFamily: "'Courier New',monospace", fontWeight: 700,
+            color: "rgba(255,210,140,0.95)",
+            textShadow: "0 0 6px rgba(232,160,32,0.7)",
+          }}>{title}</div>
+        </div>
         {subtitle && (
           <div style={{
             fontSize: 8, letterSpacing: "1.4px", textTransform: "uppercase",
@@ -10224,8 +10288,10 @@ function SynthPanel({
         )}
       </div>
 
-      {/* Brushed-metal inner workspace */}
+      {/* Brushed-metal inner workspace — hidden when accordion-collapsed. */}
+      {isOpen && (
       <div className="sp-rack-inner" style={{
+        marginTop: 10,
         padding: "10px 8px 8px",
         borderRadius: 8,
         background: `
@@ -10237,6 +10303,7 @@ function SynthPanel({
       }}>
         {children}
       </div>
+      )}
     </div>
   );
 }
