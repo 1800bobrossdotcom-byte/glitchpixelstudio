@@ -4130,7 +4130,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.37";
+export const APP_VERSION = "1.2.38";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4401,6 +4401,38 @@ export default function SpectraAfter() {
     "PLIFE", "DLAUN", "BOIDS", "REACT", "LSYST",
   ] as const;
   type GenStyle = typeof GEN_STYLES[number];
+
+  // ── Family / variant matrix — mirrors STYLE_SPECS inside drawPixelGenerator.
+  // Lets the FAMILY/VARIANT knobs in the rack drive genStyle without exposing
+  // a 36-button preset grid. Empty slots fall back to slot 0 of that family.
+  const FAMILY_NAMES = [
+    "AUTOMATA","REACT-DIFF","FLOW-WAVE","DITHER","FRACTAL",
+    "PIXSORT","FLOWFLD","VORONOI","TRUCHET","GLITCH",
+  ] as const;
+  const STYLE_BY_FV: ReadonlyArray<ReadonlyArray<GenStyle>> = [
+    ["PLIFE",  "WAVES", "CHECK",  "LSYST"],
+    ["REACT",  "MOSAIC","PLASMA", "REACT"],
+    ["RIBON",  "ORBIT", "STAIR",  "STACK"],
+    ["BAYER",  "BAY8",  "BRICK",  "STRIP"],
+    ["RINGS",  "CIRCS", "SHARDS", "CROSS"],
+    ["WEAVE",  "WEAVE", "FLOWL",  "RGBSP"],
+    ["BOIDS",  "WORM",  "NOISE",  "DIAMOND"],
+    ["VORON",  "DOTS",  "HALFT",  "HEX"],
+    ["TRUCH",  "GRID",  "ISO",    "TRUCH"],
+    ["GLITCH", "GLITCH","ASCII",  "GLITCH"],
+  ];
+  const FV_BY_STYLE: Record<string, [number, number]> = {
+    PLIFE:[0,0], WAVES:[0,1], CHECK:[0,2], LSYST:[0,3],
+    REACT:[1,0], MOSAIC:[1,1], PLASMA:[1,2],
+    RIBON:[2,0], ORBIT:[2,1], STAIR:[2,2], STACK:[2,3],
+    BAYER:[3,0], BAY8:[3,1], BRICK:[3,2], STRIP:[3,3],
+    RINGS:[4,0], CIRCS:[4,1], SHARDS:[4,2], CROSS:[4,3],
+    WEAVE:[5,1], FLOWL:[5,2], RGBSP:[5,3],
+    BOIDS:[6,0], WORM:[6,1], NOISE:[6,2], DIAMOND:[6,3],
+    VORON:[7,0], DOTS:[7,1], HALFT:[7,2], HEX:[7,3],
+    TRUCH:[8,0], GRID:[8,1], ISO:[8,2],
+    GLITCH:[9,0], ASCII:[9,2],
+  };
 
   // Color palettes for the generator. MONO is pure grayscale (true monochrome).
   // CUSTOM hands control back to the HUE/SPREAD/SAT knobs.
@@ -9525,51 +9557,7 @@ export default function SpectraAfter() {
 
             {/* ── PIXEL GENERATOR RACK ──────────────────────────────── */}
             <SynthPanel title="PIXEL GENERATOR" subtitle={`GEN · ${genStyle}`} accent="rgba(255,210,140,0.95)">
-              {false && <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4, marginBottom: 8 }}>
-                {GEN_PALETTE_KEYS.map((pk) => {
-                  const active = genPalette === pk;
-                  // Per-palette swatch color for the chip.
-                  const sw = pk === "MONO"    ? "linear-gradient(135deg,#fff,#888,#222)"
-                           : pk === "WARM"    ? "linear-gradient(135deg,#ffd27a,#ff7a3a,#a8003c)"
-                           : pk === "COOL"    ? "linear-gradient(135deg,#7ad6ff,#3a78ff,#001ea8)"
-                           : pk === "PINK"    ? "linear-gradient(135deg,#ffd2f0,#ff3aa3,#7a006a)"
-                           : pk === "ACID"    ? "linear-gradient(135deg,#d6ff3a,#3aff8e,#0a8000)"
-                           : pk === "RAINBOW" ? "linear-gradient(90deg,#ff3a3a,#ffd23a,#3aff7a,#3ad6ff,#7a3aff,#ff3ad6)"
-                           :                    "linear-gradient(135deg,#3A0852,#1A0224)";
-                  return (
-                    <button
-                      key={pk}
-                      onClick={() => setGenPalette(pk)}
-                      title={pk === "CUSTOM" ? "Use HUE / SPREAD / SAT knobs" : `${pk} palette`}
-                      style={{
-                        padding: "6px 2px 4px",
-                        fontSize: 8, letterSpacing: "0.6px", fontWeight: 700,
-                        fontFamily: "'Courier New',monospace",
-                        cursor: "pointer", borderRadius: 4,
-                        border: active ? "1px solid rgba(255,210,140,0.95)" : "1px solid rgba(0,0,0,0.7)",
-                        color: active ? "#fff" : "rgba(255,210,140,0.7)",
-                        background: active
-                          ? "linear-gradient(180deg,#3A0852 0%,#1A0224 100%)"
-                          : "linear-gradient(180deg,#1a1a1e 0%,#0a0a12 100%)",
-                        boxShadow: active
-                          ? "inset 0 1px 1px rgba(255,255,255,0.18), 0 0 8px rgba(255,210,140,0.4)"
-                          : "inset 0 1px 1px rgba(255,255,255,0.05)",
-                        textShadow: active ? "0 0 5px rgba(255,210,140,0.8)" : "none",
-                        position: "relative", overflow: "hidden",
-                      }}
-                    >
-                      <div style={{
-                        height: 6, marginBottom: 3, borderRadius: 2, background: sw,
-                        opacity: active ? 1 : 0.7,
-                      }}/>
-                      {pk}
-                    </button>
-                  );
-                })}
-              </div>}
-
-
-              {/* ── Layer selector tabs (L1..L4 + MASTER) ────────────
+              {/* Layer selector tabs (L1..L4 + MASTER) ────────────
                   Tap a tab to select it — every knob, the style grid and
                   the INVERT/RANDOM controls below then edit THAT layer's
                   params. Selecting MASTER broadcasts every edit to ALL 4
@@ -9663,78 +9651,45 @@ export default function SpectraAfter() {
                   );
                 })}
               </div>
+              {/* Family / Variant / Blend live as compact knobs (no preset grid). */}
               <div style={{
                 fontSize: 9, letterSpacing: "1.4px", color: "rgba(255,210,140,0.7)",
                 textTransform: "uppercase", marginBottom: 4, paddingLeft: 2,
-              }}>Pixel Blend</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(8,1fr)", gap: 3, marginBottom: 12 }}>
-                {GEN_BLEND_KEYS.map((bk) => {
-                  const active = genBlend === bk;
-                  return (
-                    <button
-                      key={bk}
-                      onClick={() => setGenBlend(bk)}
-                      title={`${bk} pixel blend`}
-                      style={{
-                        padding: "5px 0", fontSize: 8, fontWeight: 800,
-                        letterSpacing: "0.6px", cursor: "pointer", borderRadius: 3,
-                        fontFamily: "'Courier New',monospace",
-                        border: active ? "1px solid #1200FF" : "1px solid rgba(255,255,255,0.08)",
-                        color: active ? "#f8f8f8" : "rgba(248,248,248,0.55)",
-                        background: active
-                          ? "linear-gradient(180deg,#1200FF,#0a0078)"
-                          : "linear-gradient(180deg,#0f0f15,#08080d)",
-                        boxShadow: active ? "0 0 8px rgba(18,0,255,0.7)" : "none",
-                      }}
-                    >{bk}</button>
-                  );
-                })}
+                display: "flex", justifyContent: "space-between",
+              }}>
+                <span>{FAMILY_NAMES[(FV_BY_STYLE[genStyle]?.[0] ?? 3)]} · {genStyle}</span>
+                <span style={{ opacity: 0.6 }}>BLEND {genBlend}</span>
               </div>
-
-              {/* Style picker grid — 6 cols × 6 rows, each button stylised to its vibe */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 5, marginBottom: 12 }}>
-                {(GEN_STYLES as readonly string[]).map((s) => {
-                  const meta = GEN_STYLE_META[s] ?? { font:"'Courier New',monospace", color:"#ccc", bg:"#111", glow:"#ccc" };
-                  const active = genStyle === s;
-                  return (
-                    <button
-                      key={s}
-                      onClick={() => setGenStyle(s as typeof genStyle)}
-                      title={s}
-                      style={{
-                        padding: "7px 2px 6px",
-                        fontSize: 8,
-                        letterSpacing: "0.8px",
-                        fontWeight: 700,
-                        fontFamily: meta.font,
-                        fontStyle: meta.italic ? "italic" : "normal",
-                        cursor: "pointer",
-                        borderRadius: 5,
-                        border: active ? `1px solid ${meta.glow}` : "1px solid rgba(0,0,0,0.75)",
-                        color: active ? meta.color : `${meta.color}99`,
-                        background: active ? meta.bg : "linear-gradient(135deg,#111118,#0a0a12)",
-                        boxShadow: active
-                          ? `inset 0 1px 0 rgba(255,255,255,0.1), 0 0 8px ${meta.glow}66, 0 0 2px ${meta.glow}99`
-                          : "inset 0 1px 0 rgba(255,255,255,0.03)",
-                        textShadow: active ? `0 0 6px ${meta.glow}` : "none",
-                        transition: "all 0.12s ease",
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "clip",
-                        minWidth: 0,
-                      }}
-                    >{s}</button>
-                  );
-                })}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 6, justifyItems: "center", marginBottom: 10 }}>
+                <Knob label="FAMILY"
+                  value={FV_BY_STYLE[genStyle]?.[0] ?? 3} min={0} max={9} step={1} defaultValue={3}
+                  onChange={(f) => {
+                    const v = FV_BY_STYLE[genStyle]?.[1] ?? 0;
+                    const row = STYLE_BY_FV[f] ?? STYLE_BY_FV[3];
+                    setGenStyle((row[v] ?? row[0]) as GenStyle);
+                  }}
+                />
+                <Knob label="VARIANT"
+                  value={FV_BY_STYLE[genStyle]?.[1] ?? 0} min={0} max={3} step={1} defaultValue={0}
+                  onChange={(v) => {
+                    const f = FV_BY_STYLE[genStyle]?.[0] ?? 3;
+                    const row = STYLE_BY_FV[f] ?? STYLE_BY_FV[3];
+                    setGenStyle((row[v] ?? row[0]) as GenStyle);
+                  }}
+                />
+                <Knob label="BLEND"
+                  value={GEN_BLEND_KEYS.indexOf(genBlend)} min={0} max={GEN_BLEND_KEYS.length - 1} step={1} defaultValue={0}
+                  onChange={(i) => setGenBlend(GEN_BLEND_KEYS[i] as GenBlend)}
+                />
+                <Knob label="RES"     value={genResolution} min={8} max={160} step={1}    defaultValue={48}   onChange={setGenResolution}/>
+                <Knob label="SEED"    value={genSeed}       min={0} max={999} step={1}    defaultValue={7}    onChange={setGenSeed}/>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
-                <Knob label="RES"      value={genResolution}  min={8}  max={160}  step={1}    defaultValue={48}   onChange={setGenResolution}/>
-                <Knob label="DENSITY"  value={genDensity}     min={0}  max={1}    step={0.01} defaultValue={0.55} onChange={setGenDensity}/>
-                <Knob label="SCALE"    value={genScale}       min={0.25} max={4}  step={0.01} defaultValue={1.0}  onChange={setGenScale}/>
-                <Knob label="SPEED"    value={genSpeed}       min={0}  max={3}    step={0.01} defaultValue={0.6}  onChange={setGenSpeed}/>
-                <Knob label="WARP"     value={genWarp}        min={0}  max={1}    step={0.01} defaultValue={0.25} onChange={setGenWarp}/>
-                <Knob label="JITTER"   value={genJitter}      min={0}  max={1}    step={0.01} defaultValue={0.15} onChange={setGenJitter}/>
-                <Knob label="SEED"     value={genSeed}        min={0}  max={999}  step={1}    defaultValue={7}    onChange={setGenSeed}/>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 6, justifyItems: "center" }}>
+                <Knob label="DENSITY" value={genDensity}    min={0}    max={1} step={0.01} defaultValue={0.55} onChange={setGenDensity}/>
+                <Knob label="SCALE"   value={genScale}      min={0.25} max={4} step={0.01} defaultValue={1.0}  onChange={setGenScale}/>
+                <Knob label="SPEED"   value={genSpeed}      min={0}    max={3} step={0.01} defaultValue={0.6}  onChange={setGenSpeed}/>
+                <Knob label="WARP"    value={genWarp}       min={0}    max={1} step={0.01} defaultValue={0.25} onChange={setGenWarp}/>
+                <Knob label="JITTER"  value={genJitter}     min={0}    max={1} step={0.01} defaultValue={0.15} onChange={setGenJitter}/>
               </div>
               <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 12 }}>
                 <SynthSwitch label="INVERT" on={genInvert} onChange={setGenInvert} onLabel="ON" offLabel="OFF"/>
@@ -10650,7 +10605,7 @@ function SynthPanel({
 // Double-click to reset to default. Range mapped across -135°..+135°.
 // ───────────────────────────────────────────────────────────────────────
 function Knob({
-  label, value, min, max, step, defaultValue, onChange, size = 54,
+  label, value, min, max, step, defaultValue, onChange, size = 42,
 }: {
   label: string;
   value: number;
