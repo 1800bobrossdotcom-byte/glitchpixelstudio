@@ -5941,6 +5941,12 @@ export default function SpectraAfter() {
   }, [audioActive]);
 
   // ── Draw overlay rendering ────────────────────────────────
+  // The visible draw canvas is *not* a paint surface — it is a UI hint
+  // showing where the FX mask is active. Painted regions appear as a soft
+  // translucent white highlight with a subtle outline so the user can see
+  // their selection without the canvas looking like a literal pen drawing.
+  // The actual mask (full-opacity white into maskCanvas, used by the GLSL
+  // sampler `uMask`) is built immediately below this block.
   const renderDrawOverlay = useCallback(() => {
     try {
     const dc = drawCanvasRef.current;
@@ -5949,84 +5955,20 @@ export default function SpectraAfter() {
     const ctx = dc.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, dc.width, dc.height);
-    const seededRand = (n: number) => (Math.sin(n * 78.233 + 43758.5453) * 43758.5453 % 1 + 1) % 1;
 
+    // Visible indicator: low-alpha white fill + thin outline. Width and
+    // path geometry still come from the user's stroke, but colour/brush
+    // styling is intentionally ignored — this is a region marker, not a
+    // painted line. Keeps the UI from looking like a pen tool.
     const drawSingleStroke = (stroke: DrawStroke) => {
       if (stroke.points.length < 2) return;
-      const brush = stroke.brush ?? "round";
       const w = stroke.width;
       ctx.save();
-      ctx.strokeStyle = stroke.color;
-      ctx.fillStyle = stroke.color;
-
-      if (brush === "spray") {
-        for (let i = 0; i < stroke.points.length; i++) {
-          const pt = stroke.points[i];
-          const r = w * 1.5;
-          ctx.globalAlpha = 1;
-          for (let j = 0; j < 9; j++) {
-            const h1 = seededRand(i * 17 + j * 31 + 1234);
-            const h2 = seededRand(i * 13 + j * 29 + 567);
-            const angle = h1 * Math.PI * 2;
-            const dist = h2 * r;
-            ctx.beginPath();
-            ctx.arc(pt.x * dc.width + Math.cos(angle) * dist, pt.y * dc.height + Math.sin(angle) * dist, Math.max(1, w * 0.13), 0, Math.PI * 2);
-            ctx.fill();
-          }
-        }
-        ctx.restore();
-        return;
-      }
-
-      if (brush === "neon") {
-        ctx.globalAlpha = 1;
-        ctx.shadowColor = stroke.color;
-        ctx.shadowBlur = w * 4;
-        ctx.lineCap = "round"; ctx.lineJoin = "round";
-        ctx.lineWidth = w * 0.65;
-        ctx.beginPath();
-        ctx.moveTo(stroke.points[0].x * dc.width, stroke.points[0].y * dc.height);
-        for (let i = 1; i < stroke.points.length; i++) {
-          const mx = (stroke.points[i-1].x + stroke.points[i].x) / 2 * dc.width;
-          const my = (stroke.points[i-1].y + stroke.points[i].y) / 2 * dc.height;
-          ctx.quadraticCurveTo(stroke.points[i-1].x*dc.width, stroke.points[i-1].y*dc.height, mx, my);
-        }
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-        ctx.strokeStyle = "#fff";
-        ctx.shadowBlur = w * 1.5;
-        ctx.lineWidth = w * 0.14;
-        ctx.beginPath();
-        ctx.moveTo(stroke.points[0].x * dc.width, stroke.points[0].y * dc.height);
-        for (let i = 1; i < stroke.points.length; i++) {
-          const mx = (stroke.points[i-1].x + stroke.points[i].x) / 2 * dc.width;
-          const my = (stroke.points[i-1].y + stroke.points[i].y) / 2 * dc.height;
-          ctx.quadraticCurveTo(stroke.points[i-1].x*dc.width, stroke.points[i-1].y*dc.height, mx, my);
-        }
-        ctx.stroke();
-        ctx.restore();
-        return;
-      }
-
-      if (brush === "wide") {
-        ctx.globalAlpha = 1;
-        ctx.lineCap = "square"; ctx.lineJoin = "round";
-        ctx.lineWidth = w * 2.5;
-        ctx.beginPath();
-        ctx.moveTo(stroke.points[0].x * dc.width, stroke.points[0].y * dc.height);
-        for (let i = 1; i < stroke.points.length; i++) {
-          const mx = (stroke.points[i-1].x + stroke.points[i].x) / 2 * dc.width;
-          const my = (stroke.points[i-1].y + stroke.points[i].y) / 2 * dc.height;
-          ctx.quadraticCurveTo(stroke.points[i-1].x*dc.width, stroke.points[i-1].y*dc.height, mx, my);
-        }
-        ctx.stroke();
-        ctx.restore();
-        return;
-      }
-
-      // Default: round
-      ctx.globalAlpha = 1;
       ctx.lineCap = "round"; ctx.lineJoin = "round";
+
+      // Soft translucent fill (the FX-active region).
+      ctx.globalAlpha = 0.22 * (stroke.opacity ?? 1);
+      ctx.strokeStyle = "#ffffff";
       ctx.lineWidth = w;
       ctx.beginPath();
       ctx.moveTo(stroke.points[0].x * dc.width, stroke.points[0].y * dc.height);
@@ -6036,6 +5978,13 @@ export default function SpectraAfter() {
         ctx.quadraticCurveTo(stroke.points[i-1].x*dc.width, stroke.points[i-1].y*dc.height, mx, my);
       }
       ctx.stroke();
+
+      // Thin crisp outline so the boundary is readable on busy images.
+      ctx.globalAlpha = 0.55 * (stroke.opacity ?? 1);
+      ctx.strokeStyle = "rgba(231,174,255,0.9)";
+      ctx.lineWidth = Math.max(1, w * 0.08);
+      ctx.stroke();
+
       ctx.restore();
     };
 
@@ -6082,12 +6031,12 @@ export default function SpectraAfter() {
     }
     mctx.restore();
 
-    // Enable masked FX only when draw mode is on and there is painted content.
-    const hasMaskContent = drawActive && (
-      strokes.some(stroke => stroke.points.length > 1) ||
-      !!(cs && cs.points.length > 1)
-    );
-    touchRef.current.active = hasMaskContent;
+    // While DRAW mode is on, the shader must always sample the mask — even
+    // when it is empty — so masked FX (kaleido, mandala warps, etc.) only
+    // appear inside painted regions. If we instead set this to false on an
+    // empty mask, the shader falls back to mask=1.0 and every masked FX
+    // floods the whole frame as a ghost background. Empty mask = no FX.
+    touchRef.current.active = drawActive;
     } catch (err) {
       reportDrawCrash("renderDrawOverlay", err);
     }
