@@ -4130,7 +4130,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.31";
+export const APP_VERSION = "1.2.32";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -9656,29 +9656,6 @@ export default function SpectraAfter() {
                     alignSelf: "center", height: 30,
                   }}
                 >⟲ RANDOM</button>
-              </div>
-
-              {/* ── AUTOMATE ─ LFO drift across all gen knobs (generator only) */}
-              <div style={{
-                marginTop: 14, padding: "10px 8px 8px",
-                border: "1px solid rgba(255,210,140,0.35)",
-                borderRadius: 6,
-                background: "linear-gradient(180deg,#1a0f04 0%,#0a0602 100%)",
-                boxShadow: automateOn ? "0 0 12px rgba(255,140,0,0.45) inset" : "none",
-              }}>
-                <div style={{
-                  fontSize: 9, letterSpacing: "2px", textAlign: "center",
-                  color: "rgba(255,180,90,0.95)", marginBottom: 8,
-                  textShadow: automateOn ? "0 0 8px rgba(255,140,0,0.85)" : "none",
-                }}>AUTOMATE · GEN LFO</div>
-                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 12, alignItems: "center" }}>
-                  <SynthSwitch label="AUTO" on={automateOn} onChange={setAutomateOn} onLabel="RUN" offLabel="OFF"/>
-                  <Knob label="RATE" value={automateRate} min={0} max={1} step={0.01} defaultValue={0.45} onChange={setAutomateRate}/>
-                </div>
-                <div style={{ display: "flex", justifyContent: "center", gap: 14, marginTop: 8 }}>
-                  <SynthSwitch label="STYLE"  on={automateStyles} onChange={setAutomateStyles} onLabel="FLIP" offLabel="─"/>
-                  <SynthSwitch label="BLEND"  on={automateBlend}  onChange={setAutomateBlend}  onLabel="FLIP" offLabel="─"/>
-                </div>
               </div>
             </SynthPanel>
 
