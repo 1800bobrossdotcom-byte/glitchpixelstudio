@@ -4217,7 +4217,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.44";
+export const APP_VERSION = "1.2.45";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4585,7 +4585,11 @@ export default function SpectraAfter() {
   //    Off by default — opt-in display tweak. Auto-disables tilt parallax
   //    while recording or in LOW POWER to keep captures and battery clean.
   // Glass mode is the default — full-screen FX with translucent panel overlay.
-  const [neonMode, setNeonMode] = useState(true);
+  // Glass/neon mode is now permanent — the toggle button was removed in
+  // v1.2.45 since glass-bottom-boat is the only intended look. Keep the
+  // boolean as a const so existing className/effect branches continue to
+  // work without rippling changes through the file.
+  const neonMode = true;
   const tiltRootRef = useRef<HTMLDivElement>(null);
   // ── FACE FX cycle: universal mask that gates ALL FX inside or
   //    outside an AI-segmented person. Uses MediaPipe Tasks Vision
@@ -9044,12 +9048,6 @@ export default function SpectraAfter() {
             title="Audio-Reactive FX"
           >{audioActive ? "🔊" : "🔈"}</button>
           <button
-            className={"sp-btn" + (neonMode ? " topnav-neon-on" : "")}
-            onClick={() => setNeonMode(v => !v)}
-            style={{ ...topBtnStyle, fontSize: 12, letterSpacing: "1px" }}
-            title="NEON MODE — glass UI + tilt parallax (experimental)"
-          >✦</button>
-          <button
             className="sp-btn"
             onClick={cycleFaceFx}
             style={{
@@ -10293,26 +10291,29 @@ const topBtnStyle: React.CSSProperties = {
 
 const modeBtnStyle: React.CSSProperties = {
   background: `linear-gradient(170deg, ${T.bg3} 0%, ${T.bg1} 55%, ${T.bg2} 100%)`,
-  border: `2px solid ${T.border}`,
-  borderBottom: `4px solid #090705`,
-  borderRadius: 12,
+  border: `1px solid ${T.border}`,
+  borderBottom: `2px solid #090705`,
+  borderRadius: 8,
   color: T.creamDim,
-  padding: "12px 8px",
+  // Slim chip footprint (was 12px/8px @ minHeight 54). Tiles still read
+  // as press-targets (>=32px tall) but stack 40% denser so 4- and 5-col
+  // grids no longer dominate the carousel y-axis.
+  padding: "6px 6px",
   fontFamily: "'Courier New', monospace",
-  fontSize: 10,
-  letterSpacing: "1.5px",
+  fontSize: 9,
+  letterSpacing: "1.2px",
   textTransform: "uppercase",
   cursor: "pointer",
-  minWidth: 54, minHeight: 54,
-  boxShadow: `0 4px 12px rgba(0,0,0,0.5), ${T.bevel}`,
+  minWidth: 40, minHeight: 32,
+  boxShadow: `0 2px 6px rgba(0,0,0,0.45), ${T.bevel}`,
   transition: "all 0.12s ease",
-  lineHeight: 1.2,
+  lineHeight: 1.1,
 };
 
 const modeBtnActive: React.CSSProperties = {
   background: `linear-gradient(170deg, #2E2008 0%, #1A1205 55%, #251A07 100%)`,
-  border: `2px solid ${T.amber}`,
-  borderBottom: `4px solid #090705`,
+  border: `1px solid ${T.amber}`,
+  borderBottom: `2px solid #090705`,
   color: T.ochre,
   boxShadow: `${T.glowActive}, ${T.bevel}`,
   textShadow: `0 0 10px rgba(232,160,32,0.7)`,
