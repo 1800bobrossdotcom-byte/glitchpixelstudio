@@ -4020,31 +4020,88 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 //  user can route it to Photos / Files / a chat app. Without this the
 //  on-device download anchor is silently ignored on the WebView.
 // ══════════════════════════════════════════════════════════════
-//  TIER MATRIX — what FREE vs PRO unlocks. Single source of truth for
-//  the EXPORT panel info modal. Adjust APP_TIER below to gate features.
-//  When billing is wired in, swap the const for a hook that reads the
-//  user's entitlement from the store/server.
+//  ENTITLEMENT MODEL — paid one-time vs. studio subscription.
+//
+//  There is NO free tier. The app requires a $3.99 one-time purchase
+//  ("paid") OR a $6.90/mo subscription ("studio") to be unlocked.
+//
+//  GRACE PERIOD: every install gets 3 minutes of CUMULATIVE usage time
+//  (counted only while the app is foregrounded) before the lock screen
+//  appears. The remaining grace ms is persisted to localStorage so closing
+//  and re-opening the app does not reset it.
+//
+//  Until billing is wired (next release), entitlement can be unlocked
+//  manually with the dev codes:
+//    "4200" → paid (lifetime)
+//    "6900" → studio (subscription)
+//    "0000" → reset to locked
+//  Tap the version label 5 times on the lock screen to reveal the input.
 // ══════════════════════════════════════════════════════════════
-export type AppTier = "FREE" | "PRO";
-// Default to PRO during development so all features remain functional.
-// Set to "FREE" to preview the locked experience.
-export const APP_TIER: AppTier = "PRO";
+export type Entitlement = "paid" | "studio" | null;
+
+export const APP_VERSION = "1.2.19";
+
+const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
+const ENT_KEY = "gps.entitlement";
+const GRACE_KEY = "gps.graceRemainingMs";
+const GRACE_INSTALL_KEY = "gps.graceInstallTs";
+
+function loadEntitlement(): Entitlement {
+  try {
+    const v = localStorage.getItem(ENT_KEY);
+    if (v === "paid" || v === "studio") return v;
+  } catch { /* ignore */ }
+  return null;
+}
+function saveEntitlement(ent: Entitlement) {
+  try {
+    if (ent === null) localStorage.removeItem(ENT_KEY);
+    else localStorage.setItem(ENT_KEY, ent);
+  } catch { /* ignore */ }
+}
+function loadGraceRemaining(): number {
+  try {
+    const raw = localStorage.getItem(GRACE_KEY);
+    if (raw === null) {
+      // First launch — seed full grace and stamp install time.
+      localStorage.setItem(GRACE_KEY, String(GRACE_TOTAL_MS));
+      localStorage.setItem(GRACE_INSTALL_KEY, String(Date.now()));
+      return GRACE_TOTAL_MS;
+    }
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.min(n, GRACE_TOTAL_MS);
+  } catch { return GRACE_TOTAL_MS; }
+}
+function saveGraceRemaining(ms: number) {
+  try { localStorage.setItem(GRACE_KEY, String(Math.max(0, ms | 0))); } catch { /* ignore */ }
+}
+
 export const TIER_FEATURES = {
-  free: [
-    "All visual modes (PXL, MOSH, glitch rack, generator)",
-    "DRAW: paint where the glitch FX appear, on uploaded images (Glitch!-style)",
-    "AUTOMATE LFO + presets stored on device",
-    "Up to 30s recording · standard quality",
-    "Save / share via system share sheet",
-    "Microphone-reactive audio",
+  paid: [
+    "All 14 visual modes (NIGHT, THERMAL, EDGE, MELT, MIRROR …)",
+    "PXL · MOSH · BOTH layer modes + full PIXEL SORT rack",
+    "RUPTURE · H-SYNC RGBNDR rack",
+    "FX SETTINGS: full DISRUPT / KALEIDO controls",
+    "Generator (incommensurate-flow synth source)",
+    "DRAW mode — paint where FX appear",
+    "FACE FX — face detection, FACE-ONLY / BG-ONLY, face-reactive MELT",
+    "Audio reactivity (mic → bass / treble / beat)",
+    "Presets: save · load · export · quick-slots",
+    "Unlimited recording length, photo + GIF + video export",
+    "No watermark · saves to Documents/Spectra/",
+    "Lifetime updates to the core app",
   ],
-  pro: [
-    "Direct save to phone gallery (no share sheet)",
-    "Up to 60s recording · ultra quality (1440p)",
-    "All blend modes (MAX/MIN/XOR/ADD/SUB/DIFF/MUL)",
-    "SAVE / LOAD .gpsproj project files",
-    "Unlimited preset slots + cloud-sync (coming)",
-    "Priority bug-report routing",
+  studio: [
+    "Everything in PAID, plus rolling bonus panels:",
+    "AUDIO REACT XL — per-knob LFO/envelope routing",
+    "SHADER LAB — paste custom GLSL passes",
+    "CLOUD PRESETS — sync + public gallery",
+    "AI STYLE — on-device style transfer",
+    "MULTI-CAM — overlay two camera feeds",
+    "MIDI IN — bind hardware controllers to knobs",
+    "TIMELINE — keyframe automation lane",
+    "EXPORT XL — 4K · ProRes · alpha exports",
   ],
 } as const;
 // ══════════════════════════════════════════════════════════════
@@ -4251,6 +4308,68 @@ export default function SpectraAfter() {
   useEffect(() => { lowPowerRef.current = lowPowerOn; }, [lowPowerOn]);
   // ── TIER info modal toggle (read-only feature matrix).
   const [tierInfoOpen, setTierInfoOpen] = useState(false);
+
+  // ── Entitlement + grace period.
+  // entitlement: null = locked, "paid" = lifetime, "studio" = subscriber.
+  // graceRemaining: ms of free usage left (counts down only while app open).
+  // locked: derived — true when no entitlement AND no grace remaining.
+  const [entitlement, setEntitlement] = useState<Entitlement>(() =>
+    (typeof window !== "undefined" ? loadEntitlement() : null));
+  const [graceRemaining, setGraceRemaining] = useState<number>(() =>
+    (typeof window !== "undefined" ? loadGraceRemaining() : GRACE_TOTAL_MS));
+  const [unlockInputVisible, setUnlockInputVisible] = useState(false);
+  const [unlockCode, setUnlockCode] = useState("");
+  const versionTapsRef = useRef(0);
+  const versionTapTimerRef = useRef<number | null>(null);
+  const locked = entitlement === null && graceRemaining <= 0;
+
+  // Tick the grace counter once per second while foregrounded and unlocked.
+  // Pauses automatically when the tab/app is hidden (visibilitychange).
+  useEffect(() => {
+    if (entitlement !== null) return; // already unlocked → no tick needed
+    if (graceRemaining <= 0) return;  // already exhausted → lock screen will show
+    let last = Date.now();
+    let stopped = false;
+    const tick = () => {
+      if (stopped) return;
+      if (document.visibilityState !== "visible") { last = Date.now(); return; }
+      const now = Date.now();
+      const dt = now - last;
+      last = now;
+      setGraceRemaining(prev => {
+        const next = Math.max(0, prev - dt);
+        saveGraceRemaining(next);
+        return next;
+      });
+    };
+    const id = window.setInterval(tick, 1000);
+    const onVis = () => { last = Date.now(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [entitlement, graceRemaining]);
+
+  // Apply unlock code (dev path; replaced by Play Billing in next release).
+  const applyUnlockCode = useCallback((code: string) => {
+    const trimmed = code.trim();
+    if (trimmed === "4200") { saveEntitlement("paid"); setEntitlement("paid"); setUnlockInputVisible(false); setUnlockCode(""); return; }
+    if (trimmed === "6900") { saveEntitlement("studio"); setEntitlement("studio"); setUnlockInputVisible(false); setUnlockCode(""); return; }
+    if (trimmed === "0000") { saveEntitlement(null); setEntitlement(null); setUnlockCode(""); return; }
+    // Wrong code — clear input but stay open.
+    setUnlockCode("");
+  }, []);
+  const onVersionTap = useCallback(() => {
+    versionTapsRef.current += 1;
+    if (versionTapTimerRef.current !== null) window.clearTimeout(versionTapTimerRef.current);
+    versionTapTimerRef.current = window.setTimeout(() => { versionTapsRef.current = 0; }, 1500);
+    if (versionTapsRef.current >= 5) {
+      versionTapsRef.current = 0;
+      setUnlockInputVisible(true);
+    }
+  }, []);
 
   const genStyleRef = useRef<GenStyle>("BAYER");
   const genResolutionRef = useRef(48);
@@ -7437,7 +7556,7 @@ export default function SpectraAfter() {
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <div style={{ fontSize: 14, letterSpacing: "3px", color: "rgba(255,210,140,0.95)", textShadow: "0 0 8px rgba(232,160,32,0.7)" }}>
-                SPECTRA · TIERS
+                GPS · PLANS
               </div>
               <button
                 onClick={() => setTierInfoOpen(false)}
@@ -7450,28 +7569,139 @@ export default function SpectraAfter() {
               >CLOSE ✕</button>
             </div>
             <div style={{ fontSize: 10, letterSpacing: "1.6px", color: "rgba(200,180,220,0.6)", marginBottom: 14 }}>
-              Current build: <span style={{ color: APP_TIER === "PRO" ? "rgba(255,210,140,0.95)" : "rgba(231,174,255,0.95)" }}>{APP_TIER}</span>
+              Status: <span style={{ color: entitlement === "studio" ? "rgba(120,255,200,0.95)" : entitlement === "paid" ? "rgba(255,210,140,0.95)" : "rgba(231,174,255,0.95)" }}>
+                {entitlement === "studio" ? "STUDIO subscriber" : entitlement === "paid" ? "PAID (lifetime)" : `LOCKED — ${Math.ceil(graceRemaining/1000)}s grace left`}
+              </span>
             </div>
 
             <div style={{ marginBottom: 18 }}>
-              <div style={{ fontSize: 11, letterSpacing: "2px", color: "rgba(231,174,255,0.95)", marginBottom: 8 }}>FREE</div>
-              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, lineHeight: 1.6, color: "rgba(231,210,255,0.85)" }}>
-                {TIER_FEATURES.free.map((f) => <li key={f}>{f}</li>)}
+              <div style={{ fontSize: 11, letterSpacing: "2px", color: "rgba(255,210,140,0.95)", marginBottom: 8, textShadow: "0 0 6px rgba(232,160,32,0.55)" }}>GPS — $3.99 lifetime</div>
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, lineHeight: 1.6, color: "rgba(255,235,205,0.92)" }}>
+                {TIER_FEATURES.paid.map((f) => <li key={f}>{f}</li>)}
               </ul>
             </div>
 
             <div>
-              <div style={{ fontSize: 11, letterSpacing: "2px", color: "rgba(255,210,140,0.95)", marginBottom: 8, textShadow: "0 0 6px rgba(232,160,32,0.55)" }}>PRO</div>
-              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, lineHeight: 1.6, color: "rgba(255,235,205,0.92)" }}>
-                {TIER_FEATURES.pro.map((f) => <li key={f}>{f}</li>)}
+              <div style={{ fontSize: 11, letterSpacing: "2px", color: "rgba(120,255,200,0.95)", marginBottom: 8, textShadow: "0 0 6px rgba(40,200,140,0.45)" }}>GPS STUDIO — $6.90 / month</div>
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, lineHeight: 1.6, color: "rgba(220,255,235,0.9)" }}>
+                {TIER_FEATURES.studio.map((f) => <li key={f}>{f}</li>)}
               </ul>
             </div>
 
             <div style={{ marginTop: 18, fontSize: 9, letterSpacing: "1.4px", color: "rgba(200,180,220,0.55)", textTransform: "uppercase", lineHeight: 1.6 }}>
-              Note: this build runs in {APP_TIER} mode. Billing + entitlement
-              checks ship in a later update — features are not paywalled yet.
+              In-app purchase wires up in the next update. For now, install
+              gets a 3-minute cumulative grace period before the lock screen.
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ── LOCK SCREEN — shown when grace expires and no entitlement.
+            Blocks all interaction with the app behind it. */}
+      {locked && (
+        <div
+          style={{
+            position: "fixed", inset: 0, zIndex: 9999,
+            background: "linear-gradient(180deg,#070213 0%,#1a0530 60%,#03000c 100%)",
+            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+            padding: 24, fontFamily: "'Courier New',monospace", color: "rgba(231,210,255,0.95)",
+            overflowY: "auto",
+          }}
+        >
+          <div style={{ fontSize: 12, letterSpacing: "5px", color: "rgba(231,174,255,0.55)", marginBottom: 6 }}>GLITCH PHOTO STUDIO</div>
+          <div style={{ fontSize: 28, letterSpacing: "6px", color: "rgba(255,210,140,0.98)", textShadow: "0 0 14px rgba(232,160,32,0.7)", marginBottom: 4 }}>LOCKED</div>
+          <div style={{ fontSize: 10, letterSpacing: "1.6px", color: "rgba(200,180,220,0.6)", marginBottom: 22, textAlign: "center", maxWidth: 320 }}>
+            Your 3-minute trial has ended. Unlock GPS to keep glitching.
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%", maxWidth: 340 }}>
+            <button
+              onClick={() => {
+                // Placeholder — real Play Billing wires in next release.
+                alert("In-app purchase ships in the next update. For now, tap GPS v" + APP_VERSION + " 5 times to enter a dev unlock code.");
+              }}
+              style={{
+                fontFamily: "'Courier New',monospace", fontSize: 14, letterSpacing: "3px",
+                padding: "16px 18px", borderRadius: 6, cursor: "pointer",
+                background: "linear-gradient(180deg,rgba(255,210,140,0.18),rgba(232,160,32,0.08))",
+                border: "1px solid rgba(255,210,140,0.7)",
+                color: "rgba(255,235,205,0.98)",
+                textShadow: "0 0 6px rgba(232,160,32,0.55)",
+              }}
+            >BUY GPS — $3.99</button>
+            <button
+              onClick={() => {
+                alert("Subscriptions ship in the next update. For now, tap GPS v" + APP_VERSION + " 5 times to enter a dev unlock code.");
+              }}
+              style={{
+                fontFamily: "'Courier New',monospace", fontSize: 12, letterSpacing: "2.5px",
+                padding: "12px 16px", borderRadius: 6, cursor: "pointer",
+                background: "linear-gradient(180deg,rgba(120,255,200,0.14),rgba(40,200,140,0.06))",
+                border: "1px solid rgba(120,255,200,0.55)",
+                color: "rgba(220,255,235,0.95)",
+              }}
+            >SUBSCRIBE TO STUDIO — $6.90 / MO</button>
+            <button
+              onClick={() => alert("Restore Purchases will check the Play Store for prior entitlements once billing is wired up.")}
+              style={{
+                fontFamily: "'Courier New',monospace", fontSize: 11, letterSpacing: "2px",
+                padding: "10px 14px", borderRadius: 6, cursor: "pointer",
+                background: "transparent",
+                border: "1px solid rgba(231,174,255,0.4)",
+                color: "rgba(231,174,255,0.85)",
+              }}
+            >RESTORE PURCHASES</button>
+            <button
+              onClick={() => setTierInfoOpen(true)}
+              style={{
+                fontFamily: "'Courier New',monospace", fontSize: 10, letterSpacing: "1.8px",
+                padding: "8px 12px", borderRadius: 6, cursor: "pointer",
+                background: "transparent",
+                border: "1px dashed rgba(200,180,220,0.3)",
+                color: "rgba(200,180,220,0.7)",
+              }}
+            >SEE WHAT&apos;S INCLUDED</button>
+          </div>
+
+          {unlockInputVisible && (
+            <div style={{ marginTop: 24, width: "100%", maxWidth: 340, display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ fontSize: 9, letterSpacing: "1.6px", color: "rgba(200,180,220,0.6)", textTransform: "uppercase" }}>Dev unlock code</div>
+              <input
+                value={unlockCode}
+                onChange={(e) => setUnlockCode(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") applyUnlockCode(unlockCode); }}
+                inputMode="numeric"
+                autoFocus
+                style={{
+                  fontFamily: "'Courier New',monospace", fontSize: 16, letterSpacing: "4px",
+                  padding: "10px 12px", borderRadius: 4,
+                  background: "rgba(8,2,20,0.85)",
+                  border: "1px solid rgba(231,174,255,0.5)",
+                  color: "rgba(255,235,205,0.98)", outline: "none", textAlign: "center",
+                }}
+                placeholder="••••"
+              />
+              <button
+                onClick={() => applyUnlockCode(unlockCode)}
+                style={{
+                  fontFamily: "'Courier New',monospace", fontSize: 11, letterSpacing: "2px",
+                  padding: "8px 12px", borderRadius: 4, cursor: "pointer",
+                  background: "rgba(231,174,255,0.12)",
+                  border: "1px solid rgba(231,174,255,0.5)",
+                  color: "rgba(231,210,255,0.95)",
+                }}
+              >APPLY</button>
+            </div>
+          )}
+
+          <div
+            onClick={onVersionTap}
+            style={{
+              marginTop: 28, fontSize: 9, letterSpacing: "1.4px",
+              color: "rgba(200,180,220,0.45)", cursor: "pointer", userSelect: "none",
+            }}
+            title="tap 5 times for dev unlock"
+          >GPS v{APP_VERSION}</div>
         </div>
       )}
 
@@ -8745,16 +8975,16 @@ export default function SpectraAfter() {
                 <button
                   className="sp-tile"
                   onClick={() => setTierInfoOpen(true)}
-                  title="What's free vs PRO"
+                  title="View plans"
                   style={{
                     ...modeBtnStyle, flex: 1, fontSize: 10, minWidth: 110,
-                    color: APP_TIER === "PRO" ? "rgba(255,210,140,0.98)" : "rgba(231,174,255,0.95)",
-                    textShadow: APP_TIER === "PRO" ? "0 0 6px rgba(232,160,32,0.7)" : "none",
+                    color: entitlement === "studio" ? "rgba(120,255,200,0.98)" : entitlement === "paid" ? "rgba(255,210,140,0.98)" : "rgba(231,174,255,0.95)",
+                    textShadow: entitlement ? "0 0 6px rgba(232,160,32,0.7)" : "none",
                   }}
-                >ℹ {APP_TIER === "PRO" ? "PRO TIER" : "FREE TIER"}</button>
+                >ℹ {entitlement === "studio" ? "STUDIO" : entitlement === "paid" ? "PAID" : `GRACE ${Math.ceil(graceRemaining/1000)}s`}</button>
               </div>
               <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(200,180,220,0.5)", textAlign: "center", textTransform: "uppercase", marginTop: 2 }}>
-                Phone running hot? Try LOW POWER. · Tap PRO/FREE to see what's included.
+                Phone running hot? Try LOW POWER. · Tap status badge to see plans.
               </div>
             </div>
           </Section>
