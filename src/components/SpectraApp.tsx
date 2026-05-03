@@ -2605,7 +2605,13 @@ void main() {
       vec3 tapeSmp = texture2D(uCamera, clamp(uv + vec2(shiftX, 0.0), 0.0, 1.0)).rgb;
       sortedCol = mix(sortedCol, tapeSmp, tapeWeight * 0.65);
     }
-    sortBlend = uSortAmt * mask * ((srcInBand || paintAll) ? 1.0 : 0.0);
+    // In-band pixels are FULLY replaced with the sorted colour. uSortAmt
+    // only gates whether the sort fires at all (and feeds the streak-length
+    // math above). Previously sortBlend was uSortAmt * mask * inBand so
+    // at the default knob value (~0.65) you only saw a 65% mix of the
+    // sorted pixels on top of the originals, which read as a translucent
+    // overlay instead of a real pixel sort.
+    sortBlend = mask * smoothstep(0.0, 0.05, uSortAmt) * ((srcInBand || paintAll) ? 1.0 : 0.0);
   }
   // 2. Scanline tear/glitch
   if (uScanTear * mask > 0.001) {
@@ -4130,7 +4136,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.40";
+export const APP_VERSION = "1.2.42";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4380,11 +4386,11 @@ export default function SpectraAfter() {
 
   // ── Upload source (image / gif / short video) — feeds the same texture path
   type SourceMode = "camera" | "upload" | "generator";
-  // Boot policy: start in generator mode (blank canvas, no camera prompt).
-  const [sourceMode, setSourceMode] = useState<SourceMode>("generator");
+  // Boot policy: start in CAMERA mode so the live image is the default canvas.
+  const [sourceMode, setSourceMode] = useState<SourceMode>("camera");
   const [uploadName, setUploadName] = useState<string | null>(null);
   const [uploadKind, setUploadKind] = useState<"image" | "video" | null>(null);
-  const sourceModeRef = useRef<SourceMode>("generator");
+  const sourceModeRef = useRef<SourceMode>("camera");
   const uploadImgRef = useRef<HTMLImageElement | null>(null);
   const uploadVideoRef = useRef<HTMLVideoElement | null>(null);
   const uploadObjectUrlRef = useRef<string | null>(null);
@@ -6696,41 +6702,24 @@ export default function SpectraAfter() {
       && fboARef.current !== null && fboBRef.current !== null
       && fboTexARef.current !== null && fboTexBRef.current !== null;
     if (useCombo) {
-      // Only render armed layers. Modes like MOSH (9) have a non-zero
-      // intensity floor (`0.3 + fxA*0.7`) inside the shader, so passing
-      // an unarmed layer through still drips a translucent ghost over
-      // the camera — that's what made PXL look like "an inverted
-      // chunk" instead of a real pixel-sort. Skipping silent layers
-      // entirely keeps PXL's output untouched on the way to the screen.
-      const armedLayers = liveLayers.filter((L) => (L.gain ?? 0) > 0.02);
-      for (let i = 0; i < armedLayers.length; i++) {
-        const layer = armedLayers[i];
-        const isLast = i === armedLayers.length - 1;
-        gl.activeTexture(gl.TEXTURE0);
-        if (i === 0) {
-          gl.bindTexture(gl.TEXTURE_2D, curTex);
-        } else {
-          // Previous draw went to fboA when i was odd (write A on i=0,2,..; read A on i=1,3,..)
-          const prevFboTex = (i % 2 === 1) ? fboTexARef.current : fboTexBRef.current;
-          gl.bindTexture(gl.TEXTURE_2D, prevFboTex);
-        }
-        const lmode = layer.mode as ModeId;
-        gl.uniform1i(u.uMode, lmode);
-        gl.uniform1f(u.uGain, layer.gain);
-        const packed = packParams(lmode, paramsByModeRef.current[lmode] ?? defaultsForMode(lmode));
-        if (u.uModeParams) gl.uniform1fv(u.uModeParams, packed);
-        if (isLast) {
-          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        } else {
-          // Write A on even i, B on odd i
-          gl.bindFramebuffer(gl.FRAMEBUFFER, (i % 2 === 0) ? fboARef.current : fboBRef.current);
-        }
-        gl.viewport(0, 0, canvas.width, canvas.height);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-      }
-      // Restore TEXTURE0 → camera tex for the next-frame copy step below
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, curTex);
+      // UNIFIED SIGNAL PASS: instead of ping-ponging PXL → MOSH as two
+      // discrete framebuffer hops (which made each FX look like a
+      // separate translucent layer stacked on top of the previous one),
+      // render a SINGLE shader invocation in mode 0 (NORMAL). The
+      // pre-mode color stage of the shader already routes EVERY rack
+      // uniform — uSortAmt (PIXEL SORT), uDatamosh (DATAMOSH), uRGBDrift,
+      // uScanTear, uBlockGlitch, uLiquid, uKaleido, uDisrupt … — into
+      // the same `color` value before the mode switch. Driving them all
+      // at once in one pass means the pixel-sort streaks and datamosh
+      // smear inform each other inside one signal instead of one being
+      // baked into a texture that the next pass merely paints over.
+      gl.uniform1i(u.uMode, 0);
+      gl.uniform1f(u.uGain, gainRef.current);
+      const packed0 = packParams(0 as ModeId, paramsByModeRef.current[0 as ModeId] ?? defaultsForMode(0 as ModeId));
+      if (u.uModeParams) gl.uniform1fv(u.uModeParams, packed0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, canvas.width, canvas.height);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     } else {
       gl.uniform1i(u.uMode, modeRef.current);
       gl.uniform1f(u.uGain, gainRef.current);
@@ -8044,12 +8033,12 @@ export default function SpectraAfter() {
     try {
       const s = JSON.parse(raw) as SessionStateV1;
       if (!s || typeof s !== "object") return;
-      // Spectra startup policy: boot into the autonomous generator (no camera prompt).
-      // Default palette is monochrome with auto color-cycle armed.
+      // Spectra startup policy: boot into the live camera so PXL/MOSH and the
+      // FX rack always have a real image to chew on by default.
       setMode(0);
       setComboMode(true);
       setComboLayers([{mode:7,gain:1},{mode:9,gain:1}]);
-      setSourceMode("generator");
+      setSourceMode("camera");
       setGenPalette("MONO");
       setGenAutoCycle(false);
       setCameraFacing("environment");
