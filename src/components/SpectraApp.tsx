@@ -4083,7 +4083,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.22";
+export const APP_VERSION = "1.2.23";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4356,6 +4356,25 @@ export default function SpectraAfter() {
   //    while recording or in LOW POWER to keep captures and battery clean.
   const [neonMode, setNeonMode] = useState(false);
   const tiltRootRef = useRef<HTMLDivElement>(null);
+  // ── FACE FX cycle (shader integration arrives in v1.3.0):
+  //    OFF  → no face-driven masking
+  //    FACE → only the face area receives FX, background stays clean
+  //    BG   → only the background receives FX, face stays clean
+  type FaceFxMode = "OFF" | "FACE" | "BG";
+  const [faceFxMode, setFaceFxMode] = useState<FaceFxMode>("OFF");
+  const [faceFxToast, setFaceFxToast] = useState<string | null>(null);
+  const cycleFaceFx = useCallback(() => {
+    setFaceFxMode(m => {
+      const next: FaceFxMode = m === "OFF" ? "FACE" : m === "FACE" ? "BG" : "OFF";
+      setFaceFxToast(
+        next === "OFF" ? "FACE FX · OFF"
+        : next === "FACE" ? "FACE FX · FACE-ONLY (shader lands in v1.3.0)"
+        : "FACE FX · BG-ONLY (shader lands in v1.3.0)"
+      );
+      window.setTimeout(() => setFaceFxToast(null), 2200);
+      return next;
+    });
+  }, []);
   // ── TIER info modal toggle (read-only feature matrix).
   const [tierInfoOpen, setTierInfoOpen] = useState(false);
 
@@ -7681,13 +7700,31 @@ export default function SpectraAfter() {
       style={{ fontFamily: "'Courier New', monospace", background: "#000" }}
     >
       <style>{`
-        /* ── NEON MODE — glass UI + tilt parallax ────────────── */
+        /* ── NEON MODE — glass UI + tilt parallax ──────────────
+           In neon mode the camera fills the body and the settings
+           panel becomes a translucent overlay on top — that's what
+           makes the backdrop-filter blur actually visible. */
+        .neon-mode .sp-body { position: relative; }
+        .neon-mode .sp-canvas-pane {
+          position: absolute !important;
+          inset: 0 !important;
+          height: auto !important;
+          flex: none !important;
+          z-index: 0;
+          transform: translate3d(calc(var(--tilt-tx, 0px) * -0.4), calc(var(--tilt-ty, 0px) * -0.4), 0);
+          transition: transform 0.05s linear;
+          will-change: transform;
+        }
         .neon-mode .sp-panel-glass {
-          background: linear-gradient(180deg, rgba(15,0,28,0.34) 0%, rgba(8,0,18,0.42) 100%) !important;
-          backdrop-filter: blur(14px) saturate(1.35);
-          -webkit-backdrop-filter: blur(14px) saturate(1.35);
-          border-top: 1px solid rgba(231,174,255,0.35) !important;
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.06), 0 -8px 32px rgba(176,20,240,0.12);
+          position: absolute !important;
+          left: 0; right: 0; bottom: 0;
+          max-height: 62% !important;
+          z-index: 5;
+          background: linear-gradient(180deg, rgba(15,0,28,0.36) 0%, rgba(8,0,18,0.55) 100%) !important;
+          backdrop-filter: blur(18px) saturate(1.5);
+          -webkit-backdrop-filter: blur(18px) saturate(1.5);
+          border-top: 1px solid rgba(231,174,255,0.55) !important;
+          box-shadow: 0 -10px 36px rgba(176,20,240,0.28), inset 0 1px 0 rgba(255,255,255,0.08);
           transform: translate3d(var(--tilt-tx, 0px), var(--tilt-ty, 0px), 0)
                      rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
           transform-origin: 50% 0%;
@@ -7695,17 +7732,29 @@ export default function SpectraAfter() {
           transition: background 0.3s ease;
           will-change: transform;
         }
-        /* Inverse parallax on the canvas pane = depth illusion. */
-        .neon-mode .sp-canvas-pane {
-          transform: translate3d(calc(var(--tilt-tx, 0px) * -0.4), calc(var(--tilt-ty, 0px) * -0.4), 0);
-          transition: transform 0.05s linear;
-          will-change: transform;
+        @media (min-width: 1024px) {
+          .neon-mode .sp-panel-glass {
+            top: 0; bottom: 0; right: 0; left: auto;
+            width: 23rem;
+            max-height: none !important;
+            border-top: none !important;
+            border-left: 1px solid rgba(231,174,255,0.55) !important;
+            box-shadow: -10px 0 36px rgba(176,20,240,0.28), inset 1px 0 0 rgba(255,255,255,0.08);
+          }
         }
-        /* Beef text contrast against glitchy backdrop. */
+        /* Beef text contrast against the live FX backdrop. */
         .neon-mode .sp-panel-glass button,
         .neon-mode .sp-panel-glass label,
-        .neon-mode .sp-panel-glass span {
-          text-shadow: 0 0 3px rgba(0,0,0,0.85), 0 1px 0 rgba(0,0,0,0.7);
+        .neon-mode .sp-panel-glass span,
+        .neon-mode .sp-panel-glass div {
+          text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 1px 0 rgba(0,0,0,0.8);
+        }
+        /* Top-nav NEON button glow when active. */
+        .topnav-neon-on {
+          color: rgba(255,180,255,0.98) !important;
+          border-color: rgba(255,120,255,0.85) !important;
+          box-shadow: 0 0 12px rgba(255,80,255,0.6), 0 0 4px rgba(255,180,255,0.5) inset !important;
+          text-shadow: 0 0 8px rgba(255,80,255,0.85);
         }
       `}</style>
       {introVisible && <SpectraIntro onDone={() => setIntroVisible(false)} />}
@@ -7736,6 +7785,23 @@ export default function SpectraAfter() {
           </div>
           <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{runtimeError}</pre>
         </div>
+      )}
+
+      {/* FACE FX transient toast (placeholder until v1.3.0 shader lands). */}
+      {faceFxToast && (
+        <div
+          style={{
+            position: "fixed", left: "50%", top: 70, transform: "translateX(-50%)",
+            zIndex: 99998,
+            background: "rgba(15,5,28,0.92)",
+            border: "1px solid rgba(255,210,140,0.65)",
+            color: "rgba(255,235,205,0.98)",
+            fontFamily: "'Courier New',monospace", fontSize: 11, letterSpacing: "1.6px",
+            padding: "8px 14px", borderRadius: 4,
+            boxShadow: "0 0 20px rgba(232,160,32,0.45)",
+            pointerEvents: "none",
+          }}
+        >{faceFxToast}</div>
       )}
 
       {/* ── TIER info modal ── */}
@@ -8036,6 +8102,23 @@ export default function SpectraAfter() {
             title="Audio-Reactive FX"
           >{audioActive ? "🔊" : "🔈"}</button>
           <button
+            className={"sp-btn" + (neonMode ? " topnav-neon-on" : "")}
+            onClick={() => setNeonMode(v => !v)}
+            style={{ ...topBtnStyle, fontSize: 12, letterSpacing: "1px" }}
+            title="NEON MODE — glass UI + tilt parallax (experimental)"
+          >✦</button>
+          <button
+            className="sp-btn"
+            onClick={cycleFaceFx}
+            style={{
+              ...topBtnStyle, fontSize: 12, letterSpacing: "1px",
+              color: faceFxMode === "OFF" ? undefined : T.ochre,
+              borderColor: faceFxMode === "OFF" ? undefined : T.amber,
+              boxShadow: faceFxMode === "OFF" ? topBtnStyle.boxShadow : `${T.glow}, ${T.bevel}`,
+            }}
+            title={`FACE FX — ${faceFxMode} (cycle OFF / FACE-ONLY / BG-ONLY)`}
+          >{faceFxMode === "OFF" ? "👤" : faceFxMode === "FACE" ? "👤▣" : "▣👤"}</button>
+          <button
             className="sp-btn"
             onClick={() => setBugOpen(true)}
             style={{ ...topBtnStyle, fontSize: 12 }}
@@ -8052,7 +8135,7 @@ export default function SpectraAfter() {
       }}/>
 
       {/* ── Body: camera top, settings bottom (mobile); side-by-side (lg) */}
-      <div className="flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden">
+      <div className="sp-body flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden">
 
         {/* Camera viewport — top half on mobile, left pane on desktop */}
         <div className="sp-canvas-pane flex-none h-[45dvh] lg:h-auto lg:flex-1 relative bg-black overflow-hidden flex items-center justify-center">
@@ -9178,18 +9261,6 @@ export default function SpectraAfter() {
                     flex: 1, fontSize: 10, minWidth: 110,
                   }}
                 >{lowPowerOn ? "❄ LOW POWER ON" : "❄ LOW POWER"}</button>
-                <button
-                  className="sp-tile"
-                  onClick={() => setNeonMode(v => !v)}
-                  title="Glass UI + tilt parallax (experimental)"
-                  style={{
-                    ...modeBtnStyle,
-                    ...(neonMode ? modeBtnActive : {}),
-                    flex: 1, fontSize: 10, minWidth: 110,
-                    color: neonMode ? "rgba(255,180,255,0.98)" : "rgba(231,174,255,0.85)",
-                    textShadow: neonMode ? "0 0 6px rgba(255,120,255,0.6)" : "none",
-                  }}
-                >{neonMode ? "✦ NEON ON" : "✦ NEON MODE"}</button>
                 <button
                   className="sp-tile"
                   onClick={() => setTierInfoOpen(true)}
