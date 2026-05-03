@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 // (Capacitor mirror — no next/link)
 import { useRef, useState, useEffect, useCallback, useMemo, useContext, createContext } from "react";
 import type { Dispatch, SetStateAction } from "react";
@@ -4223,7 +4223,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.54";
+export const APP_VERSION = "1.2.55";
 
 // v1.2.51 — extended to 30 minutes for paid-tier QA / debugging passes.
 const GRACE_TOTAL_MS = 30 * 60 * 1000; // 30 minutes (testing)
@@ -4593,6 +4593,66 @@ export default function SpectraAfter() {
   const lowPowerRef = useRef(false);
   const lowPowerSkipRef = useRef(false);
   useEffect(() => { lowPowerRef.current = lowPowerOn; }, [lowPowerOn]);
+  // v1.2.55 — BATTERY-AWARE auto low-power. Independent of the user's
+  // manual LOW POWER toggle so we don't overwrite their preference.
+  // The render skip-frame check honours either flag.
+  const batteryLowRef = useRef(false);
+  // v1.2.55 — ADAPTIVE RENDER RESOLUTION. When the rolling frametime
+  // average crosses ~22 ms (sustained <45 fps) we drop the canvas DPR
+  // multiplier to 0.75x to recover headroom; when it sits below ~14 ms
+  // (>70 fps) for two solid seconds we restore 1.0x. The resize()
+  // callback multiplies dpr by this value when sizing the GL canvas
+  // and FBO textures, so flipping the scale + calling resize() is the
+  // entire mechanism.
+  const renderScaleRef = useRef(1.0);
+  const frametimeAvgRef = useRef(16.7);
+  const lastFrameTsRef = useRef(0);
+  const fastFrameStreakRef = useRef(0);
+  // v1.2.55 — UNIFORM SHADOW CACHE. ~60 uniform writes happen every
+  // render. Most are slider/ref values that don't change frame-to-frame.
+  // We diff against this Map keyed by WebGLUniformLocation and skip the
+  // gl.uniform* call when the value is unchanged. For float vectors we
+  // pack components into a delimited string for a cheap equality check.
+  const uniCacheRef = useRef(new Map<WebGLUniformLocation, number | string>());
+
+  // v1.2.55 — BATTERY-AWARE FRAMERATE CAP. When the device is below 20%
+  // and not actively charging, flip batteryLowRef on so the render loop's
+  // skip-frame check halves the framerate. Listens for both level and
+  // charging changes so plugging in instantly restores full speed. The
+  // BatteryManager API is unavailable in some Capacitor WebView versions
+  // and on iOS Safari — we silently skip when getBattery isn't a function.
+  useEffect(() => {
+    if (typeof navigator === "undefined") return;
+    type BatteryManager = {
+      level: number;
+      charging: boolean;
+      addEventListener: (ev: string, cb: () => void) => void;
+      removeEventListener: (ev: string, cb: () => void) => void;
+    };
+    const navAny = navigator as unknown as { getBattery?: () => Promise<BatteryManager> };
+    if (typeof navAny.getBattery !== "function") return;
+    let bm: BatteryManager | null = null;
+    let cancelled = false;
+    const update = () => {
+      if (!bm) return;
+      batteryLowRef.current = bm.level < 0.2 && !bm.charging;
+    };
+    navAny.getBattery!().then(b => {
+      if (cancelled) return;
+      bm = b;
+      update();
+      bm.addEventListener("levelchange", update);
+      bm.addEventListener("chargingchange", update);
+    }).catch(() => { /* unsupported, no-op */ });
+    return () => {
+      cancelled = true;
+      if (bm) {
+        bm.removeEventListener("levelchange", update);
+        bm.removeEventListener("chargingchange", update);
+      }
+      batteryLowRef.current = false;
+    };
+  }, []);
 
   // ── NEON MODE: glass / transparent panels + tilt parallax.
   //    Off by default — opt-in display tweak. Auto-disables tilt parallax
@@ -5734,11 +5794,20 @@ export default function SpectraAfter() {
     const canvas = canvasRef.current;
     const gl = glRef.current;
     if (!canvas || !gl) return;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // v1.2.55 — multiply DPR by renderScaleRef so adaptive resolution
+    // can shrink the GL canvas under sustained load (1.0 default,
+    // 0.75 when the rolling frametime crosses ~22 ms). The DOM canvas
+    // CSS size is unchanged — only the backing store shrinks — so the
+    // browser scales the smaller framebuffer up at composite time.
+    const baseDpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = baseDpr * (renderScaleRef.current || 1);
     const rect = canvas.getBoundingClientRect();
     canvas.width = Math.round(rect.width * dpr);
     canvas.height = Math.round(rect.height * dpr);
     gl.viewport(0, 0, canvas.width, canvas.height);
+    // Texture sizes changed — the uniform shadow cache holds a stale
+    // uResolution; clear it so the next render re-uploads.
+    uniCacheRef.current.clear();
     // Keep temporal feedback textures sized to the framebuffer to avoid copy errors.
     textures.current.forEach((tex, i) => {
       gl.activeTexture(gl.TEXTURE0 + i);
@@ -6028,7 +6097,10 @@ export default function SpectraAfter() {
     }
     // LOW POWER: drop every other frame to halve GPU/CPU load + heat.
     // We still re-arm the RAF so input + state stays responsive.
-    if (lowPowerRef.current) {
+    // v1.2.55 — also honour the battery-auto flag so an automatic
+    // low-battery condition halves framerate even if the user hasn't
+    // toggled the manual switch.
+    if (lowPowerRef.current || batteryLowRef.current) {
       lowPowerSkipRef.current = !lowPowerSkipRef.current;
       if (lowPowerSkipRef.current) {
         rafRef.current = requestAnimationFrame(render);
@@ -6808,19 +6880,56 @@ export default function SpectraAfter() {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, prevTex);
 
-    gl.uniform1f(u.uTime, timeRef.current);
-    gl.uniform2f(u.uResolution, canvas.width, canvas.height);
-    gl.uniform2f(u.uVideoSize, hasVideo ? srcW : canvas.width, hasVideo ? srcH : canvas.height);
-    gl.uniform1f(u.uMirror, cameraActiveRef.current && cameraFacingRef.current === "user" ? 1.0 : 0.0);
-    gl.uniform2f(u.uTouch, touchRef.current.x, touchRef.current.y);
-    gl.uniform1f(u.uTouchActive, touchRef.current.active ? 1.0 : 0.0);
-    gl.uniform1f(u.uAudio, audioLevelRef.current || 0.0);
-    gl.uniform1f(u.uBrightness, brightnessRef.current);
-    gl.uniform1f(u.uContrast, contrastRef.current);
-    gl.uniform1f(u.uSaturation, saturationRef.current);
-    gl.uniform1f(u.uHueShift, hueShiftRef.current);
-    gl.uniform1f(u.uScanlines, scanlinesRef.current);
-    gl.uniform1f(u.uZoom, zoomRef.current);
+    // v1.2.55 — UNIFORM SHADOW CACHE helpers. We close over `gl` and the
+    // module-level cache map; the helpers diff the proposed value against
+    // the last-uploaded value and skip the GL call when unchanged. Float
+    // vectors get a packed string key (cheap to compare). Net: roughly
+    // 30–40 of the ~60 per-frame uniform calls become no-ops on idle
+    // frames, and even on busy frames the constant-valued ones
+    // (uVideoSize, uMirror, uFaceFeather, texture-unit ints) skip
+    // immediately. Cleared by resize() so a backing-store change forces
+    // a re-upload.
+    const _uc = uniCacheRef.current;
+    const setF1 = (loc: WebGLUniformLocation | null, v: number) => {
+      if (!loc) return;
+      if (_uc.get(loc) === v) return;
+      _uc.set(loc, v);
+      gl.uniform1f(loc, v);
+    };
+    const setF2 = (loc: WebGLUniformLocation | null, a: number, b: number) => {
+      if (!loc) return;
+      const k = a + "," + b;
+      if (_uc.get(loc) === k) return;
+      _uc.set(loc, k);
+      gl.uniform2f(loc, a, b);
+    };
+    const setI1 = (loc: WebGLUniformLocation | null, v: number) => {
+      if (!loc) return;
+      if (_uc.get(loc) === v) return;
+      _uc.set(loc, v);
+      gl.uniform1i(loc, v);
+    };
+    // Float arrays (uModeParams) change every frame in normal use — skip
+    // the cache for these and just upload directly. Diffing 8 floats per
+    // frame is more work than the upload itself.
+    const setFv = (loc: WebGLUniformLocation | null, arr: Float32Array | number[]) => {
+      if (!loc) return;
+      gl.uniform1fv(loc, arr);
+    };
+
+    setF1(u.uTime, timeRef.current);
+    setF2(u.uResolution, canvas.width, canvas.height);
+    setF2(u.uVideoSize, hasVideo ? srcW : canvas.width, hasVideo ? srcH : canvas.height);
+    setF1(u.uMirror, cameraActiveRef.current && cameraFacingRef.current === "user" ? 1.0 : 0.0);
+    setF2(u.uTouch, touchRef.current.x, touchRef.current.y);
+    setF1(u.uTouchActive, touchRef.current.active ? 1.0 : 0.0);
+    setF1(u.uAudio, audioLevelRef.current || 0.0);
+    setF1(u.uBrightness, brightnessRef.current);
+    setF1(u.uContrast, contrastRef.current);
+    setF1(u.uSaturation, saturationRef.current);
+    setF1(u.uHueShift, hueShiftRef.current);
+    setF1(u.uScanlines, scanlinesRef.current);
+    setF1(u.uZoom, zoomRef.current);
     // v1.2.53 — universal audio reactivity for the two camera-source FX
     // racks (PIXEL SORT + DATAMOSH). Generator already has a deep audio
     // routing built into its evolution loop above; this brings the FX
@@ -6835,10 +6944,10 @@ export default function SpectraAfter() {
     const _aGate  = Math.min(1.0, _aBass * 1.4 + _aBeat * 0.9 + _aLvl * 0.5);
     const _sortBase = sortAmtRef.current;
     const _sortAudio = Math.min(1.0, _sortBase * (1 + _aGate * 0.7) + _aGate * 0.18);
-    gl.uniform1f(u.uSortAmt, _sortAudio);
-    gl.uniform1f(u.uScanTear, scanTearRef.current);
-    gl.uniform1f(u.uRGBDrift, rgbDriftRef.current);
-    gl.uniform1f(u.uBlockGlitch, blockGlitchRef.current);
+    setF1(u.uSortAmt, _sortAudio);
+    setF1(u.uScanTear, scanTearRef.current);
+    setF1(u.uRGBDrift, rgbDriftRef.current);
+    setF1(u.uBlockGlitch, blockGlitchRef.current);
     // Datamosh INTENS slider is 0..2. Old mapping used a pow(0.72) curve
     // plus an aggressive HARD multiplier that clipped at 5.0 around the
     // slider midpoint — the top half of the knob did nothing visible.
@@ -6852,64 +6961,64 @@ export default function SpectraAfter() {
     // mic stream even when the slider is partway down. Capped at the
     // HARD ceiling so we don't push past what the shader was tuned for.
     dmMapped = Math.min(5.5, dmMapped * (1 + _aGate * 0.55) + _aGate * 0.22);
-    gl.uniform1f(u.uDatamosh, dmMapped);
-    gl.uniform1f(u.uChrash, chrashRef.current);
-    gl.uniform1f(u.uLiquid, liquidRef.current);
-    gl.uniform1f(u.uTimeSmear, timeSmearRef.current);
-    gl.uniform1f(u.uFeedback, feedbackRef.current);
-    gl.uniform1f(u.uContour, contourRef.current);
-    gl.uniform1f(u.uAscii, asciiRef.current);
-    gl.uniform1f(u.uVenetian, venetianRef.current);
-    gl.uniform1f(u.uKaleido, kaleidoRef.current);
-    gl.uniform1f(u.uDisrupt, disruptRef.current);
-    gl.uniform1f(u.uDisruptCount, disruptCountRef.current);
-    gl.uniform1f(u.uDisruptSize, disruptSizeRef.current);
-    gl.uniform1f(u.uDisruptContrary, disruptContraryRef.current);
-    gl.uniform1f(u.uSortKey, sortKeyRef.current);
-    gl.uniform1f(u.uSortLow, sortLowRef.current);
-    gl.uniform1f(u.uSortHigh, sortHighRef.current);
-    gl.uniform1f(u.uSortDirection, sortDirectionRef.current);
-    gl.uniform1f(u.uSortMode, sortModeRef.current);
-    gl.uniform1f(u.uSortSegment, sortSegmentRef.current);
-    gl.uniform1f(u.uSortRandom, sortRandomRef.current);
-    gl.uniform1f(u.uSortWobble, sortWobbleRef.current);
-    gl.uniform1f(u.uSortInterval, sortIntervalRef.current);
-    gl.uniform1f(u.uSortAngle, sortAngleRef.current);
-    gl.uniform1f(u.uRgbR, rgbRRef.current);
-    gl.uniform1f(u.uRgbG, rgbGRef.current);
-    gl.uniform1f(u.uRgbB, rgbBRef.current);
-    gl.uniform1f(u.uRgbBars, rgbBarsRef.current);
-    gl.uniform1f(u.uRgbSwap, rgbSwapRef.current);
-    gl.uniform1f(u.uRupture, ruptureRef.current);
-    gl.uniform1f(u.uHSync, hsyncRef.current);
-    gl.uniform1f(u.uMoshIFrame, moshIFrameRef.current);
-    gl.uniform1f(u.uMoshMotion, moshMotionRef.current);
-    gl.uniform1f(u.uMoshBleed, moshBleedRef.current);
-    gl.uniform1f(u.uMoshMap, moshMapRef.current);
-    gl.uniform1f(u.uMoshDistort, moshDistortRef.current);
+    setF1(u.uDatamosh, dmMapped);
+    setF1(u.uChrash, chrashRef.current);
+    setF1(u.uLiquid, liquidRef.current);
+    setF1(u.uTimeSmear, timeSmearRef.current);
+    setF1(u.uFeedback, feedbackRef.current);
+    setF1(u.uContour, contourRef.current);
+    setF1(u.uAscii, asciiRef.current);
+    setF1(u.uVenetian, venetianRef.current);
+    setF1(u.uKaleido, kaleidoRef.current);
+    setF1(u.uDisrupt, disruptRef.current);
+    setF1(u.uDisruptCount, disruptCountRef.current);
+    setF1(u.uDisruptSize, disruptSizeRef.current);
+    setF1(u.uDisruptContrary, disruptContraryRef.current);
+    setF1(u.uSortKey, sortKeyRef.current);
+    setF1(u.uSortLow, sortLowRef.current);
+    setF1(u.uSortHigh, sortHighRef.current);
+    setF1(u.uSortDirection, sortDirectionRef.current);
+    setF1(u.uSortMode, sortModeRef.current);
+    setF1(u.uSortSegment, sortSegmentRef.current);
+    setF1(u.uSortRandom, sortRandomRef.current);
+    setF1(u.uSortWobble, sortWobbleRef.current);
+    setF1(u.uSortInterval, sortIntervalRef.current);
+    setF1(u.uSortAngle, sortAngleRef.current);
+    setF1(u.uRgbR, rgbRRef.current);
+    setF1(u.uRgbG, rgbGRef.current);
+    setF1(u.uRgbB, rgbBRef.current);
+    setF1(u.uRgbBars, rgbBarsRef.current);
+    setF1(u.uRgbSwap, rgbSwapRef.current);
+    setF1(u.uRupture, ruptureRef.current);
+    setF1(u.uHSync, hsyncRef.current);
+    setF1(u.uMoshIFrame, moshIFrameRef.current);
+    setF1(u.uMoshMotion, moshMotionRef.current);
+    setF1(u.uMoshBleed, moshBleedRef.current);
+    setF1(u.uMoshMap, moshMapRef.current);
+    setF1(u.uMoshDistort, moshDistortRef.current);
     // Face FX universal mask uniforms (driven by faceFxMode + segmentation loop).
-    gl.uniform1f(u.uFaceActive, faceFxRef.current.active ? 1.0 : 0.0);
-    gl.uniform1f(u.uFaceTexValid, faceFxRef.current.texValid ? 1.0 : 0.0);
-    gl.uniform2f(u.uFaceCenter, faceFxRef.current.cx, faceFxRef.current.cy);
-    gl.uniform1f(u.uFaceRadius, faceFxRef.current.r);
-    gl.uniform1f(u.uFaceInvert, faceFxRef.current.invert ? 1.0 : 0.0);
-    gl.uniform1f(u.uFaceFeather, 0.06);
+    setF1(u.uFaceActive, faceFxRef.current.active ? 1.0 : 0.0);
+    setF1(u.uFaceTexValid, faceFxRef.current.texValid ? 1.0 : 0.0);
+    setF2(u.uFaceCenter, faceFxRef.current.cx, faceFxRef.current.cy);
+    setF1(u.uFaceRadius, faceFxRef.current.r);
+    setF1(u.uFaceInvert, faceFxRef.current.invert ? 1.0 : 0.0);
+    setF1(u.uFaceFeather, 0.06);
     if (faceTextureRef.current) {
       gl.activeTexture(gl.TEXTURE4);
       gl.bindTexture(gl.TEXTURE_2D, faceTextureRef.current);
-      gl.uniform1i(u.uFaceTex, 4);
+      setI1(u.uFaceTex, 4);
     }
 
     // Phase 2a: per-mode rack params (slot 0=AMOUNT, 1=MIX, 2..7 mode-specific)
     {
       const modeId = modeRef.current as ModeId;
       const packed = packParams(modeId, paramsByModeRef.current[modeId] ?? defaultsForMode(modeId));
-      if (u.uModeParams) gl.uniform1fv(u.uModeParams, packed);
+      if (u.uModeParams) setFv(u.uModeParams, packed);
     }
 
-    gl.uniform1i(u.uCamera, 0);
-    gl.uniform1i(u.uPrevFrame, 1);
-    gl.uniform1i(u.uMask, 2);
+    setI1(u.uCamera, 0);
+    setI1(u.uPrevFrame, 1);
+    setI1(u.uMask, 2);
 
     // Phase 2b: real multi-layer composite via ping-pong FBOs.
     // When combo mode is on with armed layers, render each layer's mode/params
@@ -6946,16 +7055,16 @@ export default function SpectraAfter() {
       // at once in one pass means the pixel-sort streaks and datamosh
       // smear inform each other inside one signal instead of one being
       // baked into a texture that the next pass merely paints over.
-      gl.uniform1i(u.uMode, 0);
-      gl.uniform1f(u.uGain, gainRef.current);
+      setI1(u.uMode, 0);
+      setF1(u.uGain, gainRef.current);
       const packed0 = packParams(0 as ModeId, paramsByModeRef.current[0 as ModeId] ?? defaultsForMode(0 as ModeId));
-      if (u.uModeParams) gl.uniform1fv(u.uModeParams, packed0);
+      if (u.uModeParams) setFv(u.uModeParams, packed0);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, canvas.width, canvas.height);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     } else {
-      gl.uniform1i(u.uMode, modeRef.current);
-      gl.uniform1f(u.uGain, gainRef.current);
+      setI1(u.uMode, modeRef.current);
+      setF1(u.uGain, gainRef.current);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, canvas.width, canvas.height);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -6971,6 +7080,37 @@ export default function SpectraAfter() {
     // FPS
     fpsFrames.current++;
     const now = performance.now();
+    // v1.2.55 — ADAPTIVE RESOLUTION. EWMA the inter-frame interval so
+    // momentary jank doesn't trigger a downscale, and require a steady
+    // two-second fast streak before restoring full res so we don't
+    // ping-pong on the first frame after a downscale.
+    if (lastFrameTsRef.current > 0) {
+      const dt = now - lastFrameTsRef.current;
+      // EWMA: 0.92 history weight → ~half-life of ~8 frames
+      frametimeAvgRef.current = frametimeAvgRef.current * 0.92 + dt * 0.08;
+      const avg = frametimeAvgRef.current;
+      if (avg > 22 && renderScaleRef.current > 0.76) {
+        // Sustained <45fps — shrink the GL canvas so the shader pushes
+        // 0.75 × 0.75 = ~56% the pixels. Triggers a full FBO + texture
+        // re-allocation via resize().
+        renderScaleRef.current = 0.75;
+        fastFrameStreakRef.current = 0;
+        resize();
+      } else if (avg < 14 && renderScaleRef.current < 1.0) {
+        // Counting fast frames toward a recovery promotion. ~120 frames
+        // at 60fps == 2s. Resets on every slow frame above.
+        fastFrameStreakRef.current++;
+        if (fastFrameStreakRef.current > 120) {
+          renderScaleRef.current = 1.0;
+          fastFrameStreakRef.current = 0;
+          resize();
+        }
+      } else if (avg > 16) {
+        // In the dead band but not great — keep streak from accumulating.
+        fastFrameStreakRef.current = Math.max(0, fastFrameStreakRef.current - 1);
+      }
+    }
+    lastFrameTsRef.current = now;
     if (now - fpsTime.current >= 1000) {
       setFps(fpsFrames.current);
       fpsFrames.current = 0;
