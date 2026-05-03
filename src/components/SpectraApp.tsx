@@ -4223,7 +4223,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.55";
+export const APP_VERSION = "1.2.56";
 
 // v1.2.51 — extended to 30 minutes for paid-tier QA / debugging passes.
 const GRACE_TOTAL_MS = 30 * 60 * 1000; // 30 minutes (testing)
@@ -4854,6 +4854,31 @@ export default function SpectraAfter() {
     const maskCanvas = faceMaskCanvasRef.current;
     const maskCtx = maskCanvas.getContext("2d", { willReadFrequently: true })!;
 
+    // v1.2.56 — Phase 3 segmenter perf. Hoist per-tick allocations:
+    // the previous code allocated a new Uint8ClampedArray (~147 KB at
+    // 256x144x4) plus a fresh <canvas> + ImageData every ~100 ms,
+    // generating ~1.5 MB/s of GC pressure on the segmenter loop.
+    // We now reuse one ImageData (which owns its rgba buffer) plus
+    // one persistent scratch canvas. Both are rebuilt only when the
+    // segmenter's mask geometry changes (rare).
+    let scratchImg: ImageData | null = null;
+    const scratchCanvas = document.createElement("canvas");
+    const scratchCtx = scratchCanvas.getContext("2d")!;
+    let scratchW = 0, scratchH = 0;
+
+    // v1.2.56 — Phase 3 ADAPTIVE SEGMENTER CADENCE. Read the render
+    // loop's rolling frametime EWMA: when the GPU is loafing (<14 ms,
+    // >70 fps) we step up to ~12 Hz for crisper roto edges; when the
+    // device is straining (>22 ms, <45 fps) we drop to ~6 Hz so the
+    // segmenter stops competing with the shader for the GPU. Default
+    // remains ~10 Hz. Reading a ref each tick is free.
+    const _segCadenceMs = () => {
+      const f = frametimeAvgRef.current;
+      if (f > 22) return 167; // ~6 Hz when busy
+      if (f < 14) return 83;  // ~12 Hz when idle
+      return 100;             // ~10 Hz default
+    };
+
     const initAndRun = async () => {
       try {
         const mp = await import("@mediapipe/tasks-vision");
@@ -4889,7 +4914,18 @@ export default function SpectraAfter() {
               const f32: Float32Array | null = !u8 && cat.getAsFloat32Array ? cat.getAsFloat32Array() : null;
               const mw = cat.width, mh = cat.height;
               if (!u8 && !f32) { try { cat.close?.(); } catch { /* noop */ } return; }
-              const rgba = new Uint8ClampedArray(mw * mh * 4);
+              // v1.2.56 — reuse scratch ImageData + canvas across ticks.
+              // We back the rgba buffer with the ImageData itself so there's
+              // exactly one allocation owned per mask geometry. ImageData
+              // dimensions are immutable, so when the segmenter switches
+              // mask size we just rebuild it (rare event).
+              if (!scratchImg || scratchW !== mw || scratchH !== mh) {
+                scratchImg = new ImageData(mw, mh);
+                scratchCanvas.width = mw;
+                scratchCanvas.height = mh;
+                scratchW = mw; scratchH = mh;
+              }
+              const rgba = scratchImg.data;
               if (u8) {
                 for (let i = 0, j = 0; i < u8.length; i++, j += 4) {
                   const m = u8[i] > 0 ? 255 : 0;
@@ -4908,10 +4944,8 @@ export default function SpectraAfter() {
                 }
               }
               try { cat.close?.(); } catch { /* noop */ }
-              // Resize via temp canvas → mask canvas at fixed res for fast upload.
-              const tmp = document.createElement("canvas");
-              tmp.width = mw; tmp.height = mh;
-              tmp.getContext("2d")!.putImageData(new ImageData(rgba, mw, mh), 0, 0);
+              scratchCtx.putImageData(scratchImg, 0, 0);
+
               // v1.2.52 — CRITICAL: clear the mask canvas before each draw.
               // In v1.2.51 we made mask alpha equal to the mask value (so the
               // canvas could double as an alpha matte for the gen/upload
@@ -4925,7 +4959,7 @@ export default function SpectraAfter() {
               // mask covered most of the frame). Clearing every tick forces
               // the mask to reflect ONLY the current segmenter output.
               maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
-              maskCtx.drawImage(tmp, 0, 0, maskCanvas.width, maskCanvas.height);
+              maskCtx.drawImage(scratchCanvas, 0, 0, maskCanvas.width, maskCanvas.height);
               // Upload to WebGL face texture.
               const gl = glRef.current;
               const tex = faceTextureRef.current;
@@ -4952,7 +4986,7 @@ export default function SpectraAfter() {
           faceFxRef.current.cy += (0.42 - faceFxRef.current.cy) * 0.1;
           faceFxRef.current.r  += (0.28 - faceFxRef.current.r ) * 0.1;
         }
-        timer = window.setTimeout(tick, segmenter ? 100 : 250);
+        timer = window.setTimeout(tick, segmenter ? _segCadenceMs() : 250);
       };
       tick();
     };
