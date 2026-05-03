@@ -1,0 +1,8 @@
+﻿# Snapshot manifest  20260503-131632Z-pre-129-work
+
+capacitor.config.ts                                                 992 bytes  BD4CF3330FE8564807766C7D9F087A3267EB9129EEA454DB5E21D85F07095A00
+package.json                                                       1025 bytes  A855D9E89D213136B09E5094D0879C17183C85DF2E828C9A62699B269D240F07
+android\app\build.gradle                                           3185 bytes  DE7BCD82AED16F3D8B843E4102EB58BF6EBD75DDF4BB58638FA8DCA26B78BE0B
+android\app\src\main\AndroidManifest.xml                           2126 bytes  F4716C2923ACF949B56C6612493D5E8A6AFD85612C3E778D0280562E7DF765BF
+android\app\src\main\java\com\lovebeing\spectra\MainActivity.java       1862 bytes  45565966CF56C7E75E59E9D02BE3C9A31CF537EDDF2A58DBD10714F53A12E745
+src\components\SpectraApp.tsx                                    435266 bytes  A7B2583B12B5CFEA70726AF3087FB56C655670C8EB920BE0729C134134E13E5F

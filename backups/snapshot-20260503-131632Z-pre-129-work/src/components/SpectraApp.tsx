@@ -3876,33 +3876,6 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 //  user can route it to Photos / Files / a chat app. Without this the
 //  on-device download anchor is silently ignored on the WebView.
 // ══════════════════════════════════════════════════════════════
-//  TIER MATRIX — what FREE vs PRO unlocks. Single source of truth for
-//  the EXPORT panel info modal. Adjust APP_TIER below to gate features.
-//  When billing is wired in, swap the const for a hook that reads the
-//  user's entitlement from the store/server.
-// ══════════════════════════════════════════════════════════════
-export type AppTier = "FREE" | "PRO";
-// Default to PRO during development so all features remain functional.
-// Set to "FREE" to preview the locked experience.
-export const APP_TIER: AppTier = "PRO";
-export const TIER_FEATURES = {
-  free: [
-    "All visual modes (PXL, MOSH, glitch rack, generator)",
-    "AUTOMATE LFO + presets stored on device",
-    "Up to 30s recording · standard quality",
-    "Save / share via system share sheet",
-    "Microphone-reactive audio",
-  ],
-  pro: [
-    "Direct save to phone gallery (no share sheet)",
-    "Up to 60s recording · ultra quality (1440p)",
-    "All blend modes (MAX/MIN/XOR/ADD/SUB/DIFF/MUL)",
-    "SAVE / LOAD .gpsproj project files",
-    "Unlimited preset slots + cloud-sync (coming)",
-    "Priority bug-report routing",
-  ],
-} as const;
-// ══════════════════════════════════════════════════════════════
 async function saveBlobToDevice(blob: Blob, filename: string): Promise<void> {
   const isNative = (() => {
     try { return Capacitor.isNativePlatform?.() === true; } catch { return false; }
@@ -4071,14 +4044,6 @@ export default function SpectraAfter() {
   const [automateRate, setAutomateRate] = useState(0.45);     // 0..1 (slow..fast)
   const [automateStyles, setAutomateStyles] = useState(false); // also rotate gen STYLE
   const [automateBlend, setAutomateBlend] = useState(false);   // also rotate pixel BLEND
-  // ── LOW POWER: caps render to ~30fps by skipping every other RAF tick.
-  //    Phones run noticeably cooler with this on, especially in PXL/MOSH.
-  const [lowPowerOn, setLowPowerOn] = useState(false);
-  const lowPowerRef = useRef(false);
-  const lowPowerSkipRef = useRef(false);
-  useEffect(() => { lowPowerRef.current = lowPowerOn; }, [lowPowerOn]);
-  // ── TIER info modal toggle (read-only feature matrix).
-  const [tierInfoOpen, setTierInfoOpen] = useState(false);
 
   const genStyleRef = useRef<GenStyle>("BAYER");
   const genResolutionRef = useRef(48);
@@ -4801,15 +4766,6 @@ export default function SpectraAfter() {
   });
 
   const render = useCallback(() => {
-    // LOW POWER: drop every other frame to halve GPU/CPU load + heat.
-    // We still re-arm the RAF so input + state stays responsive.
-    if (lowPowerRef.current) {
-      lowPowerSkipRef.current = !lowPowerSkipRef.current;
-      if (lowPowerSkipRef.current) {
-        rafRef.current = requestAnimationFrame(render);
-        return;
-      }
-    }
     // Upload mask canvas to mask texture
     const gl = glRef.current;
     const maskTex = maskTextureRef.current;
@@ -6068,15 +6024,6 @@ export default function SpectraAfter() {
     setMode(0);
     setGain(0.5);
 
-    // ── Post-process knobs back to identity
-    setBrightness(1.0);
-    setContrast(1.0);
-    setSaturation(1.0);
-    setHueShift(0.0);
-    setScanlines(0.0);
-    setZoom(0.0);
-    setSpeed(1.0);
-
     setSortAmt(0.0);
     setScanTear(0.0);
     setRGBDrift(0.0);
@@ -6108,39 +6055,6 @@ export default function SpectraAfter() {
     setMoshBleed(0.45);
     setMoshMap(0.0);
     setMoshDistort(0.5);
-
-    // ── AUTOMATE off; rate to default
-    setAutomateOn(false);
-    setAutomateRate(0.45);
-    setAutomateStyles(false);
-    setAutomateBlend(false);
-
-    // ── Generator knobs back to defaults
-    setGenStyle("BAYER");
-    setGenResolution(48);
-    setGenDensity(0.55);
-    setGenScale(1.0);
-    setGenSpeed(0.6);
-    setGenHue(0.78);
-    setGenHueSpread(0.35);
-    setGenSat(0.85);
-    setGenContrastG(0.7);
-    setGenWarp(0.25);
-    setGenJitter(0.15);
-    setGenSeed(7);
-    setGenInvert(false);
-    setGenMoshX(0);
-    setGenMoshY(0);
-    setGenScatter(0);
-    setGenScatterMode(0);
-    setGenBlend("AVG");
-    setGenPalette("MONO");
-    setGenAutoCycle(true);
-
-    // ── Audio off (mic) so the camera goes back to fully passive
-    setAudioActive(false);
-    // ── Low-power off so reset = vanilla performance baseline
-    setLowPowerOn(false);
 
     setParamsByMode(defaultsForAllModes());
     setSourceMode("camera");
@@ -6367,26 +6281,15 @@ export default function SpectraAfter() {
         for (const t of aStream.getAudioTracks()) stream.addTrack(t);
       } catch { /* ignore — stream still records video */ }
     }
-    // Prefer MP4/H.264 when the WebView supports it (Android 13+ and
-    // most modern Chromium builds do). Falls back to WebM/VP9/VP8 for
-    // older devices. Saving as `.mp4` makes the file directly usable in
-    // iOS Photos, social-media uploads, and most editors — .webm is
-    // rejected by a lot of consumer pipelines.
-    const mime = MediaRecorder.isTypeSupported("video/mp4;codecs=h264,aac")
-      ? "video/mp4;codecs=h264,aac"
-      : MediaRecorder.isTypeSupported("video/mp4;codecs=avc1,mp4a.40.2")
-        ? "video/mp4;codecs=avc1,mp4a.40.2"
-        : MediaRecorder.isTypeSupported("video/mp4")
-          ? "video/mp4"
-          : MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
-            ? "video/webm;codecs=vp9,opus"
-            : MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
-              ? "video/webm;codecs=vp9"
-              : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
-                ? "video/webm;codecs=vp8,opus"
-                : MediaRecorder.isTypeSupported("video/webm;codecs=vp8")
-                  ? "video/webm;codecs=vp8"
-                  : "video/webm";
+    const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp9,opus")
+      ? "video/webm;codecs=vp9,opus"
+      : MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
+        ? "video/webm;codecs=vp9"
+        : MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
+          ? "video/webm;codecs=vp8,opus"
+          : MediaRecorder.isTypeSupported("video/webm;codecs=vp8")
+            ? "video/webm;codecs=vp8"
+            : "video/webm";
 
     const rec = new MediaRecorder(stream, { mimeType: mime });
     videoChunksRef.current = [];
@@ -6399,12 +6302,7 @@ export default function SpectraAfter() {
       videoComposeCanvasRef.current = null;
       const blob = new Blob(videoChunksRef.current, { type: rec.mimeType || "video/webm" });
       if (blob.size === 0) { setProcessingStatus(null); return; }
-      // Derive extension from the actual mime so MP4 files end in .mp4
-      // and WebM fallbacks end in .webm — keeps the system file picker /
-      // gallery happy.
-      const isMp4 = (rec.mimeType || "").toLowerCase().includes("mp4");
-      const ext = isMp4 ? "mp4" : "webm";
-      const filename = `gps-${(MODES.find(m => m.id === mode)?.short ?? "PXL").toLowerCase()}-${Date.now()}.${ext}`;
+      const filename = `gps-${(MODES.find(m => m.id === mode)?.short ?? "PXL").toLowerCase()}-${Date.now()}.webm`;
       setProcessingStatus({ label: "Saving video…" });
       saveBlobToDevice(blob, filename).finally(() => setProcessingStatus(null));
     };
@@ -7131,68 +7029,6 @@ export default function SpectraAfter() {
       {introVisible && <SpectraIntro onDone={() => setIntroVisible(false)} />}
       <BugReportModal open={bugOpen} onClose={() => setBugOpen(false)} />
       <BootScreen progress={bootProgress} done={bootDone} />
-
-      {/* ── TIER info modal ── */}
-      {tierInfoOpen && (
-        <div
-          onClick={() => setTierInfoOpen(false)}
-          style={{
-            position: "fixed", inset: 0, zIndex: 9997,
-            background: "rgba(3,5,16,0.85)", backdropFilter: "blur(6px)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            padding: 16, fontFamily: "'Courier New',monospace",
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              maxWidth: 520, width: "100%",
-              background: "linear-gradient(180deg,#170824 0%,#080214 100%)",
-              border: "1px solid rgba(255,210,140,0.45)",
-              borderRadius: 8, padding: 18, color: "rgba(231,210,255,0.95)",
-              boxShadow: "0 0 24px rgba(176,20,240,0.45), inset 0 0 12px rgba(0,0,0,0.7)",
-              maxHeight: "85vh", overflowY: "auto",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <div style={{ fontSize: 14, letterSpacing: "3px", color: "rgba(255,210,140,0.95)", textShadow: "0 0 8px rgba(232,160,32,0.7)" }}>
-                SPECTRA · TIERS
-              </div>
-              <button
-                onClick={() => setTierInfoOpen(false)}
-                style={{
-                  fontFamily: "'Courier New',monospace", fontSize: 11,
-                  background: "transparent", border: "1px solid rgba(231,174,255,0.4)",
-                  color: "rgba(231,174,255,0.85)", padding: "4px 10px", borderRadius: 4,
-                  cursor: "pointer", letterSpacing: "1.5px",
-                }}
-              >CLOSE ✕</button>
-            </div>
-            <div style={{ fontSize: 10, letterSpacing: "1.6px", color: "rgba(200,180,220,0.6)", marginBottom: 14 }}>
-              Current build: <span style={{ color: APP_TIER === "PRO" ? "rgba(255,210,140,0.95)" : "rgba(231,174,255,0.95)" }}>{APP_TIER}</span>
-            </div>
-
-            <div style={{ marginBottom: 18 }}>
-              <div style={{ fontSize: 11, letterSpacing: "2px", color: "rgba(231,174,255,0.95)", marginBottom: 8 }}>FREE</div>
-              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, lineHeight: 1.6, color: "rgba(231,210,255,0.85)" }}>
-                {TIER_FEATURES.free.map((f) => <li key={f}>{f}</li>)}
-              </ul>
-            </div>
-
-            <div>
-              <div style={{ fontSize: 11, letterSpacing: "2px", color: "rgba(255,210,140,0.95)", marginBottom: 8, textShadow: "0 0 6px rgba(232,160,32,0.55)" }}>PRO</div>
-              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, lineHeight: 1.6, color: "rgba(255,235,205,0.92)" }}>
-                {TIER_FEATURES.pro.map((f) => <li key={f}>{f}</li>)}
-              </ul>
-            </div>
-
-            <div style={{ marginTop: 18, fontSize: 9, letterSpacing: "1.4px", color: "rgba(200,180,220,0.55)", textTransform: "uppercase", lineHeight: 1.6 }}>
-              Note: this build runs in {APP_TIER} mode. Billing + entitlement
-              checks ship in a later update — features are not paywalled yet.
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ── Processing overlay (GIF/video encode + save) */}
       {processingStatus && (
@@ -8250,35 +8086,6 @@ export default function SpectraAfter() {
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <button className="sp-tile" onClick={saveProject} style={{ ...modeBtnStyle, flex: 1, fontSize: 10 }}>SAVE PROJECT</button>
                 <button className="sp-tile" onClick={() => projectFileInputRef.current?.click()} style={{ ...modeBtnStyle, flex: 1, fontSize: 10 }}>LOAD PROJECT</button>
-              </div>
-
-              {/* ── PERFORMANCE / TIER row */}
-              <div style={{ height: 4 }}/>
-              <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>Performance · Tier</div>
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                <button
-                  className="sp-tile"
-                  onClick={() => setLowPowerOn(v => !v)}
-                  title="Cap render to ~30fps to reduce battery + heat"
-                  style={{
-                    ...modeBtnStyle,
-                    ...(lowPowerOn ? modeBtnActive : {}),
-                    flex: 1, fontSize: 10, minWidth: 110,
-                  }}
-                >{lowPowerOn ? "❄ LOW POWER ON" : "❄ LOW POWER"}</button>
-                <button
-                  className="sp-tile"
-                  onClick={() => setTierInfoOpen(true)}
-                  title="What's free vs PRO"
-                  style={{
-                    ...modeBtnStyle, flex: 1, fontSize: 10, minWidth: 110,
-                    color: APP_TIER === "PRO" ? "rgba(255,210,140,0.98)" : "rgba(231,174,255,0.95)",
-                    textShadow: APP_TIER === "PRO" ? "0 0 6px rgba(232,160,32,0.7)" : "none",
-                  }}
-                >ℹ {APP_TIER === "PRO" ? "PRO TIER" : "FREE TIER"}</button>
-              </div>
-              <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(200,180,220,0.5)", textAlign: "center", textTransform: "uppercase", marginTop: 2 }}>
-                Phone running hot? Try LOW POWER. · Tap PRO/FREE to see what's included.
               </div>
             </div>
           </Section>
