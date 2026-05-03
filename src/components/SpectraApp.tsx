@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 // (Capacitor mirror — no next/link)
 import { useRef, useState, useEffect, useCallback } from "react";
 import { Capacitor } from "@capacitor/core";
@@ -2842,67 +2842,15 @@ void main() {
     if (length(pixInCell) < dotR) gl_FragColor = vec4(cellColor, 1.0);
     else gl_FragColor = vec4(vec3(0.02), 1.0);
 
-  // ── MODE 7: PIXEL SORT (ASDF) ───────────────────────────
-  // True line-scan sort: walk back along the row up to ~120 taps,
-  // collect the in-band pixel with the extremum metric, propagate its
-  // colour. Out-of-band samples break the run (crisp streak edges).
+  // ── MODE 7: PIXEL SORT ──────────────────────────────────
+  // Pass through color so the FX-rack pixel-sort uniforms
+  // (uSortAmt, uSortMode, uSortLow/High, uSortSegment, uSortKey,
+  // uSortDirection, uSortWobble, uSortRandom) drive the look. The sort
+  // blend is mixed into color upstream (see if (sortBlend > 0.001)),
+  // so all PIXEL SORT rack knobs/modes (LINE/SPIRAL/BLOCK/SLICE) take
+  // effect in this mode.
   } else if (uMode == 7) {
-    float threshold = 0.15 + (1.0 - fxA) * 0.7;
-    float l = lum(color.rgb);
-    float maxC = max(color.r, max(color.g, color.b));
-    float minC = min(color.r, min(color.g, color.b));
-    float hue = 0.0;
-    if (maxC - minC > 0.001) {
-      if (maxC == color.r) hue = mod((color.g - color.b) / (maxC - minC), 6.0);
-      else if (maxC == color.g) hue = (color.b - color.r) / (maxC - minC) + 2.0;
-      else hue = (color.r - color.g) / (maxC - minC) + 4.0;
-      hue /= 6.0;
-    }
-    float sat = maxC > 0.001 ? (maxC - minC) / maxC : 0.0;
-    float cycle = mod(uTime * 0.3, 3.0);
-    float criterion = cycle < 1.0 ? l : (cycle < 2.0 ? hue : sat);
-    bool srcInBand = criterion > threshold;
-    // Direction: touch drags the streak; default = horizontal.
-    bool m7Vert = ta > 0.5 ? abs(touchPt.y - 0.5) > abs(touchPt.x - 0.5) : false;
-    vec2 px = vec2(1.0 / uVideoSize.x, 1.0 / uVideoSize.y);
-    vec2 step1 = m7Vert ? vec2(0.0, px.y) : vec2(px.x, 0.0);
-    // Scan length scales with fxA so harder = longer streaks.
-    // Constant loop bound for GLSL ES 1.00 portability.
-    float runMaxF = mix(20.0, 64.0, clamp(fxA, 0.0, 1.0));
-    runMaxF = clamp(runMaxF, 8.0, 64.0);
-    float lineId = m7Vert ? floor(uv.x * uVideoSize.x) : floor(uv.y * uVideoSize.y);
-    // Slow alternation between bright-bias and dark-bias streaks.
-    bool pickBright = sin(uTime * 0.5 + lineId * 0.07) > 0.0;
-
-    vec3 bestCol = color.rgb;
-    float bestMet = pickBright ? -1.0 : 2.0;
-    float runActive = 1.0;
-    bool found = false;
-    for (int s = 1; s < 64; s++) {
-      vec2 sUv = uv - step1 * float(s);
-      float inRange = step(float(s), runMaxF)
-                    * step(0.0, sUv.x) * step(sUv.x, 1.0)
-                    * step(0.0, sUv.y) * step(sUv.y, 1.0)
-                    * runActive;
-      vec2 fetchUv = clamp(sUv, 0.0, 1.0);
-      vec3 sc = texture2D(uCamera, fetchUv).rgb;
-      float sl = lum(sc);
-      float sMaxC = max(sc.r, max(sc.g, sc.b));
-      float sMinC = min(sc.r, min(sc.g, sc.b));
-      float sSat = sMaxC > 0.001 ? (sMaxC - sMinC) / sMaxC : 0.0;
-      float sm = cycle < 1.0 ? sl : (cycle < 2.0 ? 0.0 : sSat);
-      bool sInBand = sm > threshold;
-      if (inRange > 0.5 && sInBand) {
-        found = true;
-        if (pickBright ? sm > bestMet : sm < bestMet) {
-          bestMet = sm; bestCol = sc;
-        }
-      } else if (inRange > 0.5 && found) {
-        runActive = 0.0;
-      }
-    }
-    float sortStrength = (srcInBand && found) ? (0.55 + fxA * 0.45) : 0.0;
-    gl_FragColor = vec4(mix(color.rgb, bestCol, sortStrength), 1.0);
+    gl_FragColor = vec4(color.rgb, 1.0);
 
   // ── MODE 8: GLITCH / SCRN ───────────────────────────────
   } else if (uMode == 8) {
@@ -3359,7 +3307,7 @@ function BootScreen({ progress, done }: { progress: number; done: boolean }) {
     <div
       className="fixed inset-0 z-50 flex flex-col items-center justify-center"
       style={{
-        background: "radial-gradient(circle at 50% 50%, #2A2DFF 0%, #1A1CF2 45%, #0E1199 100%)",
+        background: "radial-gradient(circle at 50% 50%, #1820FF 0%, #000CFB 45%, #000470 100%)",
         opacity: done ? 0 : 1,
         pointerEvents: done ? "none" : "all",
         transition: "opacity 0.7s ease",
@@ -3799,12 +3747,11 @@ function SpectraIntro({ onDone }: { onDone: () => void }) {
 
   if (phase === "gone") return null;
   const opacity = phase === "out" ? 0 : 1;
-  const wordmarkOpacity = (phase === "resolved" || phase === "out") && iconReady ? 1 : 0;
   return (
     <div
       style={{
         position: "fixed", inset: 0, zIndex: 9999,
-        background: "#1A1CF2",
+        background: "#000CFB",
         display: "flex", alignItems: "center", justifyContent: "center",
         opacity,
         transition: "opacity 700ms ease-out",
@@ -3812,16 +3759,6 @@ function SpectraIntro({ onDone }: { onDone: () => void }) {
       }}
     >
       <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }}/>
-      <div style={{
-        position: "absolute", bottom: "14%", left: 0, right: 0,
-        textAlign: "center",
-        color: "rgba(231,174,255,0.95)",
-        fontFamily: "'Courier New',monospace",
-        letterSpacing: "8px", fontSize: 12,
-        textShadow: "0 0 14px rgba(176,20,240,0.85)",
-        opacity: wordmarkOpacity,
-        transition: "opacity 500ms ease-out",
-      }}>SPECTRA</div>
     </div>
   );
 }
@@ -4101,6 +4038,12 @@ export default function SpectraAfter() {
   const [genMoshY, setGenMoshY] = useState(0);                // -1..1
   const [genScatter, setGenScatter] = useState(0);            // 0..1 sustained
   const [genScatterMode, setGenScatterMode] = useState(0);    // 0..3 SHIFT/BURST/SHRED/FREEZE
+  // ── AUTOMATE (generator only): drifts the gen knobs over time toward
+  //    fresh random targets, like an LFO on every dial.
+  const [automateOn, setAutomateOn] = useState(false);
+  const [automateRate, setAutomateRate] = useState(0.45);     // 0..1 (slow..fast)
+  const [automateStyles, setAutomateStyles] = useState(false); // also rotate gen STYLE
+  const [automateBlend, setAutomateBlend] = useState(false);   // also rotate pixel BLEND
 
   const genStyleRef = useRef<GenStyle>("BAYER");
   const genResolutionRef = useRef(48);
@@ -4768,6 +4711,45 @@ export default function SpectraAfter() {
   useEffect(()=>{ sortSegmentRef.current=sortSegment; },[sortSegment]);
   useEffect(()=>{ sortRandomRef.current=sortRandom; },[sortRandom]);
   useEffect(()=>{ sortWobbleRef.current=sortWobble; },[sortWobble]);
+  // Auto-bump sortAmt when entering PIXEL SORT mode so the rack knobs
+  // produce a visible result without the user having to crank AMOUNT
+  // from zero first.
+  useEffect(() => {
+    if (mode === 7 && sortAmt < 0.05) setSortAmt(0.65);
+  }, [mode, sortAmt]);
+  // \u2500\u2500 AUTOMATE: drift generator knobs on an LFO interval. Generator-only.
+  useEffect(() => {
+    if (!automateOn) return;
+    if (sourceMode !== "generator") return;
+    const periodMs = Math.max(120, 1400 - automateRate * 1250);
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      const r = () => Math.random();
+      // Gentle nudge: blend current toward random target by 18% each tick.
+      const lerp = (cur: number, tgt: number) => cur + (tgt - cur) * 0.18;
+      setGenDensity(p => lerp(p, 0.15 + r() * 0.8));
+      setGenScale(p   => lerp(p, 0.4  + r() * 2.6));
+      setGenSpeed(p   => lerp(p, 0.2  + r() * 1.6));
+      setGenHue(p     => (p + 0.05 + r() * 0.08) % 1);
+      setGenHueSpread(p => lerp(p, 0.1 + r() * 0.7));
+      setGenSat(p     => lerp(p, 0.45 + r() * 0.55));
+      setGenContrastG(p => lerp(p, 0.3 + r() * 0.65));
+      setGenWarp(p    => lerp(p, r() * 0.85));
+      setGenJitter(p  => lerp(p, r() * 0.7));
+      // Occasional flips, on a slower cadence than the knob drift.
+      if (automateStyles && r() < 0.18) {
+        const styles = GEN_STYLES as readonly string[];
+        setGenStyle(styles[Math.floor(r() * styles.length)] as GenStyle);
+      }
+      if (automateBlend && r() < 0.12) {
+        setGenBlend(GEN_BLEND_KEYS[Math.floor(r() * GEN_BLEND_KEYS.length)]);
+      }
+    };
+    tick();
+    const id = window.setInterval(tick, periodMs);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [automateOn, automateRate, automateStyles, automateBlend, sourceMode]);
   useEffect(()=>{ moshIFrameRef.current=moshIFrame; },[moshIFrame]);
   useEffect(()=>{ moshMotionRef.current=moshMotion; },[moshMotion]);
   useEffect(()=>{ moshBleedRef.current=moshBleed; },[moshBleed]);
@@ -5051,7 +5033,38 @@ export default function SpectraAfter() {
 
       if (activeIndexed.length === 1) {
         const e0 = activeIndexed[0];
-        drawPixelGenerator(gc, paramsForLayer(e0.L, e0.idx));
+        const blendMode = genBlendRef.current;
+        const gctx2 = gc.getContext("2d");
+        if (blendMode === "AVG" || !gctx2) {
+          drawPixelGenerator(gc, paramsForLayer(e0.L, e0.idx));
+        } else {
+          // Single-layer blend: composite the new frame against the
+          // previous frame using a canvas blend op so the BLEND buttons
+          // (MAX/MIN/XOR/ADD/SUB/DIFF/MUL) actually do something visible
+          // even with one generator layer.
+          type FbHost = HTMLCanvasElement & { _gscFbCv?: HTMLCanvasElement };
+          const host = gc as FbHost;
+          let fb = host._gscFbCv;
+          if (!fb || fb.width !== gc.width || fb.height !== gc.height) {
+            fb = document.createElement("canvas");
+            fb.width = gc.width; fb.height = gc.height;
+            host._gscFbCv = fb;
+          }
+          const fbCtx = fb.getContext("2d");
+          if (fbCtx) fbCtx.drawImage(gc, 0, 0); // capture previous frame
+          drawPixelGenerator(gc, paramsForLayer(e0.L, e0.idx));
+          const opMap: Record<string, GlobalCompositeOperation> = {
+            MAX: "lighten", MIN: "darken", XOR: "xor",
+            ADD: "lighter", SUB: "difference", DIFF: "difference", MUL: "multiply",
+          };
+          const op = opMap[blendMode] ?? "source-over";
+          const prevAlpha = gctx2.globalAlpha;
+          gctx2.globalCompositeOperation = op;
+          gctx2.globalAlpha = 0.85;
+          gctx2.drawImage(fb, 0, 0);
+          gctx2.globalAlpha = prevAlpha;
+          gctx2.globalCompositeOperation = "source-over";
+        }
       } else {
         // Multi-layer: render each style to its own SMALL offscreen canvas
         // (1/3 of gc), then FUSE per-pixel and upscale to gc. Per-pixel
@@ -7743,6 +7756,29 @@ export default function SpectraAfter() {
                   }}
                 >⟲ RANDOM</button>
               </div>
+
+              {/* ── AUTOMATE ─ LFO drift across all gen knobs (generator only) */}
+              <div style={{
+                marginTop: 14, padding: "10px 8px 8px",
+                border: "1px solid rgba(255,210,140,0.35)",
+                borderRadius: 6,
+                background: "linear-gradient(180deg,#1a0f04 0%,#0a0602 100%)",
+                boxShadow: automateOn ? "0 0 12px rgba(255,140,0,0.45) inset" : "none",
+              }}>
+                <div style={{
+                  fontSize: 9, letterSpacing: "2px", textAlign: "center",
+                  color: "rgba(255,180,90,0.95)", marginBottom: 8,
+                  textShadow: automateOn ? "0 0 8px rgba(255,140,0,0.85)" : "none",
+                }}>AUTOMATE · GEN LFO</div>
+                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 12, alignItems: "center" }}>
+                  <SynthSwitch label="AUTO" on={automateOn} onChange={setAutomateOn} onLabel="RUN" offLabel="OFF"/>
+                  <Knob label="RATE" value={automateRate} min={0} max={1} step={0.01} defaultValue={0.45} onChange={setAutomateRate}/>
+                </div>
+                <div style={{ display: "flex", justifyContent: "center", gap: 14, marginTop: 8 }}>
+                  <SynthSwitch label="STYLE"  on={automateStyles} onChange={setAutomateStyles} onLabel="FLIP" offLabel="─"/>
+                  <SynthSwitch label="BLEND"  on={automateBlend}  onChange={setAutomateBlend}  onLabel="FLIP" offLabel="─"/>
+                </div>
+              </div>
             </SynthPanel>
 
             {/* ── COLOR (master color bus — every color control lives here) ── */}
@@ -8912,6 +8948,5 @@ function ModeRack({
 // no longer rendered in the stripped PXL+MOSH+GEN UI.
 void SliderRow;
 void ModeRack;
-
 
 
