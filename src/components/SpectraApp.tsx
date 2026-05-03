@@ -4130,7 +4130,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.30";
+export const APP_VERSION = "1.2.31";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4416,9 +4416,9 @@ export default function SpectraAfter() {
   type GenPalette = keyof typeof GEN_PALETTES;
   const GEN_PALETTE_KEYS = ["MONO","WARM","COOL","PINK","ACID","RAINBOW","CUSTOM"] as const;
   const [genPalette, setGenPalette] = useState<GenPalette>("MONO");
-  const [genAutoCycle, setGenAutoCycle] = useState(true);
+  const [genAutoCycle, setGenAutoCycle] = useState(false);
   const genPaletteRef = useRef<GenPalette>("MONO");
-  const genAutoCycleRef = useRef(true);
+  const genAutoCycleRef = useRef(false);
   const genHueCycleRef = useRef(0); // 0..1 slow drift counter
   // Heavily smoothed motion shadows used by the generator so evolution is
   // continuous and never resets/snaps frame-to-frame. Raw motion refs stay
@@ -4830,8 +4830,8 @@ export default function SpectraAfter() {
   // ── Mode / controls
   const [mode, setMode] = useState<ModeId>(0);
   const [gain, setGain] = useState(0.5);
-  const [comboLayers, setComboLayers] = useState<{mode:ModeId;gain:number}[]>([]);
-  const [comboMode, setComboMode] = useState(false);
+  const [comboLayers, setComboLayers] = useState<{mode:ModeId;gain:number}[]>([{mode:7,gain:1},{mode:9,gain:1}]);
+  const [comboMode, setComboMode] = useState(true);
 
   // ── Per-mode rack params (Phase 1B). Persisted under RACK_KEY.
   const [paramsByMode, setParamsByMode] = useState<Record<ModeId, Record<string, number>>>(() => defaultsForAllModes());
@@ -4908,6 +4908,182 @@ export default function SpectraAfter() {
   const brushColorRef = useRef("#ff00ff");
   const colorCycleRef = useRef(false);
   const brushTypeRef = useRef<string>("round");
+
+  // ─── PIXEL DRAWER ──────────────────────────────────────────────────
+  // A "living collage" overlay: every stroke spawns colored pixel cells
+  // that drift, glitch their hue, occasionally spawn neighbors, and
+  // slowly decay. Independent of the FX-mask draw above (which is just
+  // a region selector). Renders into its own absolutely-positioned
+  // canvas above the WebGL canvas with mix-blend-mode: screen so the
+  // pixels glow over whatever the FX pipeline is producing.
+  type PxCell = {
+    x: number; y: number;        // 0..1 normalized
+    vx: number; vy: number;      // velocity in normalized units / sec
+    age: number; life: number;   // seconds
+    hue: number; sat: number; val: number;
+    size: number;                // px
+    seed: number;
+  };
+  const [pixelDrawerActive, setPixelDrawerActive] = useState(false);
+  const [pxSize, setPxSize] = useState(0.4);     // base cell size 0..1 → 2..14 px
+  const [pxGlitch, setPxGlitch] = useState(0.55); // hue jitter & teleport
+  const [pxGrow, setPxGrow] = useState(0.35);    // neighbor-spawn probability
+  const [pxDecay, setPxDecay] = useState(0.35);  // life shrink
+  const [pxSpeed, setPxSpeed] = useState(0.45);  // drift velocity
+  const pxSizeRef    = useRef(0.4);
+  const pxGlitchRef  = useRef(0.55);
+  const pxGrowRef    = useRef(0.35);
+  const pxDecayRef   = useRef(0.35);
+  const pxSpeedRef   = useRef(0.45);
+  const pxActiveRef  = useRef(false);
+  const pxCellsRef   = useRef<PxCell[]>([]);
+  const pxCanvasRef  = useRef<HTMLCanvasElement>(null);
+  const pxLastSpawnRef = useRef<{x:number;y:number;t:number}|null>(null);
+  useEffect(()=>{ pxSizeRef.current   = pxSize;   },[pxSize]);
+  useEffect(()=>{ pxGlitchRef.current = pxGlitch; },[pxGlitch]);
+  useEffect(()=>{ pxGrowRef.current   = pxGrow;   },[pxGrow]);
+  useEffect(()=>{ pxDecayRef.current  = pxDecay;  },[pxDecay]);
+  useEffect(()=>{ pxSpeedRef.current  = pxSpeed;  },[pxSpeed]);
+  useEffect(()=>{ pxActiveRef.current = pixelDrawerActive; },[pixelDrawerActive]);
+  const pxResetAll = useCallback(() => {
+    pxCellsRef.current = [];
+    pxLastSpawnRef.current = null;
+    setPxSize(0.4); setPxGlitch(0.55); setPxGrow(0.35);
+    setPxDecay(0.35); setPxSpeed(0.45);
+    const c = pxCanvasRef.current;
+    if (c) { const cx = c.getContext("2d"); if (cx) cx.clearRect(0,0,c.width,c.height); }
+  }, []);
+  const pxClearCells = useCallback(() => {
+    pxCellsRef.current = [];
+    pxLastSpawnRef.current = null;
+    const c = pxCanvasRef.current;
+    if (c) { const cx = c.getContext("2d"); if (cx) cx.clearRect(0,0,c.width,c.height); }
+  }, []);
+
+  // Spawn cells along a pointer path (called from pixel-drawer canvas
+  // onPointerDown / onPointerMove). Density scales with distance so fast
+  // strokes don't become dotted.
+  const pxSpawnAt = useCallback((nx: number, ny: number) => {
+    const sizeBase = 2 + pxSizeRef.current * 12;
+    const glitch = pxGlitchRef.current;
+    const baseHueRaw = brushColorRef.current;
+    // Convert hex → HSL hue (cheap parse, fallback magenta).
+    let baseHue = 300;
+    if (baseHueRaw.startsWith("#") && baseHueRaw.length === 7) {
+      const r = parseInt(baseHueRaw.slice(1,3),16)/255;
+      const g = parseInt(baseHueRaw.slice(3,5),16)/255;
+      const b = parseInt(baseHueRaw.slice(5,7),16)/255;
+      const mx = Math.max(r,g,b), mn = Math.min(r,g,b), d = mx-mn;
+      let h = 0;
+      if (d > 1e-4) {
+        if (mx === r) h = ((g-b)/d) % 6;
+        else if (mx === g) h = (b-r)/d + 2;
+        else h = (r-g)/d + 4;
+      }
+      baseHue = (h * 60 + 360) % 360;
+    }
+    const burst = 1 + Math.floor(2 + glitch * 4);
+    for (let i = 0; i < burst; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.random() * 0.012 * (0.5 + glitch);
+      pxCellsRef.current.push({
+        x: nx + Math.cos(a) * r,
+        y: ny + Math.sin(a) * r,
+        vx: (Math.random() - 0.5) * 0.04 * pxSpeedRef.current,
+        vy: (Math.random() - 0.5) * 0.04 * pxSpeedRef.current,
+        age: 0,
+        life: 1.5 + Math.random() * (4 - pxDecayRef.current * 3),
+        hue: (baseHue + (Math.random() - 0.5) * 80 * glitch + 360) % 360,
+        sat: 70 + Math.random() * 30,
+        val: 55 + Math.random() * 35,
+        size: sizeBase * (0.6 + Math.random() * 0.9),
+        seed: Math.random() * 1000,
+      });
+    }
+    // Cap at 4000 cells to protect mobile fillrate.
+    if (pxCellsRef.current.length > 4000) {
+      pxCellsRef.current.splice(0, pxCellsRef.current.length - 4000);
+    }
+  }, []);
+
+  // Animation loop: drift + glitch + spawn + decay + render. Runs while
+  // active OR while cells still exist (so a final stroke fades out
+  // gracefully when the user toggles off).
+  useEffect(() => {
+    let rafId = 0;
+    let prevT = performance.now();
+    const tick = (now: number) => {
+      const dt = Math.min(0.05, (now - prevT) / 1000);
+      prevT = now;
+      const c = pxCanvasRef.current;
+      if (!c) { rafId = requestAnimationFrame(tick); return; }
+      const cx = c.getContext("2d");
+      if (!cx) { rafId = requestAnimationFrame(tick); return; }
+      // Sync size to parent (FX canvas).
+      const parent = c.parentElement;
+      if (parent) {
+        const w = parent.clientWidth, h = parent.clientHeight;
+        if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+      }
+      // Trail clear: low-alpha black wipe → cells leave fading streaks.
+      // The stronger DECAY, the faster the trail clears.
+      cx.globalCompositeOperation = "source-over";
+      cx.fillStyle = `rgba(0,0,0,${0.04 + pxDecayRef.current * 0.18})`;
+      cx.fillRect(0, 0, c.width, c.height);
+      cx.globalCompositeOperation = "lighter";
+
+      const cells = pxCellsRef.current;
+      const W = c.width, H = c.height;
+      const glitch = pxGlitchRef.current;
+      const grow = pxGrowRef.current;
+      const speed = pxSpeedRef.current;
+      const newSpawns: PxCell[] = [];
+      for (let i = cells.length - 1; i >= 0; i--) {
+        const p = cells[i];
+        p.age += dt;
+        if (p.age >= p.life) { cells.splice(i, 1); continue; }
+        // Drift + glitch teleport.
+        p.x += p.vx * dt * (0.5 + speed);
+        p.y += p.vy * dt * (0.5 + speed);
+        if (Math.random() < glitch * 0.04) {
+          p.x += (Math.random() - 0.5) * 0.05 * glitch;
+          p.y += (Math.random() - 0.5) * 0.05 * glitch;
+        }
+        // Wrap edges so cells don't pile up at borders.
+        if (p.x < 0) p.x += 1; else if (p.x > 1) p.x -= 1;
+        if (p.y < 0) p.y += 1; else if (p.y > 1) p.y -= 1;
+        // Color glitch.
+        p.hue = (p.hue + (Math.random() - 0.5) * 60 * glitch * dt * 5 + 360) % 360;
+        // Spawn neighbor (cellular generation).
+        if (Math.random() < grow * dt * 6 && cells.length + newSpawns.length < 4000) {
+          newSpawns.push({
+            x: p.x + (Math.random() - 0.5) * 0.02,
+            y: p.y + (Math.random() - 0.5) * 0.02,
+            vx: p.vx + (Math.random() - 0.5) * 0.02,
+            vy: p.vy + (Math.random() - 0.5) * 0.02,
+            age: 0,
+            life: p.life * (0.5 + Math.random() * 0.6),
+            hue: (p.hue + (Math.random() - 0.5) * 30) % 360,
+            sat: p.sat,
+            val: p.val * (0.7 + Math.random() * 0.4),
+            size: p.size * (0.6 + Math.random() * 0.7),
+            seed: Math.random() * 1000,
+          });
+        }
+        // Render — chunky pixel rect, fade out by age.
+        const t = 1 - p.age / p.life;
+        const alpha = Math.min(1, t * 1.4);
+        cx.fillStyle = `hsla(${p.hue.toFixed(0)},${p.sat.toFixed(0)}%,${p.val.toFixed(0)}%,${alpha.toFixed(3)})`;
+        const px = p.x * W, py = p.y * H;
+        const sz = Math.max(1, p.size);
+        cx.fillRect(px - sz/2, py - sz/2, sz, sz);
+      }
+      if (newSpawns.length) cells.push(...newSpawns);
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => { cancelAnimationFrame(rafId); };
+  }, []);
   // Glitch!-style draw: pop last stroke. setStrokes lives in state above.
   const undoStroke = useCallback(() => {
     setStrokes(prev => prev.slice(0, -1));
@@ -6192,13 +6368,14 @@ export default function SpectraAfter() {
         }
       }
 
+      // Layer modes were removed — both PXL (pixel-sort) and MOSH (datamosh)
+      // are always armed and live. The per-effect AMOUNT/INTENS knobs gate
+      // whether they actually contribute (zero == bypass). We still consult
+      // the legacy refs in case other code paths rely on them being true.
       const armedLayers = comboLayersRef.current;
-      const pxlArmed = comboModeRef.current
-        ? armedLayers.some(l => l.mode === 7)
-        : modeRef.current === 7;
-      const moshArmed = comboModeRef.current
-        ? armedLayers.some(l => l.mode === 9)
-        : modeRef.current === 9;
+      void armedLayers;
+      const pxlArmed = true;
+      const moshArmed = true;
       const tripleArmedCameraDrive = pxlArmed && moshArmed;
 
       // Generator mode keeps camera alive and composites both when camera frames exist.
@@ -6479,18 +6656,36 @@ export default function SpectraAfter() {
 
     (async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+          video: false,
+        });
         audioStreamRef.current = stream;
         audioCtx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+        // Android Chrome / Capacitor WebView starts contexts suspended until
+        // an explicit user-gesture resume — without this the analyser reads
+        // all-zeros and audio reactivity appears dead.
+        if (audioCtx.state === "suspended") {
+          try { await audioCtx.resume(); } catch { /* ignore */ }
+        }
         analyser = audioCtx.createAnalyser();
         analyser.fftSize = 1024;
+        analyser.smoothingTimeConstant = 0.4;
         // Use correct Uint8Array type for Web Audio API
         dataArray = new Uint8Array(analyser.fftSize);
         source = audioCtx.createMediaStreamSource(stream);
         source.connect(analyser);
         audioAnalyserRef.current = analyser;
         audioDataArrayRef.current = dataArray;
-      } catch {
+        // Some devices flip the context back to suspended after the source
+        // is connected. Poll once shortly after to nudge it back to running.
+        setTimeout(() => {
+          if (audioCtx && audioCtx.state === "suspended") {
+            audioCtx.resume().catch(() => { /* ignore */ });
+          }
+        }, 250);
+      } catch (err) {
+        console.error("[audio] getUserMedia failed:", err);
         setAudioActive(false);
         audioAnalyserRef.current = null;
         audioDataArrayRef.current = null;
@@ -6917,8 +7112,8 @@ export default function SpectraAfter() {
 
   const resetSettings = useCallback(async () => {
     // Return to default single-pass "normal view" and clear FX triggers.
-    setComboMode(false);
-    setComboLayers([]);
+    setComboMode(true);
+    setComboLayers([{mode:7,gain:1},{mode:9,gain:1}]);
     setMode(0);
     setGain(0.5);
 
@@ -6989,7 +7184,7 @@ export default function SpectraAfter() {
     setGenScatterMode(0);
     setGenBlend("AVG");
     setGenPalette("MONO");
-    setGenAutoCycle(true);
+    setGenAutoCycle(false);
 
     // ── Audio off (mic) so the camera goes back to fully passive
     setAudioActive(false);
@@ -7520,8 +7715,8 @@ export default function SpectraAfter() {
       }
       setParamsByMode(merged);
     }
-    setComboMode(false);
-    setComboLayers([]);
+    setComboMode(true);
+    setComboLayers([{mode:7,gain:1},{mode:9,gain:1}]);
   }, []);
 
   const savePreset = useCallback(() => {
@@ -7742,11 +7937,11 @@ export default function SpectraAfter() {
       // Spectra startup policy: boot into the autonomous generator (no camera prompt).
       // Default palette is monochrome with auto color-cycle armed.
       setMode(0);
-      setComboMode(false);
-      setComboLayers([]);
+      setComboMode(true);
+      setComboLayers([{mode:7,gain:1},{mode:9,gain:1}]);
       setSourceMode("generator");
       setGenPalette("MONO");
-      setGenAutoCycle(true);
+      setGenAutoCycle(false);
       setCameraFacing("environment");
 
       setGain(0.5);
@@ -7974,9 +8169,11 @@ export default function SpectraAfter() {
 
 
   // ── Render ───────────────────────────────────────────────
-  const showSortRack = comboMode ? comboLayers.some(l => l.mode === 7) : mode === 7;
-  const showMoshRack = comboMode ? comboLayers.some(l => l.mode === 9) : mode === 9;
-  const layerSubtitle = comboMode ? "BOTH ARMED" : mode === 9 ? "MOSH SOLO" : mode === 7 ? "PXL SOLO" : "NORMAL";
+  // Layer modes were removed — both PXL and MOSH are always live and
+  // combineable. The per-effect AMOUNT/INTENS knobs gate contribution.
+  const showSortRack = true;
+  const showMoshRack = true;
+  void showSortRack; void showMoshRack;
   const modeLabel = MODES.find(m => m.id === mode)?.label ?? "NORMAL";
   const camStatus = cameraActive ? "active" : cameraRequesting ? "requesting" : sourceError ? "error" : "idle";
   const camStatusColor = camStatus === "active" ? "#52C97A" : camStatus === "requesting" ? "#E8A020" : camStatus === "error" ? "#E03D3D" : "rgba(200,180,220,0.35)";
@@ -8545,12 +8742,12 @@ export default function SpectraAfter() {
            crowding it). Row 2 = all the action buttons. */}
       <div style={{
         paddingTop: 4, paddingBottom: 4,
-        background: "linear-gradient(180deg, #0E1A3E 0%, #0A1430 100%)",
-        borderBottom: "1px solid rgba(111,125,255,0.45)",
+        background: "linear-gradient(180deg, #3A0852 0%, #1A0224 100%)",
+        borderBottom: "1px solid rgba(231,174,255,0.45)",
         display: "flex", flexDirection: "column",
         alignItems: "stretch", padding: "4px 10px", gap: 4,
         flexShrink: 0, zIndex: 20,
-        boxShadow: "0 2px 12px rgba(0,0,0,0.85), 0 0 18px rgba(26,28,242,0.18)",
+        boxShadow: "0 2px 12px rgba(0,0,0,0.85), 0 0 18px rgba(176,20,240,0.22)",
       }}>
         {/* Row 1 — wordmark only, centered, nothing else on this line */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, minWidth: 0 }}>
@@ -8572,8 +8769,8 @@ export default function SpectraAfter() {
             textShadow: "0 0 10px rgba(111,125,255,0.45)",
             whiteSpace: "nowrap",
           }}>
-            <span style={{ color: "#6F7DFF" }}>Glitch Pixel</span>
-            <span style={{ color: "#FF8500", fontSize: "0.86em", letterSpacing: "1.6px" }}>Studio 42069+</span>
+            <span style={{ color: "#E7AEFF" }}>Glitch Pixel</span>
+            <span style={{ color: "#FF8500", letterSpacing: "1.4px" }}>Studio 42069+</span>
           </div>
         </div>
         {/* Row 2 — action buttons (centered, wraps if narrow) */}
@@ -8651,8 +8848,14 @@ export default function SpectraAfter() {
       {/* ── Body: camera top, settings bottom (mobile); side-by-side (lg) */}
       <div className="sp-body flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden">
 
-        {/* Camera viewport — top half on mobile, left pane on desktop */}
-        <div className="sp-canvas-pane flex-none h-[45dvh] lg:h-auto lg:flex-1 relative bg-black overflow-hidden flex items-center justify-center">
+        {/* Camera viewport — top half on mobile, left pane on desktop.
+            When an accordion panel is open we shrink this pane so the
+            open panel can occupy more vertical real estate. Other
+            (collapsed) panels stay visible as headers. */}
+        <div
+          className="sp-canvas-pane flex-none lg:h-auto lg:flex-1 relative bg-black overflow-hidden flex items-center justify-center"
+          style={{ height: openPanelTitle ? "26dvh" : "45dvh", transition: "height 220ms ease" }}
+        >
           <div style={{ position: "relative", aspectRatio: "1 / 1", height: "100%", maxHeight: "100%", maxWidth: "100%" }}>
             {/* Scanlines overlay */}
             <div style={{
@@ -8699,6 +8902,51 @@ export default function SpectraAfter() {
             />
             {/* Hidden mask canvas for FX mask */}
             <canvas ref={maskCanvasRef} style={{ display: "none" }} width={256} height={256} />
+
+            {/* ── PIXEL DRAWER overlay (living/glitching pixel cells) ── */}
+            <canvas
+              ref={pxCanvasRef}
+              style={{
+                position: "absolute", inset: 0, width: "100%", height: "100%",
+                zIndex: 4,
+                pointerEvents: pixelDrawerActive ? "auto" : "none",
+                cursor: pixelDrawerActive ? "crosshair" : "default",
+                touchAction: "none",
+                mixBlendMode: "screen",
+                opacity: 1,
+              }}
+              onPointerDown={(e) => {
+                if (!pxActiveRef.current) return;
+                (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+                const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+                const nx = (e.clientX - rect.left) / rect.width;
+                const ny = (e.clientY - rect.top)  / rect.height;
+                pxLastSpawnRef.current = { x: nx, y: ny, t: performance.now() };
+                pxSpawnAt(nx, ny);
+              }}
+              onPointerMove={(e) => {
+                if (!pxActiveRef.current) return;
+                if (e.pressure === 0 && e.buttons === 0) return;
+                const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+                const nx = (e.clientX - rect.left) / rect.width;
+                const ny = (e.clientY - rect.top)  / rect.height;
+                const last = pxLastSpawnRef.current;
+                if (last) {
+                  // Interpolate so fast strokes paint a continuous line.
+                  const dx = nx - last.x, dy = ny - last.y;
+                  const dist = Math.sqrt(dx*dx + dy*dy);
+                  const steps = Math.max(1, Math.min(12, Math.floor(dist * 80)));
+                  for (let i = 1; i <= steps; i++) {
+                    pxSpawnAt(last.x + dx * (i/steps), last.y + dy * (i/steps));
+                  }
+                } else {
+                  pxSpawnAt(nx, ny);
+                }
+                pxLastSpawnRef.current = { x: nx, y: ny, t: performance.now() };
+              }}
+              onPointerUp={() => { pxLastSpawnRef.current = null; }}
+              onPointerLeave={() => { pxLastSpawnRef.current = null; }}
+            />
 
             {/* ── Floating DRAW toolbar (Glitch! style) — only over static image uploads */}
             {drawActive && drawAvailable && (
@@ -9051,41 +9299,7 @@ export default function SpectraAfter() {
                 </div>
             </SynthPanel>
 
-            {/* ── LAYER MODE ────────────────────────────────────────── */}
-            <SynthPanel title="LAYER MODE" subtitle={layerSubtitle}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>
-                {[
-                  { key: "PXL",  on: !comboMode && mode === 7, click: () => { setComboMode(false); setComboLayers([]); setMode(7); } },
-                  { key: "MOSH", on: !comboMode && mode === 9, click: () => { setComboMode(false); setComboLayers([]); setMode(9); } },
-                  { key: "BOTH", on: comboMode, click: () => { setComboMode(true); setComboLayers([{mode:7,gain:1},{mode:9,gain:1}]); setMode(7); } },
-                ].map(b => (
-                  <button
-                    key={b.key}
-                    onClick={b.click}
-                    style={{
-                      padding: "12px 4px",
-                      fontSize: b.key === "GENERATOR" ? 10 : 11,
-                      letterSpacing: b.key === "GENERATOR" ? "1.2px" : "1.6px",
-                      fontWeight: 700,
-                      fontFamily: b.key === "GENERATOR" ? "'Trebuchet MS',sans-serif" : "'Courier New',monospace",
-                      cursor: "pointer", borderRadius: 5,
-                      border: b.on ? "1px solid rgba(208,58,58,0.85)" : "1px solid rgba(0,0,0,0.72)",
-                      color: b.on ? "rgba(255,168,150,1)" : "rgba(200,180,220,0.66)",
-                      textShadow: b.on ? "0 0 8px rgba(255,84,84,0.72)" : "none",
-                      background: b.on
-                        ? "linear-gradient(180deg, #5A0E16 0%, #2A060A 100%)"
-                        : "linear-gradient(180deg, #3A3A3E 0%, #1A1A1E 48%, #101014 100%)",
-                      boxShadow: b.on
-                        ? "inset 0 1px 1px rgba(255,220,220,0.18), inset 0 -2px 4px rgba(0,0,0,0.74), 0 0 10px rgba(255,62,62,0.45)"
-                        : "inset 0 1px 1px rgba(255,255,255,0.07), inset 0 -2px 4px rgba(0,0,0,0.74)",
-                    }}
-                  >{b.key}</button>
-                ))}
-              </div>
-            </SynthPanel>
-
             {/* ── PIXEL SORT RACK ───────────────────────────────────── */}
-            {showSortRack && (
             <SynthPanel title="PIXEL SORT" subtitle="PXL · 8 CTRL" accent="rgba(231,174,255,0.95)">
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
                 <Knob label="AMOUNT"  value={sortAmt}      min={0} max={1}    step={0.01} defaultValue={0.5}  onChange={setSortAmt}/>
@@ -9107,8 +9321,19 @@ export default function SpectraAfter() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
                 <SynthSelector label="ANGLE" options={["HORZ","VERT","DIAG↗","DIAG↘"]} value={Math.round(sortAngle)} onChange={(v) => setSortAngle(v)}/>
               </div>
+              <div style={{ display: "flex", justifyContent: "center", marginTop: 10 }}>
+                <button
+                  className="sp-btn"
+                  onClick={() => {
+                    setSortAmt(0.5); setSortLow(0.0); setSortHigh(1.0); setSortSegment(0.5);
+                    setSortRandom(0.2); setSortWobble(0.0); setRGBDrift(0.0); setScanTear(0.0);
+                    setSortDirection(0); setSortMode(0); setSortInterval(0); setSortAngle(0);
+                  }}
+                  style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
+                  title="Reset every PIXEL SORT control to default"
+                >HARD RESET</button>
+              </div>
             </SynthPanel>
-            )}
 
             {/* ── RGBNDR RACK (analog VGA channel-bender) ──────────── */}
             <SynthPanel title="RGBNDR" subtitle="VIDEO SYNTH · 5 CTRL" accent="rgba(231,174,255,0.95)">
@@ -9125,13 +9350,52 @@ export default function SpectraAfter() {
                 <Knob label="RUPTURE" value={rupture} min={0} max={1} step={0.01} defaultValue={0.0} onChange={setRupture}/>
                 <Knob label="H-SYNC"  value={hsync}   min={0} max={1} step={0.01} defaultValue={0.0} onChange={setHsync}/>
               </div>
+              <div style={{ display: "flex", justifyContent: "center", marginTop: 10 }}>
+                <button
+                  className="sp-btn"
+                  onClick={() => {
+                    setRgbR(0.0); setRgbG(0.0); setRgbB(0.0); setRgbBars(0.0);
+                    setRgbSwap(0); setRupture(0.0); setHsync(0.0);
+                  }}
+                  style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
+                  title="Reset every RGBNDR control to default"
+                >HARD RESET</button>
+              </div>
               <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(231,174,255,0.55)", textAlign: "center" }}>
                 per-channel oscillator channel-bend · SMPTE bar overlay · channel rewiring · _rupture_ destroy combo
               </div>
             </SynthPanel>
 
+            {/* ── PIXEL DRAWER RACK (living glitching pixel collage) ── */}
+            <SynthPanel title="PIXEL DRAWER" subtitle={pixelDrawerActive ? `LIVE · ${pxCellsRef.current.length} cells` : "OFF"} accent="rgba(255,210,140,0.95)">
+              <div style={{ display: "flex", justifyContent: "center", gap: 8, marginBottom: 10 }}>
+                <SynthSwitch label="DRAWER" on={pixelDrawerActive} onChange={setPixelDrawerActive} onLabel="LIVE" offLabel="OFF"/>
+                <button
+                  className="sp-btn"
+                  onClick={pxClearCells}
+                  style={{ fontSize: 9, padding: "6px 10px", letterSpacing: "1.4px", color: "rgba(255,210,140,0.95)" }}
+                  title="Wipe pixels but keep settings"
+                >WIPE</button>
+                <button
+                  className="sp-btn"
+                  onClick={pxResetAll}
+                  style={{ fontSize: 9, padding: "6px 10px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
+                  title="Hard reset: wipe pixels + reset all knobs to default"
+                >HARD RESET</button>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
+                <Knob label="SIZE"   value={pxSize}   min={0} max={1} step={0.01} defaultValue={0.4}  onChange={setPxSize}/>
+                <Knob label="GLITCH" value={pxGlitch} min={0} max={1} step={0.01} defaultValue={0.55} onChange={setPxGlitch}/>
+                <Knob label="GROW"   value={pxGrow}   min={0} max={1} step={0.01} defaultValue={0.35} onChange={setPxGrow}/>
+                <Knob label="DECAY"  value={pxDecay}  min={0} max={1} step={0.01} defaultValue={0.35} onChange={setPxDecay}/>
+                <Knob label="SPEED"  value={pxSpeed}  min={0} max={1} step={0.01} defaultValue={0.45} onChange={setPxSpeed}/>
+              </div>
+              <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(231,174,255,0.55)", textAlign: "center" }}>
+                draw on the canvas → cells drift, mutate hue, multiply, decay · uses BRUSH color from COLOR panel
+              </div>
+            </SynthPanel>
+
             {/* ── DATAMOSH RACK ─────────────────────────────────────── */}
-            {showMoshRack && (
             <SynthPanel title="DATAMOSH" subtitle="MOSH · 12 CTRL" accent="rgba(231,174,255,0.95)">
               <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
                 <Knob label="INTENS"   value={datamosh}     min={0} max={2}  step={0.01} defaultValue={0.0}  onChange={setDatamosh}/>
@@ -9149,8 +9413,19 @@ export default function SpectraAfter() {
               <div style={{ display: "flex", justifyContent: "center", marginTop: 12 }}>
                 <SynthSwitch label="MOSH HARD" on={moshHard} onChange={setMoshHard} onLabel="HARD" offLabel="SOFT"/>
               </div>
+              <div style={{ display: "flex", justifyContent: "center", marginTop: 10 }}>
+                <button
+                  className="sp-btn"
+                  onClick={() => {
+                    setDatamosh(0.0); setMoshIFrame(0.0); setMoshMotion(0.0); setMoshBleed(0.0);
+                    setMoshMap(0.0); setMoshDistort(0.0); setTimeSmear(0.0); setChrash(0.0);
+                    setFeedback(0.0); setBlockGlitch(0.0); setLiquid(0.0); setMoshHard(false);
+                  }}
+                  style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
+                  title="Reset every DATAMOSH control to default"
+                >HARD RESET</button>
+              </div>
             </SynthPanel>
-            )}
 
             {/* ── PIXEL GENERATOR RACK ──────────────────────────────── */}
             <SynthPanel title="PIXEL GENERATOR" subtitle={`GEN · ${genStyle}`} accent="rgba(255,210,140,0.95)">
@@ -9196,15 +9471,7 @@ export default function SpectraAfter() {
                   );
                 })}
               </div>}
-              {false && <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
-                <SynthSwitch
-                  label="AUTO CYCLE"
-                  on={genAutoCycle}
-                  onChange={setGenAutoCycle}
-                  onLabel="ON"
-                  offLabel="OFF"
-                />
-              </div>}
+
 
               {/* ── Layer selector tabs (L1..L4 + MASTER) ────────────
                   Tap a tab to select it — every knob, the style grid and
@@ -9416,7 +9683,7 @@ export default function SpectraAfter() {
             </SynthPanel>
 
             {/* ── COLOR (master color bus — every color control lives here) ── */}
-            <SynthPanel title="COLOR" subtitle={`PAL · ${genPalette}${genAutoCycle && genPalette !== "MONO" && genPalette !== "CUSTOM" ? " ↻" : ""}`} accent="rgba(255,180,255,0.95)">
+            <SynthPanel title="COLOR" subtitle={`PAL · ${genPalette}`} accent="rgba(255,180,255,0.95)">
               {/* Palette selector — moved from PIXEL GENERATOR */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4, marginBottom: 8 }}>
                 {GEN_PALETTE_KEYS.map((pk) => {
@@ -9459,9 +9726,6 @@ export default function SpectraAfter() {
                   );
                 })}
               </div>
-              <div style={{ display: "flex", justifyContent: "center", marginBottom: 12 }}>
-                <SynthSwitch label="AUTO CYCLE" on={genAutoCycle} onChange={setGenAutoCycle} onLabel="ON" offLabel="OFF"/>
-              </div>
               {/* Generator color knobs (was in PIXEL GENERATOR) */}
               <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(255,180,255,0.7)", textTransform: "uppercase", marginBottom: 4, paddingLeft: 2 }}>Generator Color</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center", marginBottom: 12 }}>
@@ -9502,11 +9766,11 @@ export default function SpectraAfter() {
                   [13,"FEEDBK"],[14,"BLKROT"],[19,"ACID"],[20,"DITHER"],
                   [22,"MELT"],[24,"MIRROR"],
                 ] as [ModeId,string][]).map(([id, lbl]) => {
-                  const on = !comboMode && mode === id;
+                  const on = mode === id;
                   return (
                     <button
                       key={`vm-${id}`}
-                      onClick={() => { setComboMode(false); setComboLayers([]); setMode(id); }}
+                      onClick={() => { setMode(id); }}
                       style={{
                         padding: "7px 2px",
                         fontSize: 9,
