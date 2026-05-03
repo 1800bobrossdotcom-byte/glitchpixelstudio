@@ -2425,7 +2425,13 @@ void main() {
       // when the camera sample is mirrored (front cam, uMirror>0.5)
       // we must mirror the mask lookup too — otherwise the roto sits
       // on the OPPOSITE side of where the person actually appears.
-      vec2 fUv = vUv;
+      // v1.2.48: the camera texture is sampled via adjustUv() which
+      // flips Y (uv.y = 1.0 - uv.y). The mask was being sampled with
+      // raw vUv, leaving it Y-mirrored relative to the camera — so the
+      // person's mask landed on the OPPOSITE vertical half of the
+      // screen ("image upside down"). Match the camera's Y flip so the
+      // roto sits exactly where the person is in the rendered frame.
+      vec2 fUv = vec2(vUv.x, 1.0 - vUv.y);
       if (uMirror > 0.5) fUv.x = 1.0 - fUv.x;
       // Sample with a 3-tap box for a softer roto edge — the model
       // outputs hard pixels which would otherwise alias the FX zones.
@@ -4217,7 +4223,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.47";
+export const APP_VERSION = "1.2.48";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
