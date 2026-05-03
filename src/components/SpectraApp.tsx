@@ -2420,14 +2420,20 @@ void main() {
     float fm;
     if (uFaceTexValid > 0.5) {
       // True per-pixel mask from MediaPipe selfie segmentation.
+      // The mask was captured from the un-mirrored video element, so
+      // when the camera sample is mirrored (front cam, uMirror>0.5)
+      // we must mirror the mask lookup too — otherwise the roto sits
+      // on the OPPOSITE side of where the person actually appears.
+      vec2 fUv = vUv;
+      if (uMirror > 0.5) fUv.x = 1.0 - fUv.x;
       // Sample with a 3-tap box for a softer roto edge — the model
       // outputs hard pixels which would otherwise alias the FX zones.
       vec2 px = vec2(1.0) / max(uResolution, vec2(1.0));
-      float p = texture2D(uFaceTex, vUv).r;
-      float p1 = texture2D(uFaceTex, vUv + vec2( px.x,  0.0)).r;
-      float p2 = texture2D(uFaceTex, vUv + vec2(-px.x,  0.0)).r;
-      float p3 = texture2D(uFaceTex, vUv + vec2( 0.0,  px.y)).r;
-      float p4 = texture2D(uFaceTex, vUv + vec2( 0.0, -px.y)).r;
+      float p = texture2D(uFaceTex, fUv).r;
+      float p1 = texture2D(uFaceTex, fUv + vec2( px.x,  0.0)).r;
+      float p2 = texture2D(uFaceTex, fUv + vec2(-px.x,  0.0)).r;
+      float p3 = texture2D(uFaceTex, fUv + vec2( 0.0,  px.y)).r;
+      float p4 = texture2D(uFaceTex, fUv + vec2( 0.0, -px.y)).r;
       float avg = (p + p1 + p2 + p3 + p4) * 0.2;
       // Feathered threshold gives a controllable roto edge.
       float t = clamp(uFaceFeather, 0.005, 0.5);
@@ -4123,7 +4129,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.25";
+export const APP_VERSION = "1.2.26";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -5685,11 +5691,18 @@ export default function SpectraAfter() {
       const audioBass = audioBassRef.current;
       const audioTreb = audioTrebleRef.current;
       const audioBeat = audioBeatRef.current;
+      // Combined "is anything happening on the mic right now?" signal —
+      // used as a global multiplier so the generator is OBVIOUSLY alive
+      // when the user enables the mic. Without this, the per-param
+      // audio terms below are too small to be visible against ambient
+      // tilt/cam motion.
+      const audioAny = Math.min(1, Math.max(audioLvl * 1.4, audioBass * 1.6, audioTreb * 1.3, audioBeat));
       const driveRaw = Math.min(1,
         accelE * 0.85
         + camE * 0.55
-        + audioLvl * 0.70
-        + audioBass * 0.50
+        + audioLvl * 1.10
+        + audioBass * 0.85
+        + audioBeat * 0.40
       );
 
       // Heavy one-pole low-pass — slow lerp toward target so values never
@@ -5697,12 +5710,16 @@ export default function SpectraAfter() {
       // micro-jitter doesn't translate into a perceptible loopy wobble in
       // the generator field. Push smooths fast-up / slow-down so taps
       // feel like soft pulses.
-      genDriveSmoothRef.current += (driveRaw - genDriveSmoothRef.current) * 0.04;
+      // Audio drives this bus — use a faster attack when the new target
+      // is louder so beats actually punch through, but keep the slow
+      // decay so the field doesn't strobe.
+      const driveK = driveRaw > genDriveSmoothRef.current ? 0.18 : 0.04;
+      genDriveSmoothRef.current += (driveRaw - genDriveSmoothRef.current) * driveK;
       genTiltXSmoothRef.current += (tiltXraw - genTiltXSmoothRef.current) * 0.025;
       genTiltYSmoothRef.current += (tiltYraw - genTiltYSmoothRef.current) * 0.025;
       // Push channel = physical impulse + audio beat (additive, fast-up/slow-down).
-      const pushTarget = Math.min(1, pushRaw + audioBeat * 0.85);
-      const pushK = pushTarget > genPushSmoothRef.current ? 0.20 : 0.03;
+      const pushTarget = Math.min(1, pushRaw + audioBeat * 1.20);
+      const pushK = pushTarget > genPushSmoothRef.current ? 0.30 : 0.04;
       genPushSmoothRef.current += (pushTarget - genPushSmoothRef.current) * pushK;
       const drive = genDriveSmoothRef.current;
       const tiltX = genTiltXSmoothRef.current;
@@ -5733,8 +5750,12 @@ export default function SpectraAfter() {
       // bounded boost on top so beats and tilt still kick the cadence.
       const baseStep = 0.016;
       const motionStep = baseStep * drive * 0.45;
+      // Audio explicitly speeds up the evolution clock — bass moves the
+      // field faster, treble adds a small jitter step so high-frequency
+      // content (hi-hats, claps) shows up as crisper detail churn.
+      const audioStep  = baseStep * (audioBass * 1.20 + audioLvl * 0.45 + audioTreb * 0.25 + audioBeat * 0.65);
       const ambientDrift = 0.0011 + ((genSeedRef.current % 101) / 101) * 0.0019;
-      genTimeRef.current += baseStep + motionStep + ambientDrift;
+      genTimeRef.current += baseStep + motionStep + audioStep + ambientDrift;
 
       const palKey = genPaletteRef.current;
       const pal = GEN_PALETTES[palKey];
@@ -5790,9 +5811,12 @@ export default function SpectraAfter() {
       const baseEnv = {
         resolution: genResolutionRef.current,
         time: genTimeRef.current,
-        motionX: tiltX * 0.7 + flowX,
-        motionY: tiltY * 0.7 + flowY,
-        depthPush: Math.min(1, push * 0.6 + audioBeat * 0.25),
+        // Audio nudges the motion field too — bass pushes laterally,
+        // treble adds a small wiggle so the pattern visibly breathes
+        // with the mic input.
+        motionX: tiltX * 0.7 + flowX + audioBass * 0.18 - audioTreb * 0.10,
+        motionY: tiltY * 0.7 + flowY + audioBeat * 0.22,
+        depthPush: Math.min(1, push * 0.6 + audioBeat * 0.55 + audioAny * 0.20),
       };
       // Map a layer's own params into a full GenParams record, plus the
       // shared environment + motion-driven boosts (jitter, warp, density).
@@ -8002,6 +8026,46 @@ export default function SpectraAfter() {
         .neon-mode .sp-panel-glass label,
         .neon-mode .sp-panel-glass span {
           text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 1px 0 rgba(0,0,0,0.8);
+        }
+        /* CHUNKY GLASS — applies to EVERY button inside the rack panel,
+           not just the explicitly-classed sp-btn / sp-tile pads. Most
+           generator / mode / palette buttons have inline-style only,
+           and we want them all to read as the same poured-glass slabs.
+           These rules are last so !important wins over inline styles. */
+        .neon-mode .sp-panel-glass button {
+          background: linear-gradient(180deg,
+            rgba(60,20,90,0.32) 0%,
+            rgba(20,5,40,0.20) 50%,
+            rgba(8,0,18,0.36) 100%) !important;
+          backdrop-filter: blur(8px) saturate(1.5);
+          -webkit-backdrop-filter: blur(8px) saturate(1.5);
+          border: 1px solid rgba(231,174,255,0.42) !important;
+          border-radius: 6px !important;
+          color: rgba(255,225,255,0.96) !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.32),
+            inset 0 -2px 0 rgba(0,0,0,0.45),
+            inset 0 0 22px rgba(176,20,240,0.18),
+            0 4px 12px rgba(176,20,240,0.28) !important;
+        }
+        .neon-mode .sp-panel-glass button:hover {
+          background: linear-gradient(180deg,
+            rgba(80,30,120,0.40) 0%,
+            rgba(30,10,55,0.24) 50%,
+            rgba(12,0,28,0.44) 100%) !important;
+          border-color: rgba(255,200,255,0.7) !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.45),
+            inset 0 -2px 0 rgba(0,0,0,0.5),
+            inset 0 0 30px rgba(255,80,255,0.28),
+            0 6px 18px rgba(255,40,255,0.42) !important;
+        }
+        /* SynthPanel borders + Knob caps in NEON mode also get a hint
+           of glass so the rack chrome itself melts into the panel
+           rather than staying opaque metal-textured slab. */
+        .neon-mode .sp-panel-glass [style*="border"] {
+          backdrop-filter: blur(4px);
+          -webkit-backdrop-filter: blur(4px);
         }
         /* Sliders + range inputs get a glassy track too. */
         .neon-mode input[type="range"] {
