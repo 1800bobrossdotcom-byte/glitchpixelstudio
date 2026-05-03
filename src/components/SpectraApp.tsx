@@ -4223,12 +4223,16 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.50";
+export const APP_VERSION = "1.2.51";
 
-const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
+// v1.2.51 — extended to 30 minutes for paid-tier QA / debugging passes.
+const GRACE_TOTAL_MS = 30 * 60 * 1000; // 30 minutes (testing)
 const ENT_KEY = "gps.entitlement";
-const GRACE_KEY = "gps.graceRemainingMs";
-const GRACE_INSTALL_KEY = "gps.graceInstallTs";
+// v1.2.51 — bumped key so devices that were capped at the old 3-minute
+// total (or already burned through it) get a fresh 30-minute seed on
+// first launch of this build instead of inheriting a near-zero balance.
+const GRACE_KEY = "gps.graceRemainingMs.v2";
+const GRACE_INSTALL_KEY = "gps.graceInstallTs.v2";
 
 function loadEntitlement(): Entitlement {
   try {
@@ -4825,12 +4829,18 @@ export default function SpectraAfter() {
               if (u8) {
                 for (let i = 0, j = 0; i < u8.length; i++, j += 4) {
                   const m = u8[i] > 0 ? 255 : 0;
-                  rgba[j] = m; rgba[j+1] = m; rgba[j+2] = m; rgba[j+3] = 255;
+                  // v1.2.51 — alpha = mask too, so faceMaskCanvas is
+                  // also usable as an alpha matte for 2D-canvas
+                  // compositing (source-in / destination-in) when we
+                  // cut the camera-person out for the gen/upload
+                  // composite path. Shader still reads .r so behavior
+                  // there is unchanged.
+                  rgba[j] = m; rgba[j+1] = m; rgba[j+2] = m; rgba[j+3] = m;
                 }
               } else if (f32) {
                 for (let i = 0, j = 0; i < f32.length; i++, j += 4) {
                   const m = Math.round(Math.min(1, Math.max(0, f32[i])) * 255);
-                  rgba[j] = m; rgba[j+1] = m; rgba[j+2] = m; rgba[j+3] = 255;
+                  rgba[j] = m; rgba[j+1] = m; rgba[j+2] = m; rgba[j+3] = m;
                 }
               }
               try { cat.close?.(); } catch { /* noop */ }
@@ -4961,6 +4971,12 @@ export default function SpectraAfter() {
   const genLayerCanvasesRef = useRef<HTMLCanvasElement[]>([]);
   const genCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const genCompositeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  // v1.2.51 — person-on-source composite canvases. faceComposeCanvasRef
+  // is the final RGBA frame uploaded to WebGL (gen/upload as background +
+  // camera-person on top); faceComposePersonRef is a scratch canvas used
+  // to mask the camera frame down to the person silhouette before stamping.
+  const faceComposeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const faceComposePersonRef = useRef<HTMLCanvasElement | null>(null);
   const genTimeRef = useRef(0);
   const motionSampleCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const motionPrevLumaRef = useRef<Uint8ClampedArray | null>(null);
@@ -6684,6 +6700,63 @@ export default function SpectraAfter() {
     } else if (cameraActiveRef.current && video && video.readyState >= 2) {
       texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
     }
+
+    // v1.2.51 — PERSON-OVER-SOURCE COMPOSITE.
+    // When the user is on a non-camera source (generator / upload) AND face
+    // FX is engaged, the camera + segmenter run continuously underneath. We
+    // cut the person out of the camera frame and stamp them on top of the
+    // current texSource so the user appears INSIDE the procedural / uploaded
+    // background. The FG (FACE) vs BG knob continues to control which side
+    // the FX rack paints on, via the existing uFaceInvert plumbing in the
+    // shader — here we only handle the source layering. If the segmenter
+    // mask isn't ready yet (texValid=false) we skip the composite this
+    // frame and fall back to the un-composited source.
+    if (
+      texSource &&
+      srcMode !== "camera" &&
+      faceFxRef.current.active &&
+      faceFxRef.current.texValid &&
+      cameraActiveRef.current &&
+      video && video.readyState >= 2 && video.videoWidth > 0
+    ) {
+      const maskCanvas = faceMaskCanvasRef.current;
+      if (maskCanvas) {
+        const W = srcW | 0;
+        const H = srcH | 0;
+        if (W > 0 && H > 0) {
+          // Scratch: video-clipped-to-person.
+          let person = faceComposePersonRef.current;
+          if (!person) { person = document.createElement("canvas"); faceComposePersonRef.current = person; }
+          if (person.width !== W || person.height !== H) { person.width = W; person.height = H; }
+          const pctx = person.getContext("2d");
+          // Output: source + person on top.
+          let out = faceComposeCanvasRef.current;
+          if (!out) { out = document.createElement("canvas"); faceComposeCanvasRef.current = out; }
+          if (out.width !== W || out.height !== H) { out.width = W; out.height = H; }
+          const octx = out.getContext("2d");
+          if (pctx && octx) {
+            // 1. Fill scratch with the camera frame (un-mirrored, raw stream).
+            pctx.globalCompositeOperation = "source-over";
+            pctx.globalAlpha = 1;
+            pctx.clearRect(0, 0, W, H);
+            pctx.drawImage(video, 0, 0, W, H);
+            // 2. Knock out non-person pixels by intersecting with the mask
+            //    alpha (mask alpha was set to mask value in v1.2.51).
+            pctx.globalCompositeOperation = "destination-in";
+            pctx.drawImage(maskCanvas, 0, 0, W, H);
+            pctx.globalCompositeOperation = "source-over";
+            // 3. Compose: source first, person on top.
+            octx.globalCompositeOperation = "source-over";
+            octx.globalAlpha = 1;
+            octx.clearRect(0, 0, W, H);
+            octx.drawImage(texSource as CanvasImageSource, 0, 0, W, H);
+            octx.drawImage(person, 0, 0, W, H);
+            texSource = out;
+          }
+        }
+      }
+    }
+
     const hasVideo = !!texSource;
     const u = uniformsRef.current;
     const canvas = canvasRef.current!;
@@ -8107,18 +8180,20 @@ export default function SpectraAfter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bootDone]);
 
-  // Auto-start camera only when source mode actually wants the camera.
-  // Boot default is "generator" → camera stays OFF (flat background, no prompt).
+  // Auto-start camera when source mode wants the camera, OR when face FX
+  // is engaged on a non-camera source (v1.2.51 composite path needs the
+  // camera + segmenter running underneath gen/upload so the person can be
+  // cut out and laid over the source).
   useEffect(() => {
     if (!bootDone) return;
-    if (sourceMode === "camera") {
+    if (sourceMode === "camera" || faceFxMode !== "OFF") {
       void startCamera();
     } else if (cameraActive) {
       stopCamera();
     }
     return () => { startCameraInFlightRef.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bootDone, sourceMode]);
+  }, [bootDone, sourceMode, faceFxMode]);
 
   useEffect(() => {
     const raw = localStorage.getItem(PRESETS_KEY);
@@ -8846,7 +8921,7 @@ export default function SpectraAfter() {
 
             <div style={{ marginTop: 18, fontSize: 9, letterSpacing: "1.4px", color: "rgba(200,180,220,0.55)", textTransform: "uppercase", lineHeight: 1.6 }}>
               In-app purchase wires up in the next update. For now, install
-              gets a 3-minute cumulative grace period before the lock screen.
+              gets a 30-minute cumulative grace period before the lock screen.
             </div>
           </div>
         </div>
@@ -8867,7 +8942,7 @@ export default function SpectraAfter() {
           <div style={{ fontSize: 12, letterSpacing: "5px", color: "rgba(231,174,255,0.55)", marginBottom: 6 }}>GLITCH PHOTO STUDIO</div>
           <div style={{ fontSize: 28, letterSpacing: "6px", color: "rgba(255,210,140,0.98)", textShadow: "0 0 14px rgba(232,160,32,0.7)", marginBottom: 4 }}>LOCKED</div>
           <div style={{ fontSize: 10, letterSpacing: "1.6px", color: "rgba(200,180,220,0.6)", marginBottom: 22, textAlign: "center", maxWidth: 320 }}>
-            Your 3-minute trial has ended. Unlock GPS to keep glitching.
+            Your 30-minute trial has ended. Unlock GPS to keep glitching.
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%", maxWidth: 340 }}>
