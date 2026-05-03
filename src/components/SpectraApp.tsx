@@ -3771,12 +3771,17 @@ function SpectraIntro({ onDone }: { onDone: () => void }) {
   //   1600 – 2600ms  resolved  (clean icon shows, wordmark fades in)
   //   2600 – 3300ms  out       (whole overlay fades to transparent)
   //   3300+          gone      (unmounts)
+  // CRITICAL: keep onDone in a ref so phase timers don't reset every time
+  // the parent re-renders (the boot ticker re-renders ~12×/sec, which used
+  // to clear+restart these setTimeouts on every tick → intro never finished).
+  const onDoneRef = useRef(onDone);
+  useEffect(() => { onDoneRef.current = onDone; }, [onDone]);
   useEffect(() => {
     const t1 = setTimeout(() => setPhase("resolved"), 1600);
     const t2 = setTimeout(() => setPhase("out"), 2600);
-    const t3 = setTimeout(() => { setPhase("gone"); onDone(); }, 3300);
+    const t3 = setTimeout(() => { setPhase("gone"); onDoneRef.current(); }, 3300);
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
-  }, [onDone]);
+  }, []);
 
   useEffect(() => {
     const cv = canvasRef.current; if (!cv) return;
@@ -4078,7 +4083,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.21";
+export const APP_VERSION = "1.2.22";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
