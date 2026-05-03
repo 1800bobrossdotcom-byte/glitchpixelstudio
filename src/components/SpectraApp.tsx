@@ -3888,7 +3888,7 @@ export const APP_TIER: AppTier = "PRO";
 export const TIER_FEATURES = {
   free: [
     "All visual modes (PXL, MOSH, glitch rack, generator)",
-    "DRAW: paint where the glitch FX appear (Glitch!-style)",
+    "DRAW: paint where the glitch FX appear, on uploaded images (Glitch!-style)",
     "AUTOMATE LFO + presets stored on device",
     "Up to 30s recording · standard quality",
     "Save / share via system share sheet",
@@ -4231,6 +4231,17 @@ export default function SpectraAfter() {
     currentStrokeRef.current = null;
     setStrokes([]);
   }, []);
+  // DRAW is currently only safe over static image uploads (live camera + generator
+  // share the live render path with the FX mask, which the draw overlay corrupts).
+  const drawAvailable = sourceMode === "upload" && uploadKind === "image";
+  // Auto-bail out of DRAW the moment the source stops being an image upload.
+  useEffect(() => {
+    if (!drawAvailable && drawActive) {
+      setDrawActive(false);
+      currentStrokeRef.current = null;
+      setStrokes([]);
+    }
+  }, [drawAvailable, drawActive]);
   // Reserved setters (color cycle UI may return later)
   void setColorCycle; void setColorCycleSpeed;
 
@@ -5817,7 +5828,7 @@ export default function SpectraAfter() {
     return { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height };
   };
   const onPointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!drawActive) {
+    if (!drawActive || !drawAvailable) {
       // Gesture only — do NOT touch touchRef so the shader FX flow is uninterrupted
       holdFiredRef.current = false;
       holdTimerRef.current = setTimeout(() => {
@@ -5830,10 +5841,10 @@ export default function SpectraAfter() {
     const pos = getCanvasNorm(e, e.currentTarget);
     currentStrokeRef.current = { points: [{ ...pos, pressure: 1 }], color: brushColorRef.current, width: brushSize, opacity: brushOpacity, brush: brushTypeRef.current };
     renderDrawOverlay();
-  }, [drawActive, brushSize, brushOpacity, renderDrawOverlay]);
+  }, [drawActive, drawAvailable, brushSize, brushOpacity, renderDrawOverlay]);
 
   const onPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!drawActive) {
+    if (!drawActive || !drawAvailable) {
       return;
     }
     if (!currentStrokeRef.current) return;
@@ -5845,10 +5856,10 @@ export default function SpectraAfter() {
     currentStrokeRef.current.width = brushSize * pressure;
     if (colorCycleRef.current) currentStrokeRef.current.color = brushColorRef.current;
     renderDrawOverlay();
-  }, [drawActive, brushSize, renderDrawOverlay]);
+  }, [drawActive, drawAvailable, brushSize, renderDrawOverlay]);
 
   const onPointerUp = useCallback(() => {
-    if (!drawActive) {
+    if (!drawActive || !drawAvailable) {
       if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
       if (holdFiredRef.current) {
         stopRecordingRef.current();
@@ -5861,7 +5872,7 @@ export default function SpectraAfter() {
     }
     currentStrokeRef.current = null;
     renderDrawOverlay();
-  }, [drawActive, renderDrawOverlay]);
+  }, [drawActive, drawAvailable, renderDrawOverlay]);
 
   // ── Camera ────────────────────────────────────────────────
   // Request camera permissions on mobile (Capacitor)
@@ -7307,14 +7318,19 @@ export default function SpectraAfter() {
           >{cameraFacing === "user" ? "FRONT" : "FLIP"}</button>
           <button
             className="sp-btn"
-            onClick={() => setDrawActive(a => !a)}
+            onClick={() => { if (drawAvailable) setDrawActive(a => !a); }}
+            disabled={!drawAvailable}
             style={{
               ...topBtnStyle, fontSize: 10, letterSpacing: "1px",
-              color: drawActive ? T.ochre : undefined,
-              borderColor: drawActive ? T.amber : undefined,
+              color: drawActive ? T.ochre : (drawAvailable ? undefined : "rgba(244,246,255,0.32)"),
+              borderColor: drawActive ? T.amber : (drawAvailable ? undefined : "rgba(244,246,255,0.18)"),
               boxShadow: drawActive ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
+              opacity: drawAvailable ? 1 : 0.45,
+              cursor: drawAvailable ? "pointer" : "not-allowed",
             }}
-            title="DRAW: paint where the glitch FX should appear (rest stays clean)"
+            title={drawAvailable
+              ? "DRAW: paint where the glitch FX should appear (rest stays clean)"
+              : "DRAW is available when an IMAGE UPLOAD is the source. Load an image from the SOURCE panel."}
           >{drawActive ? "✎ DRAW" : "✎"}</button>
           <button
             className="sp-btn"
@@ -7376,9 +7392,9 @@ export default function SpectraAfter() {
               ref={drawCanvasRef}
               style={{
                 position: "absolute", inset: 0, width: "100%", height: "100%",
-                cursor: drawActive ? "crosshair" : "default", zIndex: 3,
+                cursor: drawActive && drawAvailable ? "crosshair" : "default", zIndex: 3,
                 touchAction: "none",
-                opacity: drawActive ? 0.32 : 0,
+                opacity: drawActive && drawAvailable ? 0.32 : 0,
                 mixBlendMode: "screen",
                 transition: "opacity 140ms ease",
               }}
@@ -7390,8 +7406,8 @@ export default function SpectraAfter() {
             {/* Hidden mask canvas for FX mask */}
             <canvas ref={maskCanvasRef} style={{ display: "none" }} width={256} height={256} />
 
-            {/* ── Floating DRAW toolbar (Glitch! style) */}
-            {drawActive && (
+            {/* ── Floating DRAW toolbar (Glitch! style) — only over static image uploads */}
+            {drawActive && drawAvailable && (
               <div
                 style={{
                   position: "absolute", left: 10, top: 10, zIndex: 7,
