@@ -8449,7 +8449,52 @@ export default function SpectraAfter() {
             </SynthPanel>
 
             {/* ── FX SETTINGS ─────────────────────────────────────── */}
-            <SynthPanel title="FX SETTINGS" subtitle="WARP · 5 CTRL" accent="rgba(231,174,255,0.95)">
+            <SynthPanel title="FX SETTINGS" subtitle="VISUAL MODE · WARP · 5 CTRL" accent="rgba(231,174,255,0.95)">
+              {/* Full visual-mode picker (the classic NIGHT/THERMAL/EDGE/MOTION
+                  /CMYK/etc. set). Selecting any of these overrides the LAYER
+                  MODE PXL/MOSH selection so the entire shader pipeline runs
+                  that effect instead. NORMAL clears the override. */}
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(4,minmax(0,1fr))",
+                gap: 4,
+                marginBottom: 10,
+              }}>
+                {([
+                  [0,"NORMAL"],[1,"NIGHT"],[2,"THERMAL"],[3,"EDGE"],
+                  [4,"MOTION"],[5,"CMYK"],[6,"HALFT"],[8,"GLITCH"],
+                  [10,"KALEID"],[11,"POSTER"],[12,"CHROMA"],[13,"FEEDBK"],
+                  [14,"BLKROT"],[15,"CORRUPT"],[16,"SLICER"],[17,"VORTEX"],
+                  [18,"PRISM"],[19,"ACID"],[20,"DITHER"],[21,"STUTTR"],
+                  [22,"MELT"],[23,"STATIC"],[24,"MIRROR"],[25,"SQUASH"],
+                  [26,"RIFT"],
+                ] as [ModeId,string][]).map(([id, lbl]) => {
+                  const on = !comboMode && mode === id;
+                  return (
+                    <button
+                      key={`vm-${id}`}
+                      onClick={() => { setComboMode(false); setComboLayers([]); setMode(id); }}
+                      style={{
+                        padding: "7px 2px",
+                        fontSize: 9,
+                        letterSpacing: "1px",
+                        fontWeight: 700,
+                        fontFamily: "'Courier New',monospace",
+                        cursor: "pointer", borderRadius: 4,
+                        border: on ? "1px solid rgba(231,174,255,0.85)" : "1px solid rgba(0,0,0,0.72)",
+                        color: on ? "rgba(255,220,255,1)" : "rgba(200,180,220,0.72)",
+                        textShadow: on ? "0 0 6px rgba(231,174,255,0.7)" : "none",
+                        background: on
+                          ? "linear-gradient(180deg, #3a1a4d 0%, #1a0a25 100%)"
+                          : "linear-gradient(180deg, #2a2a30 0%, #14141a 100%)",
+                        boxShadow: on
+                          ? "inset 0 1px 1px rgba(255,220,255,0.18), 0 0 8px rgba(231,174,255,0.35)"
+                          : "inset 0 1px 1px rgba(255,255,255,0.06), inset 0 -2px 3px rgba(0,0,0,0.7)",
+                      }}
+                    >{lbl}</button>
+                  );
+                })}
+              </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
                 <Knob label="DISRUPT"  value={disrupt}         min={0} max={1} step={0.01} defaultValue={0.0} onChange={setDisrupt}/>
                 <Knob label="COUNT"    value={disruptCount}    min={0} max={1} step={0.01} defaultValue={0.4} onChange={setDisruptCount}/>
