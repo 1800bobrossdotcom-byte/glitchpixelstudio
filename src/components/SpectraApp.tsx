@@ -4223,7 +4223,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.53";
+export const APP_VERSION = "1.2.54";
 
 // v1.2.51 — extended to 30 minutes for paid-tier QA / debugging passes.
 const GRACE_TOTAL_MS = 30 * 60 * 1000; // 30 minutes (testing)
@@ -6015,6 +6015,17 @@ export default function SpectraAfter() {
   });
 
   const render = useCallback(() => {
+    // v1.2.54: Pause the entire shader pipeline when the tab/app is hidden.
+    // The Capacitor WebView fires `visibilitychange` -> hidden when the app
+    // backgrounds, so this saves significant battery + heat without needing
+    // an explicit @capacitor/app dependency. We do NOT re-arm the rAF here;
+    // a `visibilitychange` listener attached in the lifecycle useEffect
+    // restarts the loop when the app foregrounds again.
+    if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+      // Drop our handle so the visibility listener can reliably restart.
+      rafRef.current = 0;
+      return;
+    }
     // LOW POWER: drop every other frame to halve GPU/CPU load + heat.
     // We still re-arm the RAF so input + state stays responsive.
     if (lowPowerRef.current) {
@@ -8226,9 +8237,19 @@ export default function SpectraAfter() {
     resize();
     window.addEventListener("resize", resize);
     rafRef.current = requestAnimationFrame(render);
+    // v1.2.54: when the app comes back to foreground, the render loop has
+    // exited (it returns early on hidden). Kick it back off here.
+    const onVisChange = () => {
+      if (typeof document === "undefined") return;
+      if (document.visibilityState === "visible" && !rafRef.current) {
+        rafRef.current = requestAnimationFrame(render);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisChange);
     return () => {
       cancelAnimationFrame(rafRef.current);
       window.removeEventListener("resize", resize);
+      document.removeEventListener("visibilitychange", onVisChange);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bootDone]);
