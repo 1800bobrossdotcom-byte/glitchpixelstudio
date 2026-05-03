@@ -3,7 +3,6 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Filesystem, Directory } from "@capacitor/filesystem";
-import { Share } from "@capacitor/share";
 
 // ═══════════════════════════════════════════════════════════
 //  GPS — WebGL computational vision engine
@@ -4129,7 +4128,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.27";
+export const APP_VERSION = "1.2.28";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4234,45 +4233,57 @@ async function saveBlobToDevice(blob: Blob, filename: string): Promise<void> {
     directory: Directory.Cache,
     recursive: true,
   });
+  void written;
 
-  // ALSO write to the public Documents folder so the file is visible in
-  // the system Files app (and Gallery for media), even if the user
-  // dismisses the Share sheet without picking a target. This is the
-  // "prompt to save to phone files" path — the file IS already on the
-  // phone, the share sheet just lets the user route a copy elsewhere.
+  // Direct-to-phone save: NO share sheet. Write the file straight into
+  // the user's photo / video gallery so it shows up in Photos & Files
+  // immediately. We try DCIM (the canonical camera folder, indexed by
+  // the gallery on every Android), then Pictures, then Documents as
+  // last-resort fallbacks.
+  const isVideo = /\.(mp4|webm|mov)$/i.test(filename);
+  const galleryFolder = isVideo
+    ? `Movies/GlitchPixelStudio/${filename}`
+    : `DCIM/GlitchPixelStudio/${filename}`;
+  let savedTo: string | null = null;
   try {
     await Filesystem.writeFile({
-      path: `Spectra/${filename}`,
+      path: galleryFolder,
       data: base64,
-      directory: Directory.Documents,
+      directory: Directory.ExternalStorage,
       recursive: true,
     });
+    savedTo = galleryFolder;
   } catch (err) {
-    // Some Android scoped-storage configs reject Documents writes; fall
-    // back to ExternalStorage so the file still lands somewhere visible.
+    void err;
     try {
       await Filesystem.writeFile({
-        path: `Spectra/${filename}`,
+        path: `Pictures/GlitchPixelStudio/${filename}`,
         data: base64,
         directory: Directory.ExternalStorage,
         recursive: true,
       });
+      savedTo = `Pictures/GlitchPixelStudio/${filename}`;
     } catch (err2) {
-      void err; void err2;
+      void err2;
+      try {
+        await Filesystem.writeFile({
+          path: `GlitchPixelStudio/${filename}`,
+          data: base64,
+          directory: Directory.Documents,
+          recursive: true,
+        });
+        savedTo = `Documents/GlitchPixelStudio/${filename}`;
+      } catch (err3) { void err3; }
     }
   }
-
+  // Fire a transient browser-style notification via console + window
+  // event the UI can pick up to show a toast. Toast handler is in the
+  // main component.
   try {
-    await Share.share({
-      title: "GPS export",
-      text: `${filename} — also saved to Documents/Spectra/`,
-      url: written.uri,
-      dialogTitle: "Save / Share GPS export",
-    });
-  } catch (err) {
-    // User dismissed the sheet — not an error worth surfacing.
-    void err;
-  }
+    window.dispatchEvent(new CustomEvent("gps-saved", {
+      detail: { filename, path: savedTo ?? "phone storage" },
+    }));
+  } catch { /* noop */ }
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -4306,6 +4317,19 @@ export default function SpectraAfter() {
   const [bugOpen, setBugOpen] = useState(false);
   // ── Processing overlay (GIF/video encode + save). null = hidden.
   const [processingStatus, setProcessingStatus] = useState<{ label: string; pct?: number } | null>(null);
+  // ── Saved-to-phone toast. Listens to the "gps-saved" CustomEvent
+  // dispatched from saveBlobToDevice and shows a transient banner so
+  // the user knows the file landed on their phone (no Share sheet).
+  const [savedToast, setSavedToast] = useState<{ filename: string; path: string } | null>(null);
+  useEffect(() => {
+    const onSaved = (e: Event) => {
+      const ce = e as CustomEvent<{ filename: string; path: string }>;
+      setSavedToast(ce.detail);
+      window.setTimeout(() => setSavedToast(null), 3200);
+    };
+    window.addEventListener("gps-saved", onSaved as EventListener);
+    return () => window.removeEventListener("gps-saved", onSaved as EventListener);
+  }, []);
 
   // ── Source
   const [cameraActive, setCameraActive] = useState(false);
@@ -7939,10 +7963,31 @@ export default function SpectraAfter() {
           transition: transform 0.05s linear;
           will-change: transform;
         }
+        /* GLASS-BOTTOM-BOAT: in NEON the camera/image fills the entire
+           body region and the panel floats over the bottom as glass.
+           This makes the FX read full-bleed under the controls. */
+        .neon-mode .sp-body { position: relative !important; }
+        .neon-mode .sp-canvas-pane {
+          position: absolute !important;
+          inset: 0 !important;
+          height: auto !important;
+          z-index: 0;
+        }
+        .neon-mode .sp-canvas-pane > div {
+          aspect-ratio: auto !important;
+          width: 100% !important;
+          height: 100% !important;
+          max-width: none !important;
+          max-height: none !important;
+        }
         .neon-mode .sp-panel-glass {
-          margin-top: -25dvh !important;
-          position: relative;
-          z-index: 1;
+          margin-top: 0 !important;
+          position: absolute !important;
+          left: 0; right: 0; bottom: 0;
+          max-height: 70dvh;
+          overflow-y: auto;
+          overscroll-behavior: contain;
+          z-index: 5;
           /* Glass-bottom-boat panel — the FX layer reads through clearly. */
           background: linear-gradient(180deg, rgba(15,0,28,0.06) 0%, rgba(8,0,18,0.10) 38%, rgba(8,0,18,0.18) 100%) !important;
           backdrop-filter: blur(4px) saturate(1.3);
@@ -8082,6 +8127,35 @@ export default function SpectraAfter() {
         .neon-mode .sp-panel-glass [style*="border"] {
           backdrop-filter: blur(4px);
           -webkit-backdrop-filter: blur(4px);
+        }
+        /* SynthPanel chassis + brushed-metal inner workspace go GLASS
+           in NEON so the rack frames don't block the FX. The deep
+           purple chassis becomes a translucent purple film and the
+           brushed-metal interior becomes a subtle dark wash. */
+        .neon-mode .sp-rack {
+          background: linear-gradient(180deg,
+            rgba(42,10,74,0.18) 0%,
+            rgba(26,5,48,0.14) 60%,
+            rgba(15,2,32,0.20) 100%) !important;
+          backdrop-filter: blur(3px) saturate(1.25);
+          -webkit-backdrop-filter: blur(3px) saturate(1.25);
+          border: 1px solid rgba(231,174,255,0.28) !important;
+          box-shadow:
+            0 6px 18px rgba(176,20,240,0.20),
+            inset 0 1px 0 rgba(255,255,255,0.10),
+            inset 0 -2px 4px rgba(0,0,0,0.35) !important;
+        }
+        .neon-mode .sp-rack-inner {
+          background: linear-gradient(180deg,
+            rgba(28,28,34,0.22) 0%,
+            rgba(20,20,26,0.16) 50%,
+            rgba(14,14,20,0.24) 100%) !important;
+          backdrop-filter: blur(2px);
+          -webkit-backdrop-filter: blur(2px);
+          box-shadow:
+            inset 0 2px 4px rgba(0,0,0,0.40),
+            inset 0 -1px 0 rgba(255,255,255,0.08) !important;
+          border: 1px solid rgba(231,174,255,0.18) !important;
         }
         /* Sliders + range inputs get a glassy track too. */
         .neon-mode input[type="range"] {
@@ -8374,46 +8448,76 @@ export default function SpectraAfter() {
         </div>
       )}
 
+      {/* ── Saved-to-phone toast (no share sheet — file is already on disk) */}
+      {savedToast && (
+        <div style={{
+          position: "fixed", top: 80, left: "50%", transform: "translateX(-50%)",
+          zIndex: 9999,
+          padding: "10px 18px",
+          borderRadius: 10,
+          background: "linear-gradient(180deg, rgba(14,26,62,0.96) 0%, rgba(10,20,48,0.96) 100%)",
+          border: "1px solid rgba(111,125,255,0.7)",
+          boxShadow: "0 6px 24px rgba(26,28,242,0.45), inset 0 1px 0 rgba(255,255,255,0.18)",
+          color: "#F4F6FF",
+          fontFamily: "var(--font-nunito,'Nunito',sans-serif)",
+          fontWeight: 700,
+          fontSize: 12,
+          letterSpacing: "1.2px",
+          textTransform: "uppercase",
+          textAlign: "center",
+          maxWidth: "min(86vw, 380px)",
+          pointerEvents: "none",
+        }}>
+          <div style={{ color: "#6F7DFF", marginBottom: 3 }}>✓ Saved to phone</div>
+          <div style={{ fontSize: 10, opacity: 0.78, letterSpacing: "0.8px", textTransform: "none", wordBreak: "break-all" }}>
+            {savedToast.path}
+          </div>
+        </div>
+      )}
+
       {/* Hidden video */}
       <video ref={videoRef} style={{ display: "none" }} playsInline muted autoPlay/>
       <input ref={projectFileInputRef} type="file" accept=".spectra,application/json" style={{ display: "none" }}
         onChange={e => { const f = e.target.files?.[0]; if (f) { loadProject(f); } e.target.value = ""; }}/>
 
-      {/* ── Top bar (GPS — slim, navy gradient, electric-blue accent) */}
+      {/* ── Top bar (GPS — slim, navy gradient, electric-blue accent)
+           TWO-LINE LAYOUT: row 1 = logo + wordmark (centered, no buttons
+           crowding it). Row 2 = all the action buttons. */}
       <div style={{
-        minHeight: 52,
-        paddingTop: 6, paddingBottom: 6,
+        paddingTop: 4, paddingBottom: 4,
         background: "linear-gradient(180deg, #0E1A3E 0%, #0A1430 100%)",
         borderBottom: "1px solid rgba(111,125,255,0.45)",
-        display: "flex", justifyContent: "space-between",
-        alignItems: "center", padding: "6px 10px", gap: 8,
+        display: "flex", flexDirection: "column",
+        alignItems: "stretch", padding: "4px 10px", gap: 4,
         flexShrink: 0, zIndex: 20,
         boxShadow: "0 2px 12px rgba(0,0,0,0.85), 0 0 18px rgba(26,28,242,0.18)",
       }}>
-        {/* Left — stacked GPS wordmark: 40x40 logo + two-line title */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        {/* Row 1 — wordmark only, centered, nothing else on this line */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, minWidth: 0 }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={GPS_APP_ICON} alt="GPS" width={40} height={40} style={{
-            width: 40, height: 40, borderRadius: 9, objectFit: "cover",
+          <img src={GPS_APP_ICON} alt="GPS" width={36} height={36} style={{
+            width: 36, height: 36, borderRadius: 8, objectFit: "cover",
             boxShadow: "0 0 14px rgba(26,28,242,0.55), 0 0 4px rgba(111,125,255,0.6) inset",
             flexShrink: 0,
           }}/>
           <div style={{
-            display: "flex", flexDirection: "column", lineHeight: 1.0,
+            display: "flex", flexDirection: "row", alignItems: "baseline", gap: 6,
+            lineHeight: 1.0,
             fontFamily: "var(--font-nunito,'Nunito',sans-serif)",
             fontWeight: 800,
-            fontSize: "clamp(12px,3.6vw,15px)",
+            fontSize: "clamp(13px,3.8vw,18px)",
             letterSpacing: "1.4px",
             textTransform: "uppercase",
             color: "#F4F6FF",
             textShadow: "0 0 10px rgba(111,125,255,0.45)",
+            whiteSpace: "nowrap",
           }}>
             <span style={{ color: "#6F7DFF" }}>Glitch Pixel</span>
-            <span style={{ color: "#FF8500", fontSize: "0.86em", letterSpacing: "1.6px", marginTop: 1 }}>Studio 42069+</span>
+            <span style={{ color: "#FF8500", fontSize: "0.86em", letterSpacing: "1.6px" }}>Studio 42069+</span>
           </div>
         </div>
-        {/* Right */}
-        <div style={{ display: "flex", gap: 6, alignItems: "center", flexShrink: 0 }}>
+        {/* Row 2 — action buttons (centered, wraps if narrow) */}
+        <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "center", flexWrap: "wrap" }}>
           <button
             className="sp-btn"
             onClick={() => {
@@ -10032,7 +10136,7 @@ function SynthPanel({
     </div>
   );
   return (
-    <div style={{
+    <div className="sp-rack" style={{
       position: "relative",
       margin: "10px 10px 12px",
       padding: "10px 14px 14px",
@@ -10080,7 +10184,7 @@ function SynthPanel({
       </div>
 
       {/* Brushed-metal inner workspace */}
-      <div style={{
+      <div className="sp-rack-inner" style={{
         padding: "10px 8px 8px",
         borderRadius: 8,
         background: `
