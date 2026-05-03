@@ -2278,12 +2278,18 @@ uniform float uDatamosh;     // datamosh blend
 uniform float uChrash;       // chroma crash
 uniform sampler2D uMask;     // touch FX mask
 // Face FX universal mask: when uFaceActive, all FX intensity is
-// multiplied by either the face oval or its inverse, so any effect
-// (sort, RGB drift, melt, datamosh, ...) automatically respects it.
-uniform float uFaceActive;   // 0 off, 1 on
-uniform vec2  uFaceCenter;   // uv center of face (0..1)
-uniform float uFaceRadius;   // uv radius of face oval (vertical)
-uniform float uFaceInvert;   // 0 = FX inside face, 1 = FX outside face
+// multiplied by either the face/person mask or its inverse, so any
+// effect (sort, RGB drift, melt, datamosh, ...) automatically respects
+// it. uFaceTexValid switches between the AI segmentation texture
+// (uFaceTex, R channel = person probability) and the centered-oval
+// fallback driven by uFaceCenter / uFaceRadius.
+uniform float uFaceActive;     // 0 off, 1 on
+uniform float uFaceTexValid;   // 1 = use uFaceTex (AI mask), 0 = oval fallback
+uniform sampler2D uFaceTex;    // R-channel person mask (0..1)
+uniform vec2  uFaceCenter;     // uv center of fallback oval
+uniform float uFaceRadius;     // uv radius of fallback oval
+uniform float uFaceInvert;     // 0 = FX inside face/person, 1 = FX outside
+uniform float uFaceFeather;    // soft edge width for AI mask
 // Novel Signal FX
 uniform float uLiquid;       // curl-noise liquid warp
 uniform float uTimeSmear;    // luminance-weighted temporal smear
@@ -2409,11 +2415,29 @@ void main() {
   float mask = uTouchActive > 0.5 ? texture2D(uMask, vUv).r : 1.0;
   // Universal Face FX gate: multiplies into mask so EVERY downstream
   // effect (sort, RGB drift, melt, datamosh, contour, ascii, ...) is
-  // automatically restricted to the face oval (or its inverse).
+  // automatically restricted to the AI person mask (or its inverse).
   if (uFaceActive > 0.5) {
-    float ar = uResolution.x / max(uResolution.y, 1.0);
-    vec2 d = (vUv - uFaceCenter) * vec2(ar, 1.0) / max(uFaceRadius, 0.01);
-    float fm = 1.0 - smoothstep(0.65, 1.05, length(d));
+    float fm;
+    if (uFaceTexValid > 0.5) {
+      // True per-pixel mask from MediaPipe selfie segmentation.
+      // Sample with a 3-tap box for a softer roto edge — the model
+      // outputs hard pixels which would otherwise alias the FX zones.
+      vec2 px = vec2(1.0) / max(uResolution, vec2(1.0));
+      float p = texture2D(uFaceTex, vUv).r;
+      float p1 = texture2D(uFaceTex, vUv + vec2( px.x,  0.0)).r;
+      float p2 = texture2D(uFaceTex, vUv + vec2(-px.x,  0.0)).r;
+      float p3 = texture2D(uFaceTex, vUv + vec2( 0.0,  px.y)).r;
+      float p4 = texture2D(uFaceTex, vUv + vec2( 0.0, -px.y)).r;
+      float avg = (p + p1 + p2 + p3 + p4) * 0.2;
+      // Feathered threshold gives a controllable roto edge.
+      float t = clamp(uFaceFeather, 0.005, 0.5);
+      fm = smoothstep(0.5 - t, 0.5 + t, avg);
+    } else {
+      // Centered-oval fallback (no detector / no model loaded yet).
+      float ar = uResolution.x / max(uResolution.y, 1.0);
+      vec2 d = (vUv - uFaceCenter) * vec2(ar, 1.0) / max(uFaceRadius, 0.01);
+      fm = 1.0 - smoothstep(0.65, 1.05, length(d));
+    }
     mask *= mix(fm, 1.0 - fm, uFaceInvert);
   }
   // 1. Pixel sorting — TRUE line-scan sort, not UV displacement.
@@ -4099,7 +4123,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.24";
+export const APP_VERSION = "1.2.25";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4252,6 +4276,9 @@ export default function SpectraAfter() {
     // ── Mask for touch-interactive FX
     const maskCanvasRef = useRef<HTMLCanvasElement>(null);
     const maskTextureRef = useRef<WebGLTexture|null>(null);
+    // ── Face FX person-segmentation mask (R-channel WebGL texture).
+    const faceTextureRef = useRef<WebGLTexture|null>(null);
+    const faceMaskCanvasRef = useRef<HTMLCanvasElement|null>(null);
 
     // ── Audio-reactive FX
     const audioLevelRef = useRef(0);
@@ -4373,27 +4400,26 @@ export default function SpectraAfter() {
   const [neonMode, setNeonMode] = useState(false);
   const tiltRootRef = useRef<HTMLDivElement>(null);
   // ── FACE FX cycle: universal mask that gates ALL FX inside or
-  //    outside a detected face oval. Detection uses the browser
-  //    FaceDetector API when available; falls back to a centered
-  //    selfie-cam oval so the gate still produces visible FX zoning.
+  //    outside an AI-segmented person. Uses MediaPipe Tasks Vision
+  //    (selfie segmenter) for true per-pixel rotoscoping. Falls back
+  //    to a centered selfie-cam oval if the model can't load (e.g. no
+  //    network on first run before assets are cached).
   //    OFF  → no face-driven masking
-  //    FACE → only the face area receives FX, background stays clean
-  //    BG   → only the background receives FX, face stays clean
+  //    FACE → only the person/face area receives FX, background stays clean
+  //    BG   → only the background receives FX, person stays clean
   type FaceFxMode = "OFF" | "FACE" | "BG";
   const [faceFxMode, setFaceFxMode] = useState<FaceFxMode>("OFF");
   const [faceFxToast, setFaceFxToast] = useState<string | null>(null);
-  const faceFxRef = useRef<{ active: boolean; invert: boolean; cx: number; cy: number; r: number; }>({
-    active: false, invert: false, cx: 0.5, cy: 0.42, r: 0.28,
+  const faceFxRef = useRef<{ active: boolean; invert: boolean; texValid: boolean; cx: number; cy: number; r: number; }>({
+    active: false, invert: false, texValid: false, cx: 0.5, cy: 0.42, r: 0.28,
   });
-  const faceDetectorRef = useRef<{ detect: (src: HTMLVideoElement) => Promise<Array<{ boundingBox: DOMRectReadOnly }>> } | null>(null);
   const cycleFaceFx = useCallback(() => {
     setFaceFxMode(m => {
       const next: FaceFxMode = m === "OFF" ? "FACE" : m === "FACE" ? "BG" : "OFF";
-      const hasReal = !!faceDetectorRef.current;
       setFaceFxToast(
         next === "OFF" ? "FACE FX · OFF"
-        : next === "FACE" ? `FACE FX · FACE-ONLY${hasReal ? "" : " (centered fallback)"}`
-        : `FACE FX · BG-ONLY${hasReal ? "" : " (centered fallback)"}`
+        : next === "FACE" ? "FACE FX · PERSON-ONLY (AI roto)"
+        : "FACE FX · BG-ONLY (AI roto)"
       );
       window.setTimeout(() => setFaceFxToast(null), 2200);
       return next;
@@ -4513,61 +4539,128 @@ export default function SpectraAfter() {
     };
   }, [neonMode]);
 
-  // ── FACE FX detection loop. Tries the browser FaceDetector API
-  //    (available on Chromium-based Android WebViews when the feature
-  //    is enabled). Falls back to a centered selfie-cam oval so the
-  //    universal mask still produces a visible FACE/BG split.
+  // ── FACE FX segmentation loop (MediaPipe Tasks Vision · Selfie
+  //    Segmenter). Runs at ~10 Hz and uploads a single-channel mask
+  //    canvas to the WebGL face texture. The shader then samples this
+  //    texture as the universal FX mask. Centered-oval fallback kicks
+  //    in if the model fails to load.
   useEffect(() => {
     if (faceFxMode === "OFF") {
       faceFxRef.current.active = false;
+      faceFxRef.current.texValid = false;
       return;
     }
     faceFxRef.current.active = true;
     faceFxRef.current.invert = faceFxMode === "BG";
 
-    // Init detector once (lazy).
-    if (faceDetectorRef.current === null) {
-      type FDCtor = new (opts?: { fastMode?: boolean; maxDetectedFaces?: number }) => {
-        detect: (src: HTMLVideoElement) => Promise<Array<{ boundingBox: DOMRectReadOnly }>>;
-      };
-      const FD = (typeof window !== "undefined" ? (window as unknown as { FaceDetector?: FDCtor }).FaceDetector : undefined);
-      if (FD) {
-        try { faceDetectorRef.current = new FD({ fastMode: true, maxDetectedFaces: 1 }); }
-        catch { faceDetectorRef.current = null; }
-      }
-    }
-
     let cancelled = false;
     let timer: number | null = null;
-    const detector = faceDetectorRef.current;
-
-    const tick = async () => {
-      if (cancelled) return;
-      const v = videoRef.current;
-      if (detector && v && v.videoWidth > 0 && v.readyState >= 2) {
-        try {
-          const faces = await detector.detect(v);
-          if (faces && faces.length > 0) {
-            const bb = faces[0].boundingBox;
-            const cx = (bb.x + bb.width / 2) / v.videoWidth;
-            const cy = (bb.y + bb.height / 2) / v.videoHeight;
-            const r  = (bb.height / v.videoHeight) * 0.65;
-            // Lerp toward the new target for smoothness.
-            faceFxRef.current.cx += (cx - faceFxRef.current.cx) * 0.35;
-            faceFxRef.current.cy += (cy - faceFxRef.current.cy) * 0.35;
-            faceFxRef.current.r  += (r  - faceFxRef.current.r ) * 0.25;
-          }
-        } catch { /* detector hiccup — keep last known position */ }
-      } else {
-        // No detector: ease toward selfie-cam centered oval.
-        faceFxRef.current.cx += (0.5  - faceFxRef.current.cx) * 0.1;
-        faceFxRef.current.cy += (0.42 - faceFxRef.current.cy) * 0.1;
-        faceFxRef.current.r  += (0.28 - faceFxRef.current.r ) * 0.1;
-      }
-      timer = window.setTimeout(tick, detector ? 120 : 250);
+    type SegmentationMask = {
+      getAsUint8Array?: () => Uint8Array;
+      getAsFloat32Array?: () => Float32Array;
+      width: number; height: number;
+      close?: () => void;
     };
-    tick();
-    return () => { cancelled = true; if (timer != null) window.clearTimeout(timer); };
+    type Segmenter = {
+      segmentForVideo: (src: HTMLVideoElement, ts: number, cb: (r: { categoryMask?: SegmentationMask; confidenceMasks?: SegmentationMask[] }) => void) => void;
+      close?: () => void;
+    };
+    let segmenter: Segmenter | null = null;
+
+    // Lazy mask canvas + a 2D ctx for upload-to-WebGL.
+    if (!faceMaskCanvasRef.current) {
+      const c = document.createElement("canvas");
+      c.width = 256; c.height = 144; // 16:9 lo-res — plenty for a soft roto edge
+      faceMaskCanvasRef.current = c;
+    }
+    const maskCanvas = faceMaskCanvasRef.current;
+    const maskCtx = maskCanvas.getContext("2d", { willReadFrequently: true })!;
+
+    const initAndRun = async () => {
+      try {
+        const mp = await import("@mediapipe/tasks-vision");
+        if (cancelled) return;
+        const fileset = await mp.FilesetResolver.forVisionTasks("/mediapipe");
+        if (cancelled) return;
+        segmenter = await mp.ImageSegmenter.createFromOptions(fileset, {
+          baseOptions: { modelAssetPath: "/mediapipe/selfie_segmenter.tflite", delegate: "GPU" },
+          runningMode: "VIDEO",
+          outputCategoryMask: true,
+          outputConfidenceMasks: false,
+        }) as unknown as Segmenter;
+      } catch (err) {
+        try { console.warn("[GPS] FaceFx: segmenter init failed, using oval fallback", err); } catch { /* noop */ }
+        segmenter = null;
+      }
+
+      const tick = () => {
+        if (cancelled) return;
+        const v = videoRef.current;
+        if (segmenter && v && v.videoWidth > 0 && v.readyState >= 2) {
+          try {
+            segmenter.segmentForVideo(v, performance.now(), (result) => {
+              const cat = result.categoryMask;
+              if (!cat) return;
+              // selfie segmenter outputs category 0 = bg, non-zero = person.
+              // Some builds expose getAsUint8Array (LITE), others Float32Array.
+              const u8: Uint8Array | null = cat.getAsUint8Array ? cat.getAsUint8Array() : null;
+              const f32: Float32Array | null = !u8 && cat.getAsFloat32Array ? cat.getAsFloat32Array() : null;
+              const mw = cat.width, mh = cat.height;
+              if (!u8 && !f32) { try { cat.close?.(); } catch { /* noop */ } return; }
+              // Build an RGBA bitmap (R = mask, A = 255) at the model's res.
+              const rgba = new Uint8ClampedArray(mw * mh * 4);
+              if (u8) {
+                for (let i = 0, j = 0; i < u8.length; i++, j += 4) {
+                  const m = u8[i] > 0 ? 255 : 0;
+                  rgba[j] = m; rgba[j+1] = m; rgba[j+2] = m; rgba[j+3] = 255;
+                }
+              } else if (f32) {
+                for (let i = 0, j = 0; i < f32.length; i++, j += 4) {
+                  const m = Math.round(Math.min(1, Math.max(0, f32[i])) * 255);
+                  rgba[j] = m; rgba[j+1] = m; rgba[j+2] = m; rgba[j+3] = 255;
+                }
+              }
+              try { cat.close?.(); } catch { /* noop */ }
+              // Resize via temp canvas → mask canvas at fixed res for fast upload.
+              const tmp = document.createElement("canvas");
+              tmp.width = mw; tmp.height = mh;
+              tmp.getContext("2d")!.putImageData(new ImageData(rgba, mw, mh), 0, 0);
+              maskCtx.drawImage(tmp, 0, 0, maskCanvas.width, maskCanvas.height);
+              // Upload to WebGL face texture.
+              const gl = glRef.current;
+              const tex = faceTextureRef.current;
+              if (gl && tex) {
+                gl.activeTexture(gl.TEXTURE4);
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                // The selfie cam is mirrored in shader via uMirror; the
+                // mask comes from the raw video, so flipY keeps it
+                // correctly aligned with vUv.
+                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
+                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+                faceFxRef.current.texValid = true;
+              }
+            });
+          } catch (err) {
+            try { console.warn("[GPS] FaceFx: segmentForVideo failed", err); } catch { /* noop */ }
+          }
+        } else {
+          // No segmenter / no video yet — drift to centered oval.
+          faceFxRef.current.texValid = false;
+          faceFxRef.current.cx += (0.5  - faceFxRef.current.cx) * 0.1;
+          faceFxRef.current.cy += (0.42 - faceFxRef.current.cy) * 0.1;
+          faceFxRef.current.r  += (0.28 - faceFxRef.current.r ) * 0.1;
+        }
+        timer = window.setTimeout(tick, segmenter ? 100 : 250);
+      };
+      tick();
+    };
+    initAndRun();
+    return () => {
+      cancelled = true;
+      if (timer != null) window.clearTimeout(timer);
+      try { segmenter?.close?.(); } catch { /* noop */ }
+    };
   }, [faceFxMode]);
 
   // Apply unlock code (dev path; replaced by Play Billing in next release).
@@ -5079,6 +5172,7 @@ export default function SpectraAfter() {
       "uRupture","uHSync",
       "uMoshIFrame","uMoshMotion","uMoshBleed","uMoshMap","uMoshDistort",
       "uFaceActive","uFaceCenter","uFaceRadius","uFaceInvert",
+      "uFaceTex","uFaceTexValid","uFaceFeather",
       "uModeParams[0]"];
       // Mask texture for touch FX
       const maskTex = gl.createTexture();
@@ -5090,6 +5184,18 @@ export default function SpectraAfter() {
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 256, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
       maskTextureRef.current = maskTex;
+      // Face FX person-segmentation texture (R channel = mask). Bound
+      // permanently to TEXTURE4 so we can lazy-update it from the
+      // MediaPipe segmentation loop without disturbing other slots.
+      const faceTex = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, faceTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
+      faceTextureRef.current = faceTex;
     const u: Record<string,WebGLUniformLocation|null> = {};
     names.forEach(n => { u[n] = gl.getUniformLocation(prog, n); });
     u.uModeParams = u["uModeParams[0]"];
@@ -6188,11 +6294,18 @@ export default function SpectraAfter() {
     gl.uniform1f(u.uMoshBleed, moshBleedRef.current);
     gl.uniform1f(u.uMoshMap, moshMapRef.current);
     gl.uniform1f(u.uMoshDistort, moshDistortRef.current);
-    // Face FX universal mask uniforms (driven by faceFxMode + detection loop).
+    // Face FX universal mask uniforms (driven by faceFxMode + segmentation loop).
     gl.uniform1f(u.uFaceActive, faceFxRef.current.active ? 1.0 : 0.0);
+    gl.uniform1f(u.uFaceTexValid, faceFxRef.current.texValid ? 1.0 : 0.0);
     gl.uniform2f(u.uFaceCenter, faceFxRef.current.cx, faceFxRef.current.cy);
     gl.uniform1f(u.uFaceRadius, faceFxRef.current.r);
     gl.uniform1f(u.uFaceInvert, faceFxRef.current.invert ? 1.0 : 0.0);
+    gl.uniform1f(u.uFaceFeather, 0.06);
+    if (faceTextureRef.current) {
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, faceTextureRef.current);
+      gl.uniform1i(u.uFaceTex, 4);
+    }
 
     // Phase 2a: per-mode rack params (slot 0=AMOUNT, 1=MIX, 2..7 mode-specific)
     {
@@ -7787,12 +7900,14 @@ export default function SpectraAfter() {
       style={{ fontFamily: "'Courier New', monospace", background: "#000" }}
     >
       <style>{`
-        /* ── NEON MODE — glass UI + tilt parallax ──────────────
+        /* ── NEON MODE — CHUNKY GLASS EVERYTHING + tilt parallax ──
            Strategy: keep the original flex layout (so nothing
            can escape the body region), but overlap the panel
            upward over the bottom of the camera with a negative
            margin so the backdrop-filter blur has actual pixels
-           behind it to blur. */
+           behind it to blur. Then turn EVERY button, tile, and
+           panel surface into a chunky frosted-glass slab so the
+           live FX bleed through the entire UI. */
         .neon-mode .sp-canvas-pane {
           height: 70dvh !important;
           transform: translate3d(calc(var(--tilt-tx, 0px) * -0.4), calc(var(--tilt-ty, 0px) * -0.4), 0);
@@ -7803,11 +7918,15 @@ export default function SpectraAfter() {
           margin-top: -25dvh !important;
           position: relative;
           z-index: 1;
-          background: linear-gradient(180deg, rgba(15,0,28,0.32) 0%, rgba(8,0,18,0.62) 38%, rgba(8,0,18,0.86) 100%) !important;
-          backdrop-filter: blur(22px) saturate(1.55);
-          -webkit-backdrop-filter: blur(22px) saturate(1.55);
-          border-top: 1px solid rgba(231,174,255,0.65) !important;
-          box-shadow: 0 -10px 36px rgba(176,20,240,0.32), inset 0 1px 0 rgba(255,255,255,0.1);
+          /* MUCH lighter gradient so the FX shine through the panel. */
+          background: linear-gradient(180deg, rgba(15,0,28,0.14) 0%, rgba(8,0,18,0.22) 38%, rgba(8,0,18,0.32) 100%) !important;
+          backdrop-filter: blur(14px) saturate(1.8);
+          -webkit-backdrop-filter: blur(14px) saturate(1.8);
+          border-top: 1px solid rgba(231,174,255,0.55) !important;
+          box-shadow:
+            0 -10px 36px rgba(176,20,240,0.25),
+            inset 0 1px 0 rgba(255,255,255,0.18),
+            inset 0 -1px 0 rgba(0,0,0,0.4);
           transform: translate3d(var(--tilt-tx, 0px), calc(var(--tilt-ty, 0px) * 0.5), 0)
                      rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
           transform-origin: 50% 0%;
@@ -7823,9 +7942,60 @@ export default function SpectraAfter() {
           .neon-mode .sp-panel-glass {
             margin-top: 0 !important;
             border-top: none !important;
-            border-left: 1px solid rgba(231,174,255,0.65) !important;
-            box-shadow: -10px 0 36px rgba(176,20,240,0.32), inset 1px 0 0 rgba(255,255,255,0.1);
+            border-left: 1px solid rgba(231,174,255,0.55) !important;
+            box-shadow:
+              -10px 0 36px rgba(176,20,240,0.25),
+              inset 1px 0 0 rgba(255,255,255,0.18),
+              inset -1px 0 0 rgba(0,0,0,0.4);
           }
+        }
+        /* CHUNKY GLASS BUTTONS — sp-btn (top nav + small) and sp-tile
+           (preset/export pads). Override any inline backgrounds with
+           a translucent purple/pink frost and stack inset bevels for
+           that "thick poured glass" feel. */
+        .neon-mode .sp-btn,
+        .neon-mode .sp-tile,
+        .neon-mode button.sp-btn,
+        .neon-mode button.sp-tile {
+          background: linear-gradient(180deg,
+            rgba(60,20,90,0.28) 0%,
+            rgba(20,5,40,0.18) 50%,
+            rgba(8,0,18,0.32) 100%) !important;
+          backdrop-filter: blur(10px) saturate(1.6);
+          -webkit-backdrop-filter: blur(10px) saturate(1.6);
+          border: 1px solid rgba(231,174,255,0.5) !important;
+          border-radius: 6px !important;
+          color: rgba(255,225,255,0.96) !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.32),
+            inset 0 -2px 0 rgba(0,0,0,0.45),
+            inset 0 0 24px rgba(176,20,240,0.18),
+            0 4px 14px rgba(176,20,240,0.28),
+            0 0 0 1px rgba(255,180,255,0.08) !important;
+          text-shadow: 0 0 4px rgba(0,0,0,0.85), 0 1px 0 rgba(0,0,0,0.7);
+          transition: transform 0.08s ease, box-shadow 0.18s ease, background 0.18s ease;
+        }
+        .neon-mode .sp-btn:hover,
+        .neon-mode .sp-tile:hover {
+          background: linear-gradient(180deg,
+            rgba(80,30,120,0.36) 0%,
+            rgba(30,10,55,0.22) 50%,
+            rgba(12,0,28,0.4) 100%) !important;
+          border-color: rgba(255,200,255,0.75) !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.42),
+            inset 0 -2px 0 rgba(0,0,0,0.5),
+            inset 0 0 32px rgba(255,80,255,0.28),
+            0 6px 20px rgba(255,40,255,0.42),
+            0 0 0 1px rgba(255,200,255,0.12) !important;
+        }
+        .neon-mode .sp-btn:active,
+        .neon-mode .sp-tile:active {
+          transform: translateY(1px);
+          box-shadow:
+            inset 0 2px 4px rgba(0,0,0,0.55),
+            inset 0 -1px 0 rgba(255,255,255,0.1),
+            0 1px 4px rgba(176,20,240,0.3) !important;
         }
         /* Beef text contrast against the live FX backdrop. */
         .neon-mode .sp-panel-glass button,
@@ -7833,12 +8003,28 @@ export default function SpectraAfter() {
         .neon-mode .sp-panel-glass span {
           text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 1px 0 rgba(0,0,0,0.8);
         }
-        /* Top-nav NEON button glow when active. */
+        /* Sliders + range inputs get a glassy track too. */
+        .neon-mode input[type="range"] {
+          background: rgba(20,5,40,0.35) !important;
+          border-radius: 6px;
+          box-shadow:
+            inset 0 1px 2px rgba(0,0,0,0.6),
+            inset 0 -1px 0 rgba(255,255,255,0.08),
+            0 0 0 1px rgba(231,174,255,0.35);
+        }
+        /* Top-nav NEON button glow when active (overrides chunky glass
+           with a brighter pink). */
+        .neon-mode .topnav-neon-on,
         .topnav-neon-on {
-          color: rgba(255,180,255,0.98) !important;
-          border-color: rgba(255,120,255,0.85) !important;
-          box-shadow: 0 0 12px rgba(255,80,255,0.6), 0 0 4px rgba(255,180,255,0.5) inset !important;
-          text-shadow: 0 0 8px rgba(255,80,255,0.85);
+          color: rgba(255,200,255,1) !important;
+          border-color: rgba(255,140,255,0.95) !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.5),
+            inset 0 -2px 0 rgba(0,0,0,0.5),
+            inset 0 0 36px rgba(255,80,255,0.45),
+            0 0 18px rgba(255,80,255,0.7),
+            0 0 4px rgba(255,180,255,0.6) inset !important;
+          text-shadow: 0 0 8px rgba(255,80,255,0.95);
         }
       `}</style>
       {introVisible && <SpectraIntro onDone={() => setIntroVisible(false)} />}
