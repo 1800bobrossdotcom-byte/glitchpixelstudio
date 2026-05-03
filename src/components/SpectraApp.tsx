@@ -2277,6 +2277,13 @@ uniform float uBlockGlitch;  // block corruption
 uniform float uDatamosh;     // datamosh blend
 uniform float uChrash;       // chroma crash
 uniform sampler2D uMask;     // touch FX mask
+// Face FX universal mask: when uFaceActive, all FX intensity is
+// multiplied by either the face oval or its inverse, so any effect
+// (sort, RGB drift, melt, datamosh, ...) automatically respects it.
+uniform float uFaceActive;   // 0 off, 1 on
+uniform vec2  uFaceCenter;   // uv center of face (0..1)
+uniform float uFaceRadius;   // uv radius of face oval (vertical)
+uniform float uFaceInvert;   // 0 = FX inside face, 1 = FX outside face
 // Novel Signal FX
 uniform float uLiquid;       // curl-noise liquid warp
 uniform float uTimeSmear;    // luminance-weighted temporal smear
@@ -2400,6 +2407,15 @@ void main() {
   // --- Glitch/Pixel Sorting/Datamosh FX ---
   // When touch is inactive, apply FX globally (mask=1); when active, use painted mask
   float mask = uTouchActive > 0.5 ? texture2D(uMask, vUv).r : 1.0;
+  // Universal Face FX gate: multiplies into mask so EVERY downstream
+  // effect (sort, RGB drift, melt, datamosh, contour, ascii, ...) is
+  // automatically restricted to the face oval (or its inverse).
+  if (uFaceActive > 0.5) {
+    float ar = uResolution.x / max(uResolution.y, 1.0);
+    vec2 d = (vUv - uFaceCenter) * vec2(ar, 1.0) / max(uFaceRadius, 0.01);
+    float fm = 1.0 - smoothstep(0.65, 1.05, length(d));
+    mask *= mix(fm, 1.0 - fm, uFaceInvert);
+  }
   // 1. Pixel sorting — TRUE line-scan sort, not UV displacement.
   // For each pixel we scan back along the row (or column) up to runMax
   // taps; among samples whose metric is INSIDE the threshold band we
@@ -4083,7 +4099,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.23";
+export const APP_VERSION = "1.2.24";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4356,20 +4372,28 @@ export default function SpectraAfter() {
   //    while recording or in LOW POWER to keep captures and battery clean.
   const [neonMode, setNeonMode] = useState(false);
   const tiltRootRef = useRef<HTMLDivElement>(null);
-  // ── FACE FX cycle (shader integration arrives in v1.3.0):
+  // ── FACE FX cycle: universal mask that gates ALL FX inside or
+  //    outside a detected face oval. Detection uses the browser
+  //    FaceDetector API when available; falls back to a centered
+  //    selfie-cam oval so the gate still produces visible FX zoning.
   //    OFF  → no face-driven masking
   //    FACE → only the face area receives FX, background stays clean
   //    BG   → only the background receives FX, face stays clean
   type FaceFxMode = "OFF" | "FACE" | "BG";
   const [faceFxMode, setFaceFxMode] = useState<FaceFxMode>("OFF");
   const [faceFxToast, setFaceFxToast] = useState<string | null>(null);
+  const faceFxRef = useRef<{ active: boolean; invert: boolean; cx: number; cy: number; r: number; }>({
+    active: false, invert: false, cx: 0.5, cy: 0.42, r: 0.28,
+  });
+  const faceDetectorRef = useRef<{ detect: (src: HTMLVideoElement) => Promise<Array<{ boundingBox: DOMRectReadOnly }>> } | null>(null);
   const cycleFaceFx = useCallback(() => {
     setFaceFxMode(m => {
       const next: FaceFxMode = m === "OFF" ? "FACE" : m === "FACE" ? "BG" : "OFF";
+      const hasReal = !!faceDetectorRef.current;
       setFaceFxToast(
         next === "OFF" ? "FACE FX · OFF"
-        : next === "FACE" ? "FACE FX · FACE-ONLY (shader lands in v1.3.0)"
-        : "FACE FX · BG-ONLY (shader lands in v1.3.0)"
+        : next === "FACE" ? `FACE FX · FACE-ONLY${hasReal ? "" : " (centered fallback)"}`
+        : `FACE FX · BG-ONLY${hasReal ? "" : " (centered fallback)"}`
       );
       window.setTimeout(() => setFaceFxToast(null), 2200);
       return next;
@@ -4488,6 +4512,63 @@ export default function SpectraAfter() {
       if (raf) window.cancelAnimationFrame(raf);
     };
   }, [neonMode]);
+
+  // ── FACE FX detection loop. Tries the browser FaceDetector API
+  //    (available on Chromium-based Android WebViews when the feature
+  //    is enabled). Falls back to a centered selfie-cam oval so the
+  //    universal mask still produces a visible FACE/BG split.
+  useEffect(() => {
+    if (faceFxMode === "OFF") {
+      faceFxRef.current.active = false;
+      return;
+    }
+    faceFxRef.current.active = true;
+    faceFxRef.current.invert = faceFxMode === "BG";
+
+    // Init detector once (lazy).
+    if (faceDetectorRef.current === null) {
+      type FDCtor = new (opts?: { fastMode?: boolean; maxDetectedFaces?: number }) => {
+        detect: (src: HTMLVideoElement) => Promise<Array<{ boundingBox: DOMRectReadOnly }>>;
+      };
+      const FD = (typeof window !== "undefined" ? (window as unknown as { FaceDetector?: FDCtor }).FaceDetector : undefined);
+      if (FD) {
+        try { faceDetectorRef.current = new FD({ fastMode: true, maxDetectedFaces: 1 }); }
+        catch { faceDetectorRef.current = null; }
+      }
+    }
+
+    let cancelled = false;
+    let timer: number | null = null;
+    const detector = faceDetectorRef.current;
+
+    const tick = async () => {
+      if (cancelled) return;
+      const v = videoRef.current;
+      if (detector && v && v.videoWidth > 0 && v.readyState >= 2) {
+        try {
+          const faces = await detector.detect(v);
+          if (faces && faces.length > 0) {
+            const bb = faces[0].boundingBox;
+            const cx = (bb.x + bb.width / 2) / v.videoWidth;
+            const cy = (bb.y + bb.height / 2) / v.videoHeight;
+            const r  = (bb.height / v.videoHeight) * 0.65;
+            // Lerp toward the new target for smoothness.
+            faceFxRef.current.cx += (cx - faceFxRef.current.cx) * 0.35;
+            faceFxRef.current.cy += (cy - faceFxRef.current.cy) * 0.35;
+            faceFxRef.current.r  += (r  - faceFxRef.current.r ) * 0.25;
+          }
+        } catch { /* detector hiccup — keep last known position */ }
+      } else {
+        // No detector: ease toward selfie-cam centered oval.
+        faceFxRef.current.cx += (0.5  - faceFxRef.current.cx) * 0.1;
+        faceFxRef.current.cy += (0.42 - faceFxRef.current.cy) * 0.1;
+        faceFxRef.current.r  += (0.28 - faceFxRef.current.r ) * 0.1;
+      }
+      timer = window.setTimeout(tick, detector ? 120 : 250);
+    };
+    tick();
+    return () => { cancelled = true; if (timer != null) window.clearTimeout(timer); };
+  }, [faceFxMode]);
 
   // Apply unlock code (dev path; replaced by Play Billing in next release).
   const applyUnlockCode = useCallback((code: string) => {
@@ -4997,6 +5078,7 @@ export default function SpectraAfter() {
       "uRgbR","uRgbG","uRgbB","uRgbBars","uRgbSwap",
       "uRupture","uHSync",
       "uMoshIFrame","uMoshMotion","uMoshBleed","uMoshMap","uMoshDistort",
+      "uFaceActive","uFaceCenter","uFaceRadius","uFaceInvert",
       "uModeParams[0]"];
       // Mask texture for touch FX
       const maskTex = gl.createTexture();
@@ -6106,6 +6188,11 @@ export default function SpectraAfter() {
     gl.uniform1f(u.uMoshBleed, moshBleedRef.current);
     gl.uniform1f(u.uMoshMap, moshMapRef.current);
     gl.uniform1f(u.uMoshDistort, moshDistortRef.current);
+    // Face FX universal mask uniforms (driven by faceFxMode + detection loop).
+    gl.uniform1f(u.uFaceActive, faceFxRef.current.active ? 1.0 : 0.0);
+    gl.uniform2f(u.uFaceCenter, faceFxRef.current.cx, faceFxRef.current.cy);
+    gl.uniform1f(u.uFaceRadius, faceFxRef.current.r);
+    gl.uniform1f(u.uFaceInvert, faceFxRef.current.invert ? 1.0 : 0.0);
 
     // Phase 2a: per-mode rack params (slot 0=AMOUNT, 1=MIX, 2..7 mode-specific)
     {
@@ -7701,31 +7788,27 @@ export default function SpectraAfter() {
     >
       <style>{`
         /* ── NEON MODE — glass UI + tilt parallax ──────────────
-           In neon mode the camera fills the body and the settings
-           panel becomes a translucent overlay on top — that's what
-           makes the backdrop-filter blur actually visible. */
-        .neon-mode .sp-body { position: relative; }
+           Strategy: keep the original flex layout (so nothing
+           can escape the body region), but overlap the panel
+           upward over the bottom of the camera with a negative
+           margin so the backdrop-filter blur has actual pixels
+           behind it to blur. */
         .neon-mode .sp-canvas-pane {
-          position: absolute !important;
-          inset: 0 !important;
-          height: auto !important;
-          flex: none !important;
-          z-index: 0;
+          height: 70dvh !important;
           transform: translate3d(calc(var(--tilt-tx, 0px) * -0.4), calc(var(--tilt-ty, 0px) * -0.4), 0);
           transition: transform 0.05s linear;
           will-change: transform;
         }
         .neon-mode .sp-panel-glass {
-          position: absolute !important;
-          left: 0; right: 0; bottom: 0;
-          max-height: 62% !important;
-          z-index: 5;
-          background: linear-gradient(180deg, rgba(15,0,28,0.36) 0%, rgba(8,0,18,0.55) 100%) !important;
-          backdrop-filter: blur(18px) saturate(1.5);
-          -webkit-backdrop-filter: blur(18px) saturate(1.5);
-          border-top: 1px solid rgba(231,174,255,0.55) !important;
-          box-shadow: 0 -10px 36px rgba(176,20,240,0.28), inset 0 1px 0 rgba(255,255,255,0.08);
-          transform: translate3d(var(--tilt-tx, 0px), var(--tilt-ty, 0px), 0)
+          margin-top: -25dvh !important;
+          position: relative;
+          z-index: 1;
+          background: linear-gradient(180deg, rgba(15,0,28,0.32) 0%, rgba(8,0,18,0.62) 38%, rgba(8,0,18,0.86) 100%) !important;
+          backdrop-filter: blur(22px) saturate(1.55);
+          -webkit-backdrop-filter: blur(22px) saturate(1.55);
+          border-top: 1px solid rgba(231,174,255,0.65) !important;
+          box-shadow: 0 -10px 36px rgba(176,20,240,0.32), inset 0 1px 0 rgba(255,255,255,0.1);
+          transform: translate3d(var(--tilt-tx, 0px), calc(var(--tilt-ty, 0px) * 0.5), 0)
                      rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
           transform-origin: 50% 0%;
           transform-style: preserve-3d;
@@ -7733,20 +7816,21 @@ export default function SpectraAfter() {
           will-change: transform;
         }
         @media (min-width: 1024px) {
+          .neon-mode .sp-canvas-pane {
+            height: auto !important;
+            margin-right: -10rem !important;
+          }
           .neon-mode .sp-panel-glass {
-            top: 0; bottom: 0; right: 0; left: auto;
-            width: 23rem;
-            max-height: none !important;
+            margin-top: 0 !important;
             border-top: none !important;
-            border-left: 1px solid rgba(231,174,255,0.55) !important;
-            box-shadow: -10px 0 36px rgba(176,20,240,0.28), inset 1px 0 0 rgba(255,255,255,0.08);
+            border-left: 1px solid rgba(231,174,255,0.65) !important;
+            box-shadow: -10px 0 36px rgba(176,20,240,0.32), inset 1px 0 0 rgba(255,255,255,0.1);
           }
         }
         /* Beef text contrast against the live FX backdrop. */
         .neon-mode .sp-panel-glass button,
         .neon-mode .sp-panel-glass label,
-        .neon-mode .sp-panel-glass span,
-        .neon-mode .sp-panel-glass div {
+        .neon-mode .sp-panel-glass span {
           text-shadow: 0 0 3px rgba(0,0,0,0.9), 0 1px 0 rgba(0,0,0,0.8);
         }
         /* Top-nav NEON button glow when active. */
