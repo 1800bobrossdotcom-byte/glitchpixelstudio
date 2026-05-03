@@ -4245,6 +4245,43 @@ export default function SpectraAfter() {
   // Reserved setters (color cycle UI may return later)
   void setColorCycle; void setColorCycleSpeed;
 
+  // ── DRAW crash safety net ───────────────────────────────────────────────
+  // If anything inside the draw paint path throws, instead of letting the
+  // Next.js error overlay swallow the whole app we (a) capture the message,
+  // (b) surface it as an on-screen banner, and (c) hard-disable DRAW so the
+  // user can keep using the rest of the app without reloading.
+  const [drawCrash, setDrawCrash] = useState<string | null>(null);
+  const reportDrawCrash = useCallback((where: string, err: unknown) => {
+    const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    // eslint-disable-next-line no-console
+    console.error(`[DRAW crash @ ${where}]`, err);
+    setDrawCrash(`${where} — ${msg}`);
+    setDrawActive(false);
+    currentStrokeRef.current = null;
+  }, []);
+  // Catch *any* unhandled error/promise rejection while DRAW is active and
+  // surface it instead of crashing the React tree.
+  useEffect(() => {
+    const onErr = (ev: ErrorEvent) => {
+      if (drawActive) {
+        ev.preventDefault?.();
+        reportDrawCrash("window.error", ev.error || ev.message);
+      }
+    };
+    const onRej = (ev: PromiseRejectionEvent) => {
+      if (drawActive) {
+        ev.preventDefault?.();
+        reportDrawCrash("unhandledrejection", ev.reason);
+      }
+    };
+    window.addEventListener("error", onErr);
+    window.addEventListener("unhandledrejection", onRej);
+    return () => {
+      window.removeEventListener("error", onErr);
+      window.removeEventListener("unhandledrejection", onRej);
+    };
+  }, [drawActive, reportDrawCrash]);
+
   // ── Export
   const [recording, setRecording] = useState(false);
   const [fps, setFps] = useState(0);
@@ -4833,10 +4870,18 @@ export default function SpectraAfter() {
     const gl = glRef.current;
     const maskTex = maskTextureRef.current;
     const maskCanvas = maskCanvasRef.current;
-    if (gl && maskTex && maskCanvas) {
-      gl.activeTexture(gl.TEXTURE2);
-      gl.bindTexture(gl.TEXTURE_2D, maskTex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gl.LUMINANCE, gl.UNSIGNED_BYTE, maskCanvas);
+    if (gl && maskTex && maskCanvas && maskCanvas.width > 0 && maskCanvas.height > 0) {
+      try {
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, maskTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, gl.LUMINANCE, gl.UNSIGNED_BYTE, maskCanvas);
+      } catch (err) {
+        // Some Android WebGL drivers reject canvas-source LUMINANCE uploads.
+        // Fall back to disabling the mask path so the FX shader keeps running.
+        // eslint-disable-next-line no-console
+        console.warn("[mask upload] disabled after error", err);
+        touchRef.current.active = false;
+      }
     }
 
     // --- Audio analyser: update audioLevelRef ---
@@ -5669,8 +5714,10 @@ export default function SpectraAfter() {
 
   // ── Draw overlay rendering ────────────────────────────────
   const renderDrawOverlay = useCallback(() => {
+    try {
     const dc = drawCanvasRef.current;
     if (!dc) return;
+    if (dc.width === 0 || dc.height === 0) return;
     const ctx = dc.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, dc.width, dc.height);
@@ -5777,11 +5824,12 @@ export default function SpectraAfter() {
     mctx.save();
     mctx.lineCap = "round"; mctx.lineJoin = "round";
     // Draw all strokes as white, opacity = stroke.opacity
+    const dcW = dc.width || 1;
     for (const stroke of strokes) {
       if (stroke.points.length < 2) continue;
       mctx.globalAlpha = stroke.opacity;
       mctx.strokeStyle = "#fff";
-      mctx.lineWidth = (stroke.width / dc.width) * maskCanvas.width;
+      mctx.lineWidth = Math.max(0.5, (stroke.width / dcW) * maskCanvas.width);
       mctx.beginPath();
       mctx.moveTo(stroke.points[0].x * maskCanvas.width, stroke.points[0].y * maskCanvas.height);
       for (let i = 1; i < stroke.points.length; i++) {
@@ -5794,7 +5842,7 @@ export default function SpectraAfter() {
     if (cs && cs.points.length > 1) {
       mctx.globalAlpha = cs.opacity;
       mctx.strokeStyle = "#fff";
-      mctx.lineWidth = (cs.width / dc.width) * maskCanvas.width;
+      mctx.lineWidth = Math.max(0.5, (cs.width / dcW) * maskCanvas.width);
       mctx.beginPath();
       mctx.moveTo(cs.points[0].x * maskCanvas.width, cs.points[0].y * maskCanvas.height);
       for (let i = 1; i < cs.points.length; i++) {
@@ -5812,7 +5860,28 @@ export default function SpectraAfter() {
       !!(cs && cs.points.length > 1)
     );
     touchRef.current.active = hasMaskContent;
-  }, [drawActive, strokes]);
+    } catch (err) {
+      reportDrawCrash("renderDrawOverlay", err);
+    }
+  }, [drawActive, strokes, reportDrawCrash]);
+
+  // Sync draw canvas size to the WebGL canvas size whenever DRAW turns on
+  // (and on first activation after an image upload). The canvas had no width/
+  // height attributes, so without this it stays at the 300x150 HTML default
+  // until a window resize fires \u2014 and any lineWidth math like
+  // (stroke.width / dc.width) becomes wildly off (or 0/Infinity), which can
+  // throw inside Canvas2D on some Android WebView builds.
+  useEffect(() => {
+    if (!drawActive) return;
+    const dc = drawCanvasRef.current;
+    const c = canvasRef.current;
+    if (!dc || !c) return;
+    const w = c.width || dc.clientWidth || 720;
+    const h = c.height || dc.clientHeight || 720;
+    if (dc.width !== w) dc.width = w;
+    if (dc.height !== h) dc.height = h;
+    renderDrawOverlay();
+  }, [drawActive, drawAvailable, renderDrawOverlay]);
 
   useEffect(() => {
     renderDrawOverlay();
@@ -5837,26 +5906,36 @@ export default function SpectraAfter() {
       }, 420);
       return;
     }
-    e.currentTarget.setPointerCapture(e.pointerId);
-    const pos = getCanvasNorm(e, e.currentTarget);
-    currentStrokeRef.current = { points: [{ ...pos, pressure: 1 }], color: brushColorRef.current, width: brushSize, opacity: brushOpacity, brush: brushTypeRef.current };
-    renderDrawOverlay();
-  }, [drawActive, drawAvailable, brushSize, brushOpacity, renderDrawOverlay]);
+    try {
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported on some Android WebViews */ }
+      const pos = getCanvasNorm(e, e.currentTarget);
+      currentStrokeRef.current = { points: [{ ...pos, pressure: 1 }], color: brushColorRef.current, width: brushSize, opacity: brushOpacity, brush: brushTypeRef.current };
+      renderDrawOverlay();
+    } catch (err) {
+      reportDrawCrash("onPointerDown", err);
+    }
+  }, [drawActive, drawAvailable, brushSize, brushOpacity, renderDrawOverlay, reportDrawCrash]);
 
   const onPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!drawActive || !drawAvailable) {
       return;
     }
     if (!currentStrokeRef.current) return;
-    const pos = getCanvasNorm(e, e.currentTarget);
-    const last = currentStrokeRef.current.points.at(-1)!;
-    const speed = Math.hypot(pos.x - last.x, pos.y - last.y) * 500;
-    const pressure = Math.max(0.25, Math.min(1.2, 1 - speed * 1.2));
-    currentStrokeRef.current.points.push({ ...pos, pressure });
-    currentStrokeRef.current.width = brushSize * pressure;
-    if (colorCycleRef.current) currentStrokeRef.current.color = brushColorRef.current;
-    renderDrawOverlay();
-  }, [drawActive, drawAvailable, brushSize, renderDrawOverlay]);
+    try {
+      const pos = getCanvasNorm(e, e.currentTarget);
+      const pts = currentStrokeRef.current.points;
+      const last = pts.length > 0 ? pts[pts.length - 1] : null;
+      if (!last) return;
+      const speed = Math.hypot(pos.x - last.x, pos.y - last.y) * 500;
+      const pressure = Math.max(0.25, Math.min(1.2, 1 - speed * 1.2));
+      pts.push({ ...pos, pressure });
+      currentStrokeRef.current.width = brushSize * pressure;
+      if (colorCycleRef.current) currentStrokeRef.current.color = brushColorRef.current;
+      renderDrawOverlay();
+    } catch (err) {
+      reportDrawCrash("onPointerMove", err);
+    }
+  }, [drawActive, drawAvailable, brushSize, renderDrawOverlay, reportDrawCrash]);
 
   const onPointerUp = useCallback(() => {
     if (!drawActive || !drawAvailable) {
@@ -5866,13 +5945,18 @@ export default function SpectraAfter() {
       }
       return;
     }
-    if (!currentStrokeRef.current) return;
-    if (currentStrokeRef.current.points.length > 1) {
-      setStrokes(prev => [...prev, currentStrokeRef.current!]);
+    try {
+      const cs = currentStrokeRef.current;
+      if (!cs) return;
+      if (cs.points.length > 1) {
+        setStrokes(prev => [...prev, cs]);
+      }
+      currentStrokeRef.current = null;
+      renderDrawOverlay();
+    } catch (err) {
+      reportDrawCrash("onPointerUp", err);
     }
-    currentStrokeRef.current = null;
-    renderDrawOverlay();
-  }, [drawActive, drawAvailable, renderDrawOverlay]);
+  }, [drawActive, drawAvailable, renderDrawOverlay, reportDrawCrash]);
 
   // ── Camera ────────────────────────────────────────────────
   // Request camera permissions on mobile (Capacitor)
@@ -7489,6 +7573,29 @@ export default function SpectraAfter() {
                 </div>
                 <div style={{ fontSize: 8, lineHeight: 1.35, letterSpacing: "0.6px", color: "rgba(244,246,255,0.55)", marginTop: 2 }}>
                   Paint where the glitch FX appear. Untouched areas stay clean cam.
+                </div>
+              </div>
+            )}
+
+            {/* DRAW crash banner — surfaces the actual error instead of a white screen */}
+            {drawCrash && (
+              <div style={{
+                position: "absolute", top: 12, right: 12, zIndex: 50, maxWidth: 320,
+                background: "rgba(36,8,8,0.94)", border: "1px solid #FF4D4D",
+                borderRadius: 8, padding: "8px 10px", color: "#FFD0D0",
+                fontFamily: "'Courier New',monospace", fontSize: 10, lineHeight: 1.4,
+                boxShadow: "0 0 14px rgba(255,77,77,0.45)",
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <span style={{ fontWeight: 700, letterSpacing: 1.4, color: "#FF4D4D" }}>DRAW DISABLED</span>
+                  <button
+                    onClick={() => setDrawCrash(null)}
+                    style={{ background: "transparent", border: "1px solid rgba(255,208,208,0.5)", color: "#FFD0D0", fontSize: 9, padding: "1px 6px", borderRadius: 3, cursor: "pointer" }}
+                  >✕</button>
+                </div>
+                <div style={{ wordBreak: "break-word" }}>{drawCrash}</div>
+                <div style={{ marginTop: 4, fontSize: 9, color: "rgba(255,208,208,0.7)" }}>
+                  Rest of app is fine. Re-enable DRAW from the top bar to retry.
                 </div>
               </div>
             )}
