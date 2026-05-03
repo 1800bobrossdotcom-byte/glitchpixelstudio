@@ -3,6 +3,7 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import { Capacitor } from "@capacitor/core";
 import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Media } from "@capacitor-community/media";
 
 // ═══════════════════════════════════════════════════════════
 //  GPS — WebGL computational vision engine
@@ -4128,7 +4129,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.28";
+export const APP_VERSION = "1.2.29";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -4235,45 +4236,73 @@ async function saveBlobToDevice(blob: Blob, filename: string): Promise<void> {
   });
   void written;
 
-  // Direct-to-phone save: NO share sheet. Write the file straight into
-  // the user's photo / video gallery so it shows up in Photos & Files
-  // immediately. We try DCIM (the canonical camera folder, indexed by
-  // the gallery on every Android), then Pictures, then Documents as
-  // last-resort fallbacks.
+  // ── PRIMARY: MediaStore via @capacitor-community/media. This is the
+  // ONLY way on Android 11+ scoped storage to get a file into the real
+  // gallery (Photos / Google Photos / Files) without legacy
+  // WRITE_EXTERNAL_STORAGE. We hand it the cache file URI and the
+  // plugin uses MediaStore.Images / MediaStore.Video to insert it
+  // into the user's camera roll under the GlitchPixelStudio album.
   const isVideo = /\.(mp4|webm|mov)$/i.test(filename);
-  const galleryFolder = isVideo
-    ? `Movies/GlitchPixelStudio/${filename}`
-    : `DCIM/GlitchPixelStudio/${filename}`;
+  const cacheUri = written?.uri ?? "";
+  const baseName = filename.replace(/\.[^.]+$/, "");
   let savedTo: string | null = null;
-  try {
-    await Filesystem.writeFile({
-      path: galleryFolder,
-      data: base64,
-      directory: Directory.ExternalStorage,
-      recursive: true,
-    });
-    savedTo = galleryFolder;
-  } catch (err) {
-    void err;
+  if (cacheUri) {
+    try {
+      const resp = isVideo
+        ? await Media.saveVideo({ path: cacheUri, albumIdentifier: "GlitchPixelStudio", fileName: baseName })
+        : await Media.savePhoto({ path: cacheUri, albumIdentifier: "GlitchPixelStudio", fileName: baseName });
+      savedTo = resp?.filePath ?? `Gallery / GlitchPixelStudio / ${filename}`;
+    } catch (mediaErr) {
+      // Album probably doesn't exist yet — create it then retry once.
+      try {
+        await Media.createAlbum({ name: "GlitchPixelStudio" });
+        const resp2 = isVideo
+          ? await Media.saveVideo({ path: cacheUri, albumIdentifier: "GlitchPixelStudio", fileName: baseName })
+          : await Media.savePhoto({ path: cacheUri, albumIdentifier: "GlitchPixelStudio", fileName: baseName });
+        savedTo = resp2?.filePath ?? `Gallery / GlitchPixelStudio / ${filename}`;
+      } catch (mediaErr2) {
+        void mediaErr; void mediaErr2;
+      }
+    }
+  }
+
+  // ── FALLBACK: legacy Filesystem writes to DCIM/Movies/Pictures/
+  // Documents. Only relevant on devices/old API levels where the
+  // MediaStore plugin failed (e.g. permission denied, very old build).
+  if (!savedTo) {
+    const galleryFolder = isVideo
+      ? `Movies/GlitchPixelStudio/${filename}`
+      : `DCIM/GlitchPixelStudio/${filename}`;
     try {
       await Filesystem.writeFile({
-        path: `Pictures/GlitchPixelStudio/${filename}`,
+        path: galleryFolder,
         data: base64,
         directory: Directory.ExternalStorage,
         recursive: true,
       });
-      savedTo = `Pictures/GlitchPixelStudio/${filename}`;
-    } catch (err2) {
-      void err2;
+      savedTo = galleryFolder;
+    } catch (err) {
+      void err;
       try {
         await Filesystem.writeFile({
-          path: `GlitchPixelStudio/${filename}`,
+          path: `Pictures/GlitchPixelStudio/${filename}`,
           data: base64,
-          directory: Directory.Documents,
+          directory: Directory.ExternalStorage,
           recursive: true,
         });
-        savedTo = `Documents/GlitchPixelStudio/${filename}`;
-      } catch (err3) { void err3; }
+        savedTo = `Pictures/GlitchPixelStudio/${filename}`;
+      } catch (err2) {
+        void err2;
+        try {
+          await Filesystem.writeFile({
+            path: `GlitchPixelStudio/${filename}`,
+            data: base64,
+            directory: Directory.Documents,
+            recursive: true,
+          });
+          savedTo = `Documents/GlitchPixelStudio/${filename}`;
+        } catch (err3) { void err3; }
+      }
     }
   }
   // Fire a transient browser-style notification via console + window
@@ -4427,7 +4456,8 @@ export default function SpectraAfter() {
   // ── NEON MODE: glass / transparent panels + tilt parallax.
   //    Off by default — opt-in display tweak. Auto-disables tilt parallax
   //    while recording or in LOW POWER to keep captures and battery clean.
-  const [neonMode, setNeonMode] = useState(false);
+  // Glass mode is the default — full-screen FX with translucent panel overlay.
+  const [neonMode, setNeonMode] = useState(true);
   const tiltRootRef = useRef<HTMLDivElement>(null);
   // ── FACE FX cycle: universal mask that gates ALL FX inside or
   //    outside an AI-segmented person. Uses MediaPipe Tasks Vision
@@ -7984,7 +8014,9 @@ export default function SpectraAfter() {
           margin-top: 0 !important;
           position: absolute !important;
           left: 0; right: 0; bottom: 0;
-          max-height: 70dvh;
+          /* Only ~1/4 of the screen — we can only do one thing at a
+             time, so don't hog the FX view. Inner content scrolls. */
+          max-height: 28dvh;
           overflow-y: auto;
           overscroll-behavior: contain;
           z-index: 5;
@@ -8120,6 +8152,15 @@ export default function SpectraAfter() {
             inset 0 -2px 0 rgba(0,0,0,0.5),
             inset 0 0 30px rgba(255,80,255,0.28),
             0 6px 18px rgba(255,40,255,0.42) !important;
+        }
+        /* PHOTO button must float ABOVE the glass panel in NEON mode
+           so the user can still snap a still while controls overlay
+           the bottom of the canvas. Bumped to z-index 10. */
+        .neon-mode .sp-photo-btn-neon {
+          position: fixed !important;
+          right: 12px !important;
+          bottom: calc(28dvh + 12px) !important;
+          z-index: 10 !important;
         }
         /* SynthPanel borders + Knob caps in NEON mode also get a hint
            of glass so the rack chrome itself melts into the panel
@@ -8604,7 +8645,7 @@ export default function SpectraAfter() {
             <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
 
             <button
-              className="sp-btn"
+              className={"sp-btn sp-photo-btn" + (neonMode ? " sp-photo-btn-neon" : "")}
               onClick={captureStill}
               style={{
                 ...topBtnStyle,
