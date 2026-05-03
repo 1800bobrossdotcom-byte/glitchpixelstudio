@@ -2279,14 +2279,21 @@ uniform float uFeedback;     // zoom+rotate feedback tunnel
 uniform float uContour;      // iso-luminance neon contour lines
 uniform float uAscii;        // cell-density ascii/block ramp
 uniform float uVenetian;     // time-sliced venetian blind bands
-uniform float uSortKey;      // 0 lum,1 hue,2 sat,3 r,4 g,5 b
+uniform float uSortKey;      // 0 lum,1 hue,2 sat,3 r,4 g,5 b,6 intensity,7 min
 uniform float uSortLow;      // lower sorting threshold
 uniform float uSortHigh;     // upper sorting threshold
-uniform float uSortDirection;// 0 horizontal, 1 vertical
+uniform float uSortDirection;// 0 horizontal, 1 vertical (legacy; superseded by uSortAngle)
 uniform float uSortSegment;  // segment size modulation
 uniform float uSortRandom;   // modulation depth: sine-wave distorts lo/hi band per scan-line
 uniform float uSortWobble;   // signal phasing: VHS luma-noise + tape-error bands on sorted pixels
 uniform float uSortMode;     // 0 LINE, 1 SPIRAL, 2 BLOCK, 3 SLICE
+uniform float uSortInterval; // pixelsort-style interval gate: 0 BAND,1 BRIGHT,2 DARK,3 RAND,4 WAVE,5 EDGE,6 NONE
+uniform float uSortAngle;    // scan direction: 0 HORZ,1 VERT,2 DIAG↗,3 DIAG↘
+uniform float uRgbR;         // RGBNDR red-channel oscillator depth
+uniform float uRgbG;         // RGBNDR green-channel oscillator depth
+uniform float uRgbB;         // RGBNDR blue-channel oscillator depth
+uniform float uRgbBars;      // RGBNDR SMPTE color-bar overlay strength
+uniform float uRgbSwap;      // RGBNDR channel permutation: 0 RGB,1 GBR,2 BRG,3 BGR,4 RBG,5 GRB
 uniform float uMoshIFrame;   // iframe suppression emulation
 uniform float uMoshMotion;   // motion vector carry / propagation
 uniform float uMoshBleed;    // color texture bleed amount
@@ -2376,7 +2383,9 @@ float sortMetric(vec3 c, float key) {
   if (key < 2.5) return satFromRgb(c);
   if (key < 3.5) return c.r;
   if (key < 4.5) return c.g;
-  return c.b;
+  if (key < 5.5) return c.b;
+  if (key < 6.5) return clamp((c.r + c.g + c.b) / 3.0, 0.0, 1.0);
+  return min(c.r, min(c.g, c.b));
 }
 
 void main() {
@@ -2399,13 +2408,20 @@ void main() {
   vec3 sortedCol = vec3(0.0);
   float sortBlend = 0.0;
   if (uSortAmt * mask > 0.001) {
-    float key = floor(clamp(uSortKey, 0.0, 5.0) + 0.5);
+    float key = floor(clamp(uSortKey, 0.0, 7.0) + 0.5);
     float modeF = floor(clamp(uSortMode, 0.0, 3.0) + 0.5);
     float lo = min(uSortLow, uSortHigh);
     float hi = max(uSortLow, uSortHigh);
-    bool sortVert = uSortDirection > 0.5;
+    // pixelsort-style scan angle (0 HORZ / 1 VERT / 2 DIAG↗ / 3 DIAG↘);
+    // legacy uSortDirection is folded in as a +1 bias when uSortAngle is 0.
+    float angF = floor(clamp(uSortAngle + (uSortDirection > 0.5 ? 1.0 : 0.0), 0.0, 3.0) + 0.5);
+    bool sortVert = (angF > 0.5 && angF < 1.5);
     vec2 px = vec2(1.0 / uResolution.x, 1.0 / uResolution.y);
-    vec2 step1 = sortVert ? vec2(0.0, px.y) : vec2(px.x, 0.0);
+    vec2 step1;
+    if (angF < 0.5)      step1 = vec2(px.x, 0.0);     // HORZ
+    else if (angF < 1.5) step1 = vec2(0.0, px.y);     // VERT
+    else if (angF < 2.5) step1 = vec2(px.x, px.y);    // DIAG ↗
+    else                 step1 = vec2(px.x, -px.y);   // DIAG ↘
     // 8..64 sample run, scaled by SortAmt and Segment so dialing the
     // amount up creates LONGER streaks (not bigger displacements).
     // GLSL ES 1.00 requires constant loop bounds, so we use 64 hard
@@ -2437,7 +2453,30 @@ void main() {
 
     vec3 srcCol = texture2D(uCamera, uv).rgb;
     float srcMet = sortMetric(srcCol, key);
-    bool srcInBand = srcMet >= lo && srcMet <= hi;
+    bool srcInBandRaw = srcMet >= lo && srcMet <= hi;
+    // INTERVAL gate (satyarth/pixelsort-style): chooses which destination
+    // pixels participate. 0 BAND keeps legacy behaviour; others override.
+    float intF = floor(clamp(uSortInterval, 0.0, 6.0) + 0.5);
+    float srcLuma = lum(srcCol);
+    bool srcInBand = srcInBandRaw;
+    if (intF > 0.5 && intF < 1.5)       srcInBand = srcLuma >= lo;                        // BRIGHT
+    else if (intF < 2.5)                srcInBand = srcLuma <= hi;                        // DARK
+    else if (intF < 3.5) {                                                                 // RANDOM
+      float segW = mix(8.0, 64.0, clamp(uSortSegment, 0.0, 1.0));
+      float bx = floor((sortVert ? uv.y : uv.x) * (sortVert ? uResolution.y : uResolution.x) / segW);
+      float r = hash2(vec2(lineId * 0.07 + 0.13, bx + floor(uTime * 0.5)));
+      srcInBand = r > clamp(1.0 - uSortRandom, 0.05, 0.95);
+    }
+    else if (intF < 4.5) {                                                                 // WAVES
+      float w = sin(lineCoord * mix(20.0, 90.0, clamp(uSortSegment, 0.0, 1.0)) + uTime * 1.2);
+      srcInBand = w > 0.0;
+    }
+    else if (intF < 5.5) {                                                                 // EDGES
+      vec3 nx = texture2D(uCamera, clamp(uv + step1, 0.0, 1.0)).rgb;
+      float edge = abs(lum(nx) - srcLuma);
+      srcInBand = edge > mix(0.05, 0.45, 1.0 - clamp(uSortRandom, 0.0, 1.0));
+    }
+    else if (intF >= 5.5)               srcInBand = true;                                  // NONE
 
     vec3 bestCol = srcCol;
     float bestMet = pickMax > 0.5 ? -1.0 : 2.0;
@@ -3263,7 +3302,49 @@ void main() {
     float scan = sin(vUv.y * uResolution.y * 3.14159) * 0.5 + 0.5;
     post *= 1.0 - uScanlines * 0.35 * (1.0 - scan);
   }
-  // (Old GIF Lab post-FX removed)
+  // ── RGBNDR (analog VGA channel-bender, ohss/RGBNDR-inspired) ──────
+  if (uRgbR > 0.001 || uRgbG > 0.001 || uRgbB > 0.001 || uRgbBars > 0.001 || uRgbSwap > 0.5) {
+    // Per-channel oscillator-driven horizontal sample offset.
+    float oR = sin(vUv.y * 47.0 + uTime * 1.7) * uRgbR * 0.08;
+    float oG = sin(vUv.y * 73.0 + uTime * 1.1 + 1.7) * uRgbG * 0.08;
+    float oB = sin(vUv.y * 31.0 + uTime * 0.6 + 3.1) * uRgbB * 0.08;
+    float rCh = texture2D(uCamera, clamp(vec2(vUv.x + oR, vUv.y), 0.0, 1.0)).r;
+    float gCh = texture2D(uCamera, clamp(vec2(vUv.x + oG, vUv.y), 0.0, 1.0)).g;
+    float bCh = texture2D(uCamera, clamp(vec2(vUv.x + oB, vUv.y), 0.0, 1.0)).b;
+    vec3 ben = vec3(rCh, gCh, bCh);
+    // Channel swap (circuit-bent rewiring): 0 RGB / 1 GBR / 2 BRG / 3 BGR / 4 RBG / 5 GRB
+    float swp = floor(clamp(uRgbSwap, 0.0, 5.0) + 0.5);
+    if      (swp < 0.5) {}                  // RGB
+    else if (swp < 1.5) ben = ben.gbr;
+    else if (swp < 2.5) ben = ben.brg;
+    else if (swp < 3.5) ben = ben.bgr;
+    else if (swp < 4.5) ben = ben.rbg;
+    else                ben = ben.grb;
+    float maxAmt = max(uRgbR, max(uRgbG, max(uRgbB, swp > 0.5 ? 0.85 : 0.0)));
+    post = mix(post, ben, clamp(maxAmt, 0.0, 1.0));
+    // SMPTE color-bar overlay (top 2/3 = 7 primaries, bottom 1/3 = PLUGE).
+    if (uRgbBars > 0.001) {
+      vec3 bars;
+      if (vUv.y > 0.33) {
+        float b = floor(vUv.x * 8.0);
+        if      (b < 0.5) bars = vec3(0.75);
+        else if (b < 1.5) bars = vec3(0.75, 0.75, 0.0);
+        else if (b < 2.5) bars = vec3(0.0, 0.75, 0.75);
+        else if (b < 3.5) bars = vec3(0.0, 0.75, 0.0);
+        else if (b < 4.5) bars = vec3(0.75, 0.0, 0.75);
+        else if (b < 5.5) bars = vec3(0.75, 0.0, 0.0);
+        else if (b < 6.5) bars = vec3(0.0, 0.0, 0.75);
+        else              bars = vec3(0.0);
+      } else {
+        float b = floor(vUv.x * 4.0);
+        if      (b < 0.5) bars = vec3(0.0, 0.13, 0.30);
+        else if (b < 1.5) bars = vec3(1.0);
+        else if (b < 2.5) bars = vec3(0.20, 0.0, 0.42);
+        else              bars = vec3(0.07);
+      }
+      post = mix(post, bars, clamp(uRgbBars, 0.0, 1.0) * 0.75);
+    }
+  }
   gl_FragColor = vec4(clamp(post, 0.0, 1.0), 1.0);
 }
 `;
@@ -4202,6 +4283,15 @@ export default function SpectraAfter() {
   const [sortSegment, setSortSegment] = useState(0.35);
   const [sortRandom, setSortRandom] = useState(0.18);
   const [sortWobble, setSortWobble] = useState(0.12);
+  // satyarth/Akascape pixelsort-style extensions
+  const [sortInterval, setSortInterval] = useState(0); // 0 BAND,1 BRIGHT,2 DARK,3 RAND,4 WAVE,5 EDGE,6 NONE
+  const [sortAngle, setSortAngle] = useState(0);       // 0 HORZ,1 VERT,2 DIAG↗,3 DIAG↘
+  // RGBNDR (ohss/RGBNDR-inspired analog VGA channel-bender)
+  const [rgbR, setRgbR] = useState(0);
+  const [rgbG, setRgbG] = useState(0);
+  const [rgbB, setRgbB] = useState(0);
+  const [rgbBars, setRgbBars] = useState(0);
+  const [rgbSwap, setRgbSwap] = useState(0); // 0 RGB,1 GBR,2 BRG,3 BGR,4 RBG,5 GRB
   const [moshIFrame, setMoshIFrame] = useState(0.7);
   const [moshMotion, setMoshMotion] = useState(0.55);
   const [moshBleed, setMoshBleed] = useState(0.45);
@@ -4522,6 +4612,8 @@ export default function SpectraAfter() {
       "uLiquid","uTimeSmear","uFeedback","uContour","uAscii","uVenetian",
       "uKaleido","uDisrupt","uDisruptCount","uDisruptSize","uDisruptContrary",
       "uSortKey","uSortLow","uSortHigh","uSortDirection","uSortSegment","uSortRandom","uSortWobble","uSortMode",
+      "uSortInterval","uSortAngle",
+      "uRgbR","uRgbG","uRgbB","uRgbBars","uRgbSwap",
       "uMoshIFrame","uMoshMotion","uMoshBleed","uMoshMap","uMoshDistort",
       "uModeParams[0]"];
       // Mask texture for touch FX
@@ -4657,6 +4749,13 @@ export default function SpectraAfter() {
   const sortSegmentRef = useRef(sortSegment);
   const sortRandomRef = useRef(sortRandom);
   const sortWobbleRef = useRef(sortWobble);
+  const sortIntervalRef = useRef(sortInterval);
+  const sortAngleRef = useRef(sortAngle);
+  const rgbRRef = useRef(rgbR);
+  const rgbGRef = useRef(rgbG);
+  const rgbBRef = useRef(rgbB);
+  const rgbBarsRef = useRef(rgbBars);
+  const rgbSwapRef = useRef(rgbSwap);
   const moshIFrameRef = useRef(moshIFrame);
   const moshMotionRef = useRef(moshMotion);
   const moshBleedRef = useRef(moshBleed);
@@ -4802,6 +4901,13 @@ export default function SpectraAfter() {
   useEffect(()=>{ sortSegmentRef.current=sortSegment; },[sortSegment]);
   useEffect(()=>{ sortRandomRef.current=sortRandom; },[sortRandom]);
   useEffect(()=>{ sortWobbleRef.current=sortWobble; },[sortWobble]);
+  useEffect(()=>{ sortIntervalRef.current=sortInterval; },[sortInterval]);
+  useEffect(()=>{ sortAngleRef.current=sortAngle; },[sortAngle]);
+  useEffect(()=>{ rgbRRef.current=rgbR; },[rgbR]);
+  useEffect(()=>{ rgbGRef.current=rgbG; },[rgbG]);
+  useEffect(()=>{ rgbBRef.current=rgbB; },[rgbB]);
+  useEffect(()=>{ rgbBarsRef.current=rgbBars; },[rgbBars]);
+  useEffect(()=>{ rgbSwapRef.current=rgbSwap; },[rgbSwap]);
   // Auto-bump sortAmt when entering PIXEL SORT mode so the rack knobs
   // produce a visible result without the user having to crank AMOUNT
   // from zero first.
@@ -5587,6 +5693,13 @@ export default function SpectraAfter() {
     gl.uniform1f(u.uSortSegment, sortSegmentRef.current);
     gl.uniform1f(u.uSortRandom, sortRandomRef.current);
     gl.uniform1f(u.uSortWobble, sortWobbleRef.current);
+    gl.uniform1f(u.uSortInterval, sortIntervalRef.current);
+    gl.uniform1f(u.uSortAngle, sortAngleRef.current);
+    gl.uniform1f(u.uRgbR, rgbRRef.current);
+    gl.uniform1f(u.uRgbG, rgbGRef.current);
+    gl.uniform1f(u.uRgbB, rgbBRef.current);
+    gl.uniform1f(u.uRgbBars, rgbBarsRef.current);
+    gl.uniform1f(u.uRgbSwap, rgbSwapRef.current);
     gl.uniform1f(u.uMoshIFrame, moshIFrameRef.current);
     gl.uniform1f(u.uMoshMotion, moshMotionRef.current);
     gl.uniform1f(u.uMoshBleed, moshBleedRef.current);
@@ -7887,11 +8000,31 @@ export default function SpectraAfter() {
               <div style={{ display: "flex", justifyContent: "center", marginTop: 12 }}>
                 <SynthSwitch label="DIR" on={sortDirection >= 0.5} onChange={(v) => setSortDirection(v ? 1 : 0)} onLabel="VERT" offLabel="HORZ"/>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
                 <SynthSelector label="MODE" options={["LINE","SPIRAL","BLOCK","SLICE"]} value={Math.round(sortMode)} onChange={(v) => setSortMode(v)}/>
+                <SynthSelector label="INTERVAL" options={["BAND","BRIGHT","DARK","RAND","WAVE","EDGE","NONE"]} value={Math.round(sortInterval)} onChange={(v) => setSortInterval(v)}/>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
+                <SynthSelector label="ANGLE" options={["HORZ","VERT","DIAG↗","DIAG↘"]} value={Math.round(sortAngle)} onChange={(v) => setSortAngle(v)}/>
               </div>
             </SynthPanel>
             )}
+
+            {/* ── RGBNDR RACK (analog VGA channel-bender) ──────────── */}
+            <SynthPanel title="RGBNDR" subtitle="VIDEO SYNTH · 5 CTRL" accent="rgba(231,174,255,0.95)">
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
+                <Knob label="R OSC"  value={rgbR}    min={0} max={1} step={0.01} defaultValue={0.0} onChange={setRgbR}/>
+                <Knob label="G OSC"  value={rgbG}    min={0} max={1} step={0.01} defaultValue={0.0} onChange={setRgbG}/>
+                <Knob label="B OSC"  value={rgbB}    min={0} max={1} step={0.01} defaultValue={0.0} onChange={setRgbB}/>
+                <Knob label="BARS"   value={rgbBars} min={0} max={1} step={0.01} defaultValue={0.0} onChange={setRgbBars}/>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
+                <SynthSelector label="SWAP" options={["RGB","GBR","BRG","BGR","RBG","GRB"]} value={Math.round(rgbSwap)} onChange={(v) => setRgbSwap(v)}/>
+              </div>
+              <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(231,174,255,0.55)", textAlign: "center" }}>
+                per-channel oscillator channel-bend · SMPTE bar overlay · channel rewiring
+              </div>
+            </SynthPanel>
 
             {/* ── DATAMOSH RACK ─────────────────────────────────────── */}
             {showMoshRack && (
@@ -8243,7 +8376,7 @@ export default function SpectraAfter() {
               </div>
               {/* Sort key (color channel that drives PIXEL SORT) */}
               <div style={{ display: "flex", justifyContent: "center" }}>
-                <SynthSelector label="SORT KEY" options={["LUM","HUE","SAT","R","G","B"]} value={Math.round(sortKey)} onChange={(v) => setSortKey(v)}/>
+                <SynthSelector label="SORT KEY" options={["LUM","HUE","SAT","R","G","B","INTENS","MIN"]} value={Math.round(sortKey)} onChange={(v) => setSortKey(v)}/>
               </div>
             </SynthPanel>
 
