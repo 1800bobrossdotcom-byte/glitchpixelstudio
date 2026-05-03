@@ -3888,6 +3888,7 @@ export const APP_TIER: AppTier = "PRO";
 export const TIER_FEATURES = {
   free: [
     "All visual modes (PXL, MOSH, glitch rack, generator)",
+    "DRAW: paint where the glitch FX appear (Glitch!-style)",
     "AUTOMATE LFO + presets stored on device",
     "Up to 30s recording · standard quality",
     "Save / share via system share sheet",
@@ -4222,9 +4223,16 @@ export default function SpectraAfter() {
   const brushColorRef = useRef("#ff00ff");
   const colorCycleRef = useRef(false);
   const brushTypeRef = useRef<string>("round");
-  // Setters kept for future re-introduction of draw-overlay UI.
-  void setDrawActive; void setBrushSize; void setBrushOpacity;
-  void setColorCycle; void setColorCycleSpeed; void setBrushType;
+  // Glitch!-style draw: pop last stroke. setStrokes lives in state above.
+  const undoStroke = useCallback(() => {
+    setStrokes(prev => prev.slice(0, -1));
+  }, []);
+  const clearStrokes = useCallback(() => {
+    currentStrokeRef.current = null;
+    setStrokes([]);
+  }, []);
+  // Reserved setters (color cycle UI may return later)
+  void setColorCycle; void setColorCycleSpeed;
 
   // ── Export
   const [recording, setRecording] = useState(false);
@@ -6150,6 +6158,7 @@ export default function SpectraAfter() {
     touchRef.current.active = false;
     currentStrokeRef.current = null;
     setStrokes([]);
+    setDrawActive(false);
     await startCamera(true, "environment");
   }, [clearUploadSource, startCamera]);
 
@@ -7298,6 +7307,17 @@ export default function SpectraAfter() {
           >{cameraFacing === "user" ? "FRONT" : "FLIP"}</button>
           <button
             className="sp-btn"
+            onClick={() => setDrawActive(a => !a)}
+            style={{
+              ...topBtnStyle, fontSize: 10, letterSpacing: "1px",
+              color: drawActive ? T.ochre : undefined,
+              borderColor: drawActive ? T.amber : undefined,
+              boxShadow: drawActive ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
+            }}
+            title="DRAW: paint where the glitch FX should appear (rest stays clean)"
+          >{drawActive ? "✎ DRAW" : "✎"}</button>
+          <button
+            className="sp-btn"
             onClick={() => setAudioActive(a => !a)}
             style={{ ...topBtnStyle, color: audioActive ? T.ochre : undefined, borderColor: audioActive ? T.amber : undefined, boxShadow: audioActive ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow }}
             title="Audio-Reactive FX"
@@ -7356,8 +7376,11 @@ export default function SpectraAfter() {
               ref={drawCanvasRef}
               style={{
                 position: "absolute", inset: 0, width: "100%", height: "100%",
-                cursor: drawActive ? "crosshair" : "default", zIndex: 3, touchAction: "none",
-                mixBlendMode: "hard-light",
+                cursor: drawActive ? "crosshair" : "default", zIndex: 3,
+                touchAction: "none",
+                opacity: drawActive ? 0.32 : 0,
+                mixBlendMode: "screen",
+                transition: "opacity 140ms ease",
               }}
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
@@ -7366,6 +7389,93 @@ export default function SpectraAfter() {
             />
             {/* Hidden mask canvas for FX mask */}
             <canvas ref={maskCanvasRef} style={{ display: "none" }} width={256} height={256} />
+
+            {/* ── Floating DRAW toolbar (Glitch! style) */}
+            {drawActive && (
+              <div
+                style={{
+                  position: "absolute", left: 10, top: 10, zIndex: 7,
+                  display: "flex", flexDirection: "column", gap: 6,
+                  padding: "8px 10px",
+                  background: "linear-gradient(180deg, rgba(14,26,62,0.92) 0%, rgba(10,20,48,0.88) 100%)",
+                  border: "1px solid rgba(255,133,0,0.55)",
+                  borderRadius: 8,
+                  boxShadow: "0 0 14px rgba(255,133,0,0.35), inset 0 0 6px rgba(0,0,0,0.6)",
+                  fontFamily: "'Courier New',monospace",
+                  color: "#F4F6FF",
+                  minWidth: 138, maxWidth: 170,
+                }}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 10, letterSpacing: "2px", color: "#FF8500" }}>✎ DRAW FX</span>
+                  <button
+                    onClick={() => setDrawActive(false)}
+                    title="Close draw mode"
+                    style={{
+                      background: "transparent", border: "1px solid rgba(244,246,255,0.35)",
+                      color: "#F4F6FF", fontSize: 9, padding: "1px 6px", borderRadius: 3,
+                      cursor: "pointer", letterSpacing: "1px",
+                    }}
+                  >✕</button>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 8, letterSpacing: "1.4px", color: "rgba(244,246,255,0.6)", width: 28 }}>SIZE</span>
+                  <input
+                    type="range" min={3} max={80} step={1} value={brushSize}
+                    onChange={e => setBrushSize(parseInt(e.target.value, 10))}
+                    style={{ flex: 1, accentColor: "#FF8500" }}
+                  />
+                  <span style={{ fontSize: 9, color: "#FF8500", width: 18, textAlign: "right" }}>{brushSize}</span>
+                </div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {(["round","wide","spray","neon"] as const).map(b => (
+                    <button
+                      key={b}
+                      onClick={() => setBrushType(b)}
+                      title={`Brush: ${b}`}
+                      style={{
+                        flex: 1, fontSize: 8, letterSpacing: "1px", padding: "3px 0",
+                        background: brushType === b ? "rgba(255,133,0,0.22)" : "transparent",
+                        border: `1px solid ${brushType === b ? "#FF8500" : "rgba(244,246,255,0.25)"}`,
+                        color: brushType === b ? "#FF8500" : "rgba(244,246,255,0.85)",
+                        cursor: "pointer", borderRadius: 3, textTransform: "uppercase",
+                      }}
+                    >{b}</button>
+                  ))}
+                </div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  <button
+                    onClick={undoStroke}
+                    disabled={strokes.length === 0}
+                    title="Undo last stroke"
+                    style={{
+                      flex: 1, fontSize: 9, letterSpacing: "1px", padding: "4px 0",
+                      background: "transparent",
+                      border: "1px solid rgba(111,125,255,0.5)",
+                      color: strokes.length === 0 ? "rgba(244,246,255,0.3)" : "#6F7DFF",
+                      cursor: strokes.length === 0 ? "not-allowed" : "pointer",
+                      borderRadius: 3,
+                    }}
+                  >↶ UNDO</button>
+                  <button
+                    onClick={clearStrokes}
+                    disabled={strokes.length === 0}
+                    title="Clear all strokes"
+                    style={{
+                      flex: 1, fontSize: 9, letterSpacing: "1px", padding: "4px 0",
+                      background: "transparent",
+                      border: "1px solid rgba(255,77,77,0.55)",
+                      color: strokes.length === 0 ? "rgba(244,246,255,0.3)" : "#FF4D4D",
+                      cursor: strokes.length === 0 ? "not-allowed" : "pointer",
+                      borderRadius: 3,
+                    }}
+                  >✕ CLEAR</button>
+                </div>
+                <div style={{ fontSize: 8, lineHeight: 1.35, letterSpacing: "0.6px", color: "rgba(244,246,255,0.55)", marginTop: 2 }}>
+                  Paint where the glitch FX appear. Untouched areas stay clean cam.
+                </div>
+              </div>
+            )}
 
             {/* Flash feedback on capture */}
             {flashVisible && <div style={{ position: "absolute", inset: 0, background: "white", opacity: 0.6, zIndex: 10, pointerEvents: "none" }}/>}
