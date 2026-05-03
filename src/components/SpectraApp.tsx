@@ -4130,7 +4130,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.34";
+export const APP_VERSION = "1.2.35";
 
 const GRACE_TOTAL_MS = 3 * 60 * 1000; // 3 minutes
 const ENT_KEY = "gps.entitlement";
@@ -6597,14 +6597,24 @@ export default function SpectraAfter() {
     // in sequence: layer 0 reads camera, subsequent layers read the previous
     // layer's output. The last layer renders directly to the canvas.
     const layers = comboLayersRef.current;
-    const useCombo = comboModeRef.current && layers.length > 0
+    // Drive each layer's gain from its corresponding knob ref so the rack
+    // is silent (no displacement, no recolor) until the user dials in a value.
+    // Without this, defaults of gain=1 push MOSH to full intensity over the
+    // camera and produce the unwanted rainbow / inverted ghost on boot.
+    const liveLayers = layers.map((L) => {
+      let g = L.gain;
+      if (L.mode === 7)      g = sortAmtRef.current  ?? 0;
+      else if (L.mode === 9) g = datamoshRef.current ?? 0;
+      return { mode: L.mode, gain: g };
+    });
+    const anyArmed = liveLayers.some((L) => (L.gain ?? 0) > 0.02);
+    const useCombo = comboModeRef.current && liveLayers.length > 0 && anyArmed
       && fboARef.current !== null && fboBRef.current !== null
       && fboTexARef.current !== null && fboTexBRef.current !== null;
     if (useCombo) {
-      for (let i = 0; i < layers.length; i++) {
-        const layer = layers[i];
-        const isLast = i === layers.length - 1;
-        // Bind input as TEXTURE0 (uCamera): camera for first layer, previous FBO output otherwise
+      for (let i = 0; i < liveLayers.length; i++) {
+        const layer = liveLayers[i];
+        const isLast = i === liveLayers.length - 1;
         gl.activeTexture(gl.TEXTURE0);
         if (i === 0) {
           gl.bindTexture(gl.TEXTURE_2D, curTex);
