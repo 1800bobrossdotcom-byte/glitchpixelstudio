@@ -4223,7 +4223,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.52";
+export const APP_VERSION = "1.2.53";
 
 // v1.2.51 — extended to 30 minutes for paid-tier QA / debugging passes.
 const GRACE_TOTAL_MS = 30 * 60 * 1000; // 30 minutes (testing)
@@ -4616,6 +4616,10 @@ export default function SpectraAfter() {
   // v1.2.46: default to BG so the viewer's body is preserved and FX
   // chew the background — instant demo of the AI-segmented mask.
   const [faceFxMode, setFaceFxMode] = useState<FaceFxMode>("BG");
+  // v1.2.53 — ref mirror so the camera-acquire path can re-check the
+  // user's current intent after each await without re-binding the closure.
+  const faceFxModeRef = useRef<FaceFxMode>("BG");
+  useEffect(() => { faceFxModeRef.current = faceFxMode; }, [faceFxMode]);
   const [faceFxToast, setFaceFxToast] = useState<string | null>(null);
   const faceFxRef = useRef<{ active: boolean; invert: boolean; texValid: boolean; cx: number; cy: number; r: number; }>({
     active: false, invert: false, texValid: false, cx: 0.5, cy: 0.42, r: 0.28,
@@ -6806,7 +6810,21 @@ export default function SpectraAfter() {
     gl.uniform1f(u.uHueShift, hueShiftRef.current);
     gl.uniform1f(u.uScanlines, scanlinesRef.current);
     gl.uniform1f(u.uZoom, zoomRef.current);
-    gl.uniform1f(u.uSortAmt, sortAmtRef.current);
+    // v1.2.53 — universal audio reactivity for the two camera-source FX
+    // racks (PIXEL SORT + DATAMOSH). Generator already has a deep audio
+    // routing built into its evolution loop above; this brings the FX
+    // racks up to parity so the mic mod actually does something across
+    // ALL three feature areas the user expects ("sort, mosh, generator").
+    // We add a punch term so even a knob set to 0 produces a glimmer on
+    // a loud beat (instant demo of audio-react), then a multiplicative
+    // gain on top of the user's knob value so what they dialed in pulses.
+    const _aBass  = audioBassRef.current;
+    const _aBeat  = audioBeatRef.current;
+    const _aLvl   = audioLevelRef.current;
+    const _aGate  = Math.min(1.0, _aBass * 1.4 + _aBeat * 0.9 + _aLvl * 0.5);
+    const _sortBase = sortAmtRef.current;
+    const _sortAudio = Math.min(1.0, _sortBase * (1 + _aGate * 0.7) + _aGate * 0.18);
+    gl.uniform1f(u.uSortAmt, _sortAudio);
     gl.uniform1f(u.uScanTear, scanTearRef.current);
     gl.uniform1f(u.uRGBDrift, rgbDriftRef.current);
     gl.uniform1f(u.uBlockGlitch, blockGlitchRef.current);
@@ -6815,9 +6833,14 @@ export default function SpectraAfter() {
     // slider midpoint — the top half of the knob did nothing visible.
     // Linear map keeps the full slider range live in both modes.
     const dmBase = Math.max(0, datamoshRef.current);
-    const dmMapped = moshHardRef.current
+    let dmMapped = moshHardRef.current
       ? dmBase * 2.5 + 0.25  // HARD: 0.25 .. 5.25 across the full slider
       : dmBase * 1.6;        // SOFT: 0    .. 3.2  across the full slider
+    // v1.2.53 — audio modulation of the datamosh rack. Pulses the
+    // mapped intensity on bass/beat so the rack visibly reacts to a
+    // mic stream even when the slider is partway down. Capped at the
+    // HARD ceiling so we don't push past what the shader was tuned for.
+    dmMapped = Math.min(5.5, dmMapped * (1 + _aGate * 0.55) + _aGate * 0.22);
     gl.uniform1f(u.uDatamosh, dmMapped);
     gl.uniform1f(u.uChrash, chrashRef.current);
     gl.uniform1f(u.uLiquid, liquidRef.current);
@@ -7283,12 +7306,29 @@ export default function SpectraAfter() {
         return;
       }
       await releaseCameraBinding();
+      // v1.2.53 \u2014 intent re-check. While we were awaiting permission /
+      // releasing the previous binding, the user may have toggled OFF
+      // both source=camera AND face FX. If so, bail out instead of
+      // acquiring a stream nobody asked for (this was the source of the
+      // \"camera won't come back\" stuck state when toggling fast \u2014 a
+      // late-arriving stream would set cameraActive=true but no render
+      // path was actually consuming it).
+      if (sourceModeRef.current !== "camera" && faceFxModeRef.current === "OFF") {
+        return;
+      }
       const stream = await Promise.race([
         getCameraStream(facing),
         new Promise<never>((_, rej) =>
           setTimeout(() => rej(Object.assign(new Error("Camera start timed out — tap retry to try again."), { name: "TimeoutError" })), 12000)
         ),
       ]);
+      // v1.2.53 \u2014 second intent check after stream resolves. If user
+      // toggled away while getUserMedia was pending, stop the stream we
+      // just got so we don't hold the device hostage.
+      if (sourceModeRef.current !== "camera" && faceFxModeRef.current === "OFF") {
+        try { stream.getTracks().forEach(t => t.stop()); } catch {}
+        return;
+      }
       streamRef.current = stream;
       const video = videoRef.current!;
       video.srcObject = stream;
@@ -8197,6 +8237,12 @@ export default function SpectraAfter() {
   // is engaged on a non-camera source (v1.2.51 composite path needs the
   // camera + segmenter running underneath gen/upload so the person can be
   // cut out and laid over the source).
+  // v1.2.53: removed the cleanup that reset startCameraInFlightRef — it
+  // allowed multiple in-flight startCamera() calls to stack when the user
+  // toggled sourceMode/faceFxMode quickly, racing two getUserMedia()
+  // requests against the same video element and leaving the camera in a
+  // stuck state where the next manual retry was needed to recover. The
+  // in-flight flag now naturally clears in startCamera()'s finally block.
   useEffect(() => {
     if (!bootDone) return;
     if (sourceMode === "camera" || faceFxMode !== "OFF") {
@@ -8204,7 +8250,6 @@ export default function SpectraAfter() {
     } else if (cameraActive) {
       stopCamera();
     }
-    return () => { startCameraInFlightRef.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bootDone, sourceMode, faceFxMode]);
 
