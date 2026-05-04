@@ -2335,6 +2335,15 @@ uniform float uStarfold;         // N-pointed star polygon symmetry
 uniform float uInvert;           // circle inversion (turn frame inside out)
 uniform float uDroste;           // recursive log-zoom Droste effect
 uniform float uHexfold;          // 12-fold hexagonal symmetry
+// ── v1.2.58 — Asendorf / Gysin homage rack ─────────────────────────────
+uniform sampler2D uGlyphAtlas;   // TEXTURE6 — 4x4 ASCII ramp atlas (Gysin/ertdfgcvb)
+uniform sampler2D uSortTex;      // TEXTURE5 — CPU pixel-sort result (real Asendorf, throttled)
+uniform float uStreak;           // Asendorf threshold directional smear (shader-only)
+uniform float uGlyph;            // Gysin glyph-atlas grid render
+uniform float uSortMix;          // CPU pixel-sort blend (driven by JS readback)
+uniform float uHilbert;          // Locality-preserving Hilbert-walk smear
+uniform float uReact;            // Gray-Scott reaction-diffusion mosh
+uniform float uVoroSort;         // Voronoi luma-sorted cell quantizer
 uniform float uModeParams[8]; // per-mode rack params (slot 0=AMOUNT, 1=MIX, 2..7 mode-specific)
 
 vec2 adjustUv(vec2 uv) {
@@ -2919,6 +2928,123 @@ void main() {
     float blend = smoothstep(0.4, 0.6, phase);
     vec3 bandColor = mix(color.rgb, texture2D(uPrevFrame, bandUv).rgb, blend);
     color.rgb = mix(color.rgb, bandColor, uVenetian * mask * 0.9);
+  }
+  // ── v1.2.58 ASENDORF / GYSIN homage block ─────────────────────────────
+  // 12. ASENDORF STREAK — luma-threshold directional smear (shader-only,
+  // approximates the Asendorf 2010 ASDFPixelSort look without CPU readback).
+  // For pixels above the threshold, walk a slowly-rotating ray and adopt
+  // the brightest neighbour. The walk length scales with intensity.
+  if (uStreak * mask > 0.001) {
+    float thr = mix(0.92, 0.18, uStreak);
+    if (lum(color.rgb) > thr) {
+      float ang = uTime * 0.13 + uv.y * 0.6;
+      vec2 stride = vec2(cos(ang), sin(ang)) / uResolution * (3.0 + uStreak * 14.0);
+      vec3 best = color.rgb;
+      float bestL = lum(best);
+      for (int i = 1; i <= 24; i++) {
+        vec2 sUv = clamp(uv - stride * float(i), 0.001, 0.999);
+        vec3 s = texture2D(uCamera, sUv).rgb;
+        float sL = lum(s);
+        if (sL > bestL) { bestL = sL; best = s; }
+      }
+      color.rgb = mix(color.rgb, best, uStreak * mask);
+    }
+  }
+  // 13. GYSIN ASCII GLYPH GRID — 4x4 atlas of ramp characters (ertdfgcvb).
+  // Each cell quantizes camera luma into one of 16 glyphs, atlas alpha
+  // (R channel) modulates a colourised glyph; mixed back over the source.
+  if (uGlyph * mask > 0.001) {
+    float gridY = mix(40.0, 180.0, uGlyph);
+    float gridX = floor(gridY * uResolution.x / max(uResolution.y, 1.0));
+    vec2 grid = vec2(gridX, gridY);
+    vec2 cellId = floor(uv * grid);
+    vec2 cellCenter = (cellId + 0.5) / grid;
+    vec2 inCell = fract(uv * grid);
+    vec3 cellCol = texture2D(uCamera, clamp(cellCenter, 0.001, 0.999)).rgb;
+    float cellL = lum(cellCol);
+    float idx = floor(cellL * 15.999);
+    vec2 atlasCell = vec2(mod(idx, 4.0), 3.0 - floor(idx / 4.0));
+    vec2 atlasUv = (atlasCell + inCell) * 0.25;
+    float gA = texture2D(uGlyphAtlas, atlasUv).r;
+    vec3 glyphCol = vec3(gA) * (cellCol * 0.55 + vec3(cellL) * 0.55);
+    color.rgb = mix(color.rgb, glyphCol, uGlyph * mask);
+  }
+  // 14. CPU REAL PIXEL SORT — per-row Asendorf threshold runs sorted by
+  // packed RGBA value. Computed in JS at ~20 Hz on a 256x144 downscale,
+  // uploaded to uSortTex; the shader just blends.
+  if (uSortMix * mask > 0.001) {
+    vec3 sorted = texture2D(uSortTex, uv).rgb;
+    color.rgb = mix(color.rgb, sorted, uSortMix * mask);
+  }
+  // 15. HILBERT WALK SMEAR — pseudo-Hilbert quarter-turn walk per step
+  // gives locality-preserving max-luma propagation that doesn't show the
+  // axis-aligned banding of row/column smear.
+  if (uHilbert * mask > 0.001) {
+    vec3 best = color.rgb;
+    float bestL = lum(best);
+    vec2 p = uv;
+    vec2 step = 1.0 / uResolution * (2.0 + uHilbert * 14.0);
+    for (int i = 0; i < 12; i++) {
+      float t = float(i);
+      // Hilbert-style 90° turns + occasional U-turn
+      float a = floor(t * 0.5) * 1.5708 + mod(t, 2.0) * 1.5708;
+      p = clamp(p + vec2(cos(a), sin(a)) * step, 0.001, 0.999);
+      vec3 s = texture2D(uCamera, p).rgb;
+      float sL = lum(s);
+      if (sL > bestL) { bestL = sL; best = s; }
+    }
+    color.rgb = mix(color.rgb, best, uHilbert * mask);
+  }
+  // 16. REACTION-DIFFUSION MOSH — Gray-Scott PDE on the prev-frame R/G
+  // channels (used as chemical concentrations U,V). Camera luma feeds V,
+  // pattern V drives a channel-rotation moshing of the source.
+  if (uReact * mask > 0.001) {
+    vec2 px = 1.0 / uResolution;
+    vec3 cC = texture2D(uPrevFrame, uv).rgb;
+    vec3 cL = texture2D(uPrevFrame, uv - vec2(px.x, 0.0)).rgb;
+    vec3 cR = texture2D(uPrevFrame, uv + vec2(px.x, 0.0)).rgb;
+    vec3 cU = texture2D(uPrevFrame, uv - vec2(0.0, px.y)).rgb;
+    vec3 cD = texture2D(uPrevFrame, uv + vec2(0.0, px.y)).rgb;
+    vec2 UV = cC.rg;
+    vec2 lap = (cL.rg + cR.rg + cU.rg + cD.rg - 4.0 * UV);
+    float U = UV.x, V = UV.y;
+    float reac = U * V * V;
+    float du = 1.0 * lap.x - reac + 0.055 * (1.0 - U);
+    float dv = 0.5 * lap.y + reac - 0.117 * V;
+    vec2 newUV = clamp(UV + vec2(du, dv), 0.0, 1.0);
+    newUV.y = mix(newUV.y, lum(color.rgb), 0.04);
+    float vMask = newUV.y;
+    vec3 reactCol = mix(color.rgb, color.gbr, vMask);
+    color.rgb = mix(color.rgb, reactCol, uReact * mask);
+  }
+  // 17. VORONOI LUMA-SORT CELLS — Worley-noise spatial partition; each
+  // cell takes the brightest of 4 taps inside it as its representative.
+  // Looks like organic colour blocks; a spatial cousin of Asendorf sort.
+  if (uVoroSort * mask > 0.001) {
+    float density = mix(30.0, 180.0, uVoroSort);
+    vec2 G = uv * density;
+    vec2 gid = floor(G);
+    float bestD = 9999.0;
+    vec2 bestSeed = gid + 0.5;
+    for (int j = -1; j <= 1; j++) {
+      for (int i = -1; i <= 1; i++) {
+        vec2 nid = gid + vec2(float(i), float(j));
+        vec2 jit = vec2(hash2(nid), hash2(nid + 13.7)) - 0.5;
+        vec2 seedPx = nid + 0.5 + jit * 0.9;
+        float d = length(G - seedPx);
+        if (d < bestD) { bestD = d; bestSeed = seedPx; }
+      }
+    }
+    vec2 cellUv = bestSeed / density;
+    vec3 b0 = texture2D(uCamera, clamp(cellUv, 0.001, 0.999)).rgb;
+    vec3 b1 = texture2D(uCamera, clamp(cellUv + vec2(0.005, 0.0), 0.001, 0.999)).rgb;
+    vec3 b2 = texture2D(uCamera, clamp(cellUv - vec2(0.005, 0.0), 0.001, 0.999)).rgb;
+    vec3 b3 = texture2D(uCamera, clamp(cellUv + vec2(0.0, 0.005), 0.001, 0.999)).rgb;
+    vec3 best = b0; float bL = lum(b0);
+    if (lum(b1) > bL) { bL = lum(b1); best = b1; }
+    if (lum(b2) > bL) { bL = lum(b2); best = b2; }
+    if (lum(b3) > bL) { bL = lum(b3); best = b3; }
+    color.rgb = mix(color.rgb, best, uVoroSort * mask);
   }
   float g = 0.5 + uGain * 4.5;
   float fx = uGain;
@@ -4223,7 +4349,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.57";
+export const APP_VERSION = "1.2.58";
 
 // v1.2.51 — extended to 30 minutes for paid-tier QA / debugging passes.
 const GRACE_TOTAL_MS = 30 * 60 * 1000; // 30 minutes (testing)
@@ -5143,6 +5269,13 @@ export default function SpectraAfter() {
   const [moshHard, setMoshHard] = useState(false);
   const [chrash, setChrash] = useState(0.0);
   const [liquid, setLiquid] = useState(0.0);
+  // v1.2.58 — Asendorf / Gysin homage rack
+  const [streak, setStreak] = useState(0.0);
+  const [glyph, setGlyph] = useState(0.0);
+  const [sortMix, setSortMix] = useState(0.0);
+  const [hilbert, setHilbert] = useState(0.0);
+  const [reactD, setReactD] = useState(0.0);
+  const [voroSort, setVoroSort] = useState(0.0);
   const [timeSmear, setTimeSmear] = useState(0.0);
   const [feedback, setFeedback] = useState(0.0);
   const [contour, setContour] = useState(0.0);
@@ -5758,6 +5891,7 @@ export default function SpectraAfter() {
       "uMoshIFrame","uMoshMotion","uMoshBleed","uMoshMap","uMoshDistort",
       "uFaceActive","uFaceCenter","uFaceRadius","uFaceInvert",
       "uFaceTex","uFaceTexValid","uFaceFeather",
+      "uStreak","uGlyph","uSortMix","uHilbert","uReact","uVoroSort","uGlyphAtlas","uSortTex",
       "uModeParams[0]"];
       // Mask texture for touch FX
       const maskTex = gl.createTexture();
@@ -5807,6 +5941,62 @@ export default function SpectraAfter() {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
       textures.current.push(tex);
     }
+
+    // v1.2.58 — TEXTURE5: CPU pixel-sort result texture (uploaded from JS
+    // every Nth frame after running the real Asendorf algorithm on a
+    // 256x144 downscale). Init 1x1 black so it's complete before first run.
+    {
+      const sTex = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE5);
+      gl.bindTexture(gl.TEXTURE_2D, sTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
+      cpuSortTexRef.current = sTex;
+    }
+
+    // v1.2.58 — TEXTURE6: Gysin glyph atlas, generated once at boot from
+    // a brightness ramp drawn into a 256x256 2D canvas (4x4 grid, 64px
+    // per glyph). The atlas is grayscale; the shader uses .r as alpha.
+    {
+      const gTex = gl.createTexture();
+      gl.activeTexture(gl.TEXTURE6);
+      gl.bindTexture(gl.TEXTURE_2D, gTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      // Build the 4x4 atlas: 16 ramp glyphs from sparse → dense.
+      // Order: lightest first (index 0 = ' ') so cellL×16 maps darkest→densest naturally.
+      const ATLAS = 256, CELL = 64;
+      const ramp = [" ", ".", ",", ":", ";", "+", "=", "o", "x", "%", "$", "#", "@", "W", "M", "\u00d1"];
+      const ac = document.createElement("canvas");
+      ac.width = ATLAS; ac.height = ATLAS;
+      const actx = ac.getContext("2d");
+      if (actx) {
+        actx.fillStyle = "#000";
+        actx.fillRect(0, 0, ATLAS, ATLAS);
+        actx.fillStyle = "#fff";
+        actx.font = `${Math.floor(CELL * 0.85)}px ui-monospace, Menlo, Consolas, monospace`;
+        actx.textAlign = "center";
+        actx.textBaseline = "middle";
+        for (let i = 0; i < 16; i++) {
+          const cx = (i % 4) * CELL + CELL / 2;
+          const cy = Math.floor(i / 4) * CELL + CELL / 2;
+          actx.fillText(ramp[i], cx, cy);
+        }
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, ac);
+      } else {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
+      }
+      glyphAtlasTexRef.current = gTex;
+    }
+
+    // v1.2.58 — bind the new sampler units once (no need to re-set per frame)
+    if (u.uSortTex) gl.uniform1i(u.uSortTex, 5);
+    if (u.uGlyphAtlas) gl.uniform1i(u.uGlyphAtlas, 6);
 
     // Phase 2b: ping-pong FBOs for multi-layer combo composite
     const makeFboTex = () => {
@@ -5895,6 +6085,18 @@ export default function SpectraAfter() {
   const moshHardRef = useRef(moshHard);
   const chrashRef = useRef(chrash);
   const liquidRef = useRef(liquid);
+  const streakRef = useRef(streak);
+  const glyphRef = useRef(glyph);
+  const sortMixRef = useRef(sortMix);
+  const hilbertRef = useRef(hilbert);
+  const reactDRef = useRef(reactD);
+  const voroSortRef = useRef(voroSort);
+  // v1.2.58 — CPU pixel-sort scratch + Gysin glyph atlas
+  const cpuSortDownCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const cpuSortOutCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const cpuSortTexRef = useRef<WebGLTexture | null>(null);
+  const cpuSortTickRef = useRef(0);
+  const glyphAtlasTexRef = useRef<WebGLTexture | null>(null);
   const timeSmearRef = useRef(timeSmear);
   const feedbackRef = useRef(feedback);
   const contourRef = useRef(contour);
@@ -6049,6 +6251,12 @@ export default function SpectraAfter() {
   useEffect(()=>{ moshHardRef.current=moshHard; },[moshHard]);
   useEffect(()=>{ chrashRef.current=chrash; },[chrash]);
   useEffect(()=>{ liquidRef.current=liquid; },[liquid]);
+  useEffect(()=>{ streakRef.current=streak; },[streak]);
+  useEffect(()=>{ glyphRef.current=glyph; },[glyph]);
+  useEffect(()=>{ sortMixRef.current=sortMix; },[sortMix]);
+  useEffect(()=>{ hilbertRef.current=hilbert; },[hilbert]);
+  useEffect(()=>{ reactDRef.current=reactD; },[reactD]);
+  useEffect(()=>{ voroSortRef.current=voroSort; },[voroSort]);
   useEffect(()=>{ timeSmearRef.current=timeSmear; },[timeSmear]);
   useEffect(()=>{ feedbackRef.current=feedback; },[feedback]);
   useEffect(()=>{ contourRef.current=contour; },[contour]);
@@ -6953,6 +7161,69 @@ export default function SpectraAfter() {
       }
     }
 
+    // v1.2.58 — CPU PIXEL SORT tick (real Asendorf 2010 algorithm).
+    // Throttled to ~20 Hz on a 256x144 downscale (~37k pixels). Uses a
+    // packed Uint32 view of the ImageData for typed-array .sort() which
+    // is numeric — sorts each above-threshold run in place by 32-bit RGBA
+    // value (the Asendorf 'absolute rgb' key). The sorted canvas is
+    // uploaded to TEXTURE5 / uSortTex; the shader's uSortMix block blends.
+    if (sortMixRef.current > 0.001 && hasVideo && texSource && cpuSortTexRef.current) {
+      cpuSortTickRef.current = (cpuSortTickRef.current + 1) % 3;
+      if (cpuSortTickRef.current === 0) {
+        try {
+          const SW = 256, SH = 144;
+          let dc = cpuSortDownCanvasRef.current;
+          let oc = cpuSortOutCanvasRef.current;
+          if (!dc) { dc = document.createElement("canvas"); dc.width = SW; dc.height = SH; cpuSortDownCanvasRef.current = dc; }
+          if (!oc) { oc = document.createElement("canvas"); oc.width = SW; oc.height = SH; cpuSortOutCanvasRef.current = oc; }
+          const dctx = dc.getContext("2d", { willReadFrequently: true });
+          const octx = oc.getContext("2d");
+          if (dctx && octx) {
+            dctx.drawImage(texSource as CanvasImageSource, 0, 0, SW, SH);
+            const img = dctx.getImageData(0, 0, SW, SH);
+            const px32 = new Uint32Array(img.data.buffer);
+            // Threshold maps the slider so higher uSortMix = lower threshold
+            // = more pixels caught in runs (more visible sort). Range 60..200.
+            const thr = Math.max(20, Math.min(220, Math.floor(200 - sortMixRef.current * 140)));
+            for (let y = 0; y < SH; y++) {
+              const rowOff = y * SW;
+              let x = 0;
+              while (x < SW) {
+                // skip below-threshold
+                while (x < SW) {
+                  const p = px32[rowOff + x];
+                  const r = p & 0xff, g = (p >>> 8) & 0xff, b = (p >>> 16) & 0xff;
+                  const L = (r * 76 + g * 150 + b * 29) >>> 8;
+                  if (L > thr) break;
+                  x++;
+                }
+                const start = x;
+                // walk above-threshold
+                while (x < SW) {
+                  const p = px32[rowOff + x];
+                  const r = p & 0xff, g = (p >>> 8) & 0xff, b = (p >>> 16) & 0xff;
+                  const L = (r * 76 + g * 150 + b * 29) >>> 8;
+                  if (L < thr) break;
+                  x++;
+                }
+                const len = x - start;
+                if (len > 1) {
+                  // Uint32Array.sort is numeric — sorts the run in place
+                  px32.subarray(rowOff + start, rowOff + start + len).sort();
+                }
+              }
+            }
+            octx.putImageData(img, 0, 0);
+            gl.activeTexture(gl.TEXTURE5);
+            gl.bindTexture(gl.TEXTURE_2D, cpuSortTexRef.current);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, oc);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
+          }
+        } catch { /* CPU sort tick is best-effort; ignore failures */ }
+      }
+    }
+
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_2D, prevTex);
 
@@ -7040,6 +7311,13 @@ export default function SpectraAfter() {
     setF1(u.uDatamosh, dmMapped);
     setF1(u.uChrash, chrashRef.current);
     setF1(u.uLiquid, liquidRef.current);
+    // v1.2.58 — Asendorf / Gysin homage rack uniform writes
+    setF1(u.uStreak, streakRef.current);
+    setF1(u.uGlyph, glyphRef.current);
+    setF1(u.uSortMix, sortMixRef.current);
+    setF1(u.uHilbert, hilbertRef.current);
+    setF1(u.uReact, reactDRef.current);
+    setF1(u.uVoroSort, voroSortRef.current);
     setF1(u.uTimeSmear, timeSmearRef.current);
     setF1(u.uFeedback, feedbackRef.current);
     setF1(u.uContour, contourRef.current);
@@ -10101,6 +10379,35 @@ export default function SpectraAfter() {
                   }}
                   style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
                   title="Reset every DATAMOSH control to default"
+                >HARD RESET</button>
+              </div>
+            </SynthPanel>
+
+            {/* ── v1.2.58 ASENDORF / GYSIN homage rack ──────────────────────────────────
+                STREAK   = Asendorf threshold directional smear (shader-only)
+                GLYPH    = Gysin (ertdfgcvb) ASCII glyph atlas grid
+                REALSORT = real CPU Asendorf row-sort, 256x144 @ 20 Hz, sampled back
+                HILBERT  = locality-preserving max-luma walk (no row/col banding)
+                REACT-D  = Gray-Scott reaction-diffusion mosh on prev-frame
+                VOROSRT  = Voronoi cell quantizer, brightest tap per cell
+            */}
+            <SynthPanel title="ASENDORF / GYSIN" subtitle="PIXEL HOMAGE · 6 CTRL" accent="rgba(174,255,231,0.95)">
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(6,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
+                <Knob label="STREAK"   value={streak}   min={0} max={1} step={0.01} defaultValue={0.0} onChange={setStreak}/>
+                <Knob label="GLYPH"    value={glyph}    min={0} max={1} step={0.01} defaultValue={0.0} onChange={setGlyph}/>
+                <Knob label="REALSORT" value={sortMix}  min={0} max={1} step={0.01} defaultValue={0.0} onChange={setSortMix}/>
+                <Knob label="HILBERT"  value={hilbert}  min={0} max={1} step={0.01} defaultValue={0.0} onChange={setHilbert}/>
+                <Knob label="REACT-D"  value={reactD}   min={0} max={1} step={0.01} defaultValue={0.0} onChange={setReactD}/>
+                <Knob label="VOROSRT"  value={voroSort} min={0} max={1} step={0.01} defaultValue={0.0} onChange={setVoroSort}/>
+              </div>
+              <div style={{ display: "flex", justifyContent: "center", marginTop: 10 }}>
+                <button
+                  className="sp-btn"
+                  onClick={() => {
+                    setStreak(0); setGlyph(0); setSortMix(0); setHilbert(0); setReactD(0); setVoroSort(0);
+                  }}
+                  style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
+                  title="Reset every ASENDORF / GYSIN control to default"
                 >HARD RESET</button>
               </div>
             </SynthPanel>
