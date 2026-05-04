@@ -4773,7 +4773,12 @@ export default function SpectraAfter() {
   // ── Upload source (image / gif / short video) — feeds the same texture path
   type SourceMode = "camera" | "upload" | "generator";
   // Boot policy: start in CAMERA mode so the live image is the default canvas.
-  const [sourceMode, setSourceMode] = useState<SourceMode>("camera");
+  // v1.2.82 — default sourceMode = "generator" so first launch lands
+  // in GEN+CAM (the auto-start-camera effect below fires because
+  // faceFxMode defaults to "BG", which kicks the segmenter and the
+  // person-over-source composite). User opens the app and immediately
+  // sees the procedural FX wrapping their selfie.
+  const [sourceMode, setSourceMode] = useState<SourceMode>("generator");
   const [uploadName, setUploadName] = useState<string | null>(null);
   const [uploadKind, setUploadKind] = useState<"image" | "video" | null>(null);
   const sourceModeRef = useRef<SourceMode>("camera");
