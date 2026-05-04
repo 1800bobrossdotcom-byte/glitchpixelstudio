@@ -7389,8 +7389,17 @@ export default function SpectraAfter() {
       // Skip the heavy displacement + generator-overlay pass entirely when the
       // user hasn't dialed in any blend FX — otherwise the default BLEND view
       // shows a permanent rainbow + inverted ghost over the camera.
+      // v1.2.89 — also skip when FACE mode is armed (person-only). In FACE
+      // mode the BG must stay as pure camera footage; the PERSON-OVER-SOURCE
+      // block below handles painting the generator pattern onto the person.
+      // If we let the displacement composite run, it warps the entire camera
+      // frame and the "background = real camera" intent is lost.
       const blendEngaged = pxlArmed || moshArmed;
-      if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0 && blendEngaged) {
+      const faceModePersonOnly =
+        faceFxRef.current.active &&
+        faceFxRef.current.texValid &&
+        !faceFxRef.current.invert;
+      if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0 && blendEngaged && !faceModePersonOnly) {
         let cc = genCompositeCanvasRef.current;
         if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
         if (cc.width !== targetW || cc.height !== targetH) {
