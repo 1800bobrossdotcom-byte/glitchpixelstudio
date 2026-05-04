@@ -7452,35 +7452,40 @@ export default function SpectraAfter() {
           texSource = gc; srcW = gc.width; srcH = gc.height;
         }
       } else if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0) {
-        // v1.2.71/72 — GEN+CAM with no FX armed. v1.2.78 — reverted the
-        // v1.2.77 rotoscope branch (which used pure generator BG when
-        // faceFxRef.active was true). With faceFxMode defaulting to "BG",
-        // that path was always taken at boot and — if the segmenter hadn't
-        // initialised yet — the camera never appeared in GEN+CAM mode.
-        // Restore the always-on 55/45 + screen composite so cam+gen always
-        // shows both layers, regardless of segmenter state.
-        let cc = genCompositeCanvasRef.current;
-        if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
-        if (cc.width !== targetW || cc.height !== targetH) {
-          cc.width = targetW; cc.height = targetH;
-        }
-        const cctx = cc.getContext("2d");
-        if (cctx) {
-          cctx.globalCompositeOperation = "source-over";
-          cctx.globalAlpha = 1;
-          cctx.clearRect(0, 0, cc.width, cc.height);
-          cctx.drawImage(video, 0, 0, cc.width, cc.height);
-          cctx.globalCompositeOperation = "source-over";
-          cctx.globalAlpha = 0.55;
-          cctx.drawImage(gc, 0, 0, cc.width, cc.height);
-          cctx.globalCompositeOperation = "screen";
-          cctx.globalAlpha = 0.45;
-          cctx.drawImage(gc, 0, 0, cc.width, cc.height);
-          cctx.globalCompositeOperation = "source-over";
-          cctx.globalAlpha = 1;
-          texSource = cc; srcW = cc.width; srcH = cc.height;
+        // v1.2.80 — GEN+CAM with NO FX armed.
+        //  • If the face segmenter is ready (faceFx active + texValid),
+        //    set texSource = pure generator. The PERSON-OVER-SOURCE
+        //    composite block below will then stamp the camera person on
+        //    top, giving us "BG = generator FX, FG = real subject".
+        //  • If the segmenter isn't ready yet (cold boot, no model),
+        //    fall back to the always-on 55/45 + screen composite so the
+        //    user still sees BOTH layers and never gets a black screen.
+        if (faceFxRef.current.active && faceFxRef.current.texValid) {
+          texSource = gc; srcW = gc.width; srcH = gc.height;
         } else {
-          texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
+          let cc = genCompositeCanvasRef.current;
+          if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
+          if (cc.width !== targetW || cc.height !== targetH) {
+            cc.width = targetW; cc.height = targetH;
+          }
+          const cctx = cc.getContext("2d");
+          if (cctx) {
+            cctx.globalCompositeOperation = "source-over";
+            cctx.globalAlpha = 1;
+            cctx.clearRect(0, 0, cc.width, cc.height);
+            cctx.drawImage(video, 0, 0, cc.width, cc.height);
+            cctx.globalCompositeOperation = "source-over";
+            cctx.globalAlpha = 0.55;
+            cctx.drawImage(gc, 0, 0, cc.width, cc.height);
+            cctx.globalCompositeOperation = "screen";
+            cctx.globalAlpha = 0.45;
+            cctx.drawImage(gc, 0, 0, cc.width, cc.height);
+            cctx.globalCompositeOperation = "source-over";
+            cctx.globalAlpha = 1;
+            texSource = cc; srcW = cc.width; srcH = cc.height;
+          } else {
+            texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
+          }
         }
       } else {
         texSource = gc; srcW = gc.width; srcH = gc.height;
@@ -9617,24 +9622,31 @@ export default function SpectraAfter() {
            (Pixel 8 Pro, foldables, etc.) also reflow on rotate. We still
            guard with max-width:1023px so we never fight the desktop lg: layout. */
         @media (orientation: landscape) and (max-width: 1023px) {
+          /* v1.2.80 — force landscape reflow directly on .sp-body so we
+             don't depend on Tailwind's flex-col winning vs landscape-row. */
+          .sp-body { flex-direction: row !important; }
           .landscape-row { flex-direction: row !important; }
           .sp-canvas-pane {
+            flex: 1 1 0 !important;
+            width: auto !important;
             height: 100% !important;
-            flex: 1 1 auto !important;
             min-height: 0 !important;
             min-width: 0 !important;
           }
-          /* v1.2.78 — drop the inline aspect-ratio:1/1 in landscape so
-             the canvas fills the available pane width instead of getting
-             pinned to a tiny square sized off the short landscape height. */
+          /* Inline style on inner wrapper pins aspectRatio:1/1 which would
+             collapse the canvas to a square sized off the SHORT landscape
+             height. Override so the canvas fills the entire pane. */
           .sp-canvas-pane > div {
             aspect-ratio: auto !important;
             width: 100% !important;
             height: 100% !important;
+            max-width: 100% !important;
+            max-height: 100% !important;
           }
           .sp-panel-glass {
+            flex: 0 0 18rem !important;
             width: 18rem !important;
-            flex: none !important;
+            height: 100% !important;
           }
         }
 
