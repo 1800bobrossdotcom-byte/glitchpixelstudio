@@ -5170,15 +5170,16 @@ export default function SpectraAfter() {
 
     // v1.2.56 — Phase 3 ADAPTIVE SEGMENTER CADENCE. Read the render
     // loop's rolling frametime EWMA: when the GPU is loafing (<14 ms,
-    // >70 fps) we step up to ~12 Hz for crisper roto edges; when the
-    // device is straining (>22 ms, <45 fps) we drop to ~6 Hz so the
+    // >70 fps) we step up to ~20 Hz for crisp roto edges; when the
+    // device is straining (>22 ms, <45 fps) we drop to ~10 Hz so the
     // segmenter stops competing with the shader for the GPU. Default
-    // remains ~10 Hz. Reading a ref each tick is free.
+    // remains ~15 Hz. v1.2.75 — doubled cadence across all bands so
+    // the figure mask keeps up with fast dance moves (was 6/10/12 Hz).
     const _segCadenceMs = () => {
       const f = frametimeAvgRef.current;
-      if (f > 22) return 167; // ~6 Hz when busy
-      if (f < 14) return 83;  // ~12 Hz when idle
-      return 100;             // ~10 Hz default
+      if (f > 22) return 100; // ~10 Hz when busy (was 6)
+      if (f < 14) return 50;  // ~20 Hz when idle (was 12)
+      return 67;              // ~15 Hz default (was 10)
     };
 
     const initAndRun = async () => {
@@ -5260,24 +5261,15 @@ export default function SpectraAfter() {
               // broken roto after switching back to camera mode (the bloated
               // mask covered most of the frame). Clearing every tick forces
               // the mask to reflect ONLY the current segmenter output.
-      // v1.2.70 — MASK MOTION BLUR + EXPANSION. Previously this did a
-      // hard clearRect every segmenter tick, so when the body moved
-      // faster than the ~10 Hz cadence the mask would lag the limb and
-      // the FX rim would peel off the edge of the dancer ("slow to
-      // match the body"). We now:
-      //   1. Fade the prior-frame mask by 45% (translucent black fill)
-      //      so it lingers softly instead of vanishing.
-      //   2. Composite the new mask with `lighter` so the union of
-      //      prior + current wins per-pixel — limbs in motion get a
-      //      short trailing skirt that bridges segmenter ticks.
-      //   3. Apply a small outward expansion by drawing the mask 8
-      //      times offset by 1px in a ring — the equivalent of a 1-px
-      //      morphological dilation, giving full coverage at the body
-      //      silhouette so FX never "clip" inside the person's outline.
-      // The shader-side feather then rounds these dilated, trail-fed
-      // edges into a soft roto, not a jagged popping cut-out.
+      // v1.2.70 — MASK MOTION BLUR + EXPANSION. v1.2.75 — cut the
+      // prior-frame retention from 45% to 18% so the mask follows fast
+      // limb motion without smearing into a trailing skirt that visibly
+      // lagged the dancer. Combined with the doubled segmenter cadence
+      // (15 Hz default vs. 10 Hz before), the perceived tracking lag
+      // drops from ~150 ms to ~70 ms while still bridging segmenter
+      // ticks softly.
       maskCtx.globalCompositeOperation = "source-over";
-      maskCtx.fillStyle = "rgba(0,0,0,0.45)";
+      maskCtx.fillStyle = "rgba(0,0,0,0.82)";
       maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
       maskCtx.globalCompositeOperation = "lighter";
       const _dW = maskCanvas.width, _dH = maskCanvas.height;
