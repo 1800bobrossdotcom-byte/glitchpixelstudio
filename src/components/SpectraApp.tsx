@@ -2949,7 +2949,7 @@ void main() {
     vec2 rotated = vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);
     vec2 fbUv = clamp(center + rotated * zm, 0.001, 0.999);
     vec3 fbColor = texture2D(uPrevFrame, fbUv).rgb;
-    color.rgb = mix(color.rgb, fbColor * vec3(0.97, 0.98, 1.02), uFeedback * mask * 0.75);
+    color.rgb = mix(color.rgb, fbColor * vec3(0.97, 0.98, 1.02), uFeedback * mask);
   }
   // 9. Contour lines (iso-luminance neon overlay)
   if (uContour * mask > 0.001) {
@@ -2996,7 +2996,7 @@ void main() {
     vec2 bandUv = clamp(vec2(uv.x + xShift, uv.y), 0.001, 0.999);
     float blend = smoothstep(0.4, 0.6, phase);
     vec3 bandColor = mix(color.rgb, texture2D(uPrevFrame, bandUv).rgb, blend);
-    color.rgb = mix(color.rgb, bandColor, uVenetian * mask * 0.9);
+    color.rgb = mix(color.rgb, bandColor, uVenetian * mask);
   }
   // ── v1.2.58 ASENDORF / GYSIN homage block ─────────────────────────────
   // 13. GYSIN ASCII GLYPH GRID — 4x4 atlas of ramp characters (ertdfgcvb).
@@ -5298,7 +5298,11 @@ export default function SpectraAfter() {
   const accelPushRef = useRef(0);
 
   // ── Mode / controls
-  const [mode, setMode] = useState<ModeId>(0);
+  // v1.2.65 — auto-launch default: PIXEL SORT (mode 7) so the boot lands
+  // straight into glitch with the camera + FACE FX = BG silhouette already
+  // armed. Combined with sortMix default of 0.65 below this is instant
+  // proof-of-work the moment the app opens.
+  const [mode, setMode] = useState<ModeId>(7);
   const [gain, setGain] = useState(0.5);
   const [comboLayers, setComboLayers] = useState<{mode:ModeId;gain:number}[]>([{mode:7,gain:1},{mode:9,gain:1}]);
   const [comboMode, setComboMode] = useState(true);
@@ -5330,7 +5334,12 @@ export default function SpectraAfter() {
   const [liquid, setLiquid] = useState(0.0);
   // v1.2.58 — Asendorf / Gysin homage rack (v1.2.59: streak/hilbert removed)
   const [glyph, setGlyph] = useState(0.0);
-  const [sortMix, setSortMix] = useState(0.0);
+  // v1.2.65 — REALSORT (sortMix) defaults to 0.65 so PIXEL SORT mode is live
+  // on first paint (paired with default mode = 7 above). The auto-bump
+  // useEffect at ~6363 still fires when the user toggles back into PXL after
+  // dropping the master to 0, but no longer needs to do the heavy lifting on
+  // cold-boot.
+  const [sortMix, setSortMix] = useState(0.65);
   const [reactD, setReactD] = useState(0.0);
   const [voroSort, setVoroSort] = useState(0.0);
   const [feedback, setFeedback] = useState(0.0);
@@ -6790,7 +6799,10 @@ export default function SpectraAfter() {
           const op = opMap[blendMode] ?? "source-over";
           const prevAlpha = gctx2.globalAlpha;
           gctx2.globalCompositeOperation = op;
-          gctx2.globalAlpha = 0.85;
+          // v1.2.65 — full alpha so BLEND ops fully transform the source
+          // instead of ghost-blending. Per the "no opacity layers, hit
+          // source" mandate.
+          gctx2.globalAlpha = 1.0;
           gctx2.drawImage(fb, 0, 0);
           gctx2.globalAlpha = prevAlpha;
           gctx2.globalCompositeOperation = "source-over";
