@@ -8417,34 +8417,17 @@ export default function SpectraAfter() {
   }, [cameraFacing, cameraActive, startCamera]);
 
   const hardResetCamera = useCallback(async () => {
-    // v1.2.87 — proper hard reset. Previous version released the binding,
-    // flipped facing, and called startCamera() once. That broke when the
-    // in-flight latch was still set (startCamera would early-return) or
-    // when the GEN+CAM auto-start effect immediately re-fired against the
-    // half-released binding. Rebuild the whole pipeline:
-    //  1. Surface a transient toast/error clear so the UI updates.
-    //  2. Force-clear in-flight + intent latches so nothing early-returns.
-    //  3. Stop every track on streamRef AND on the video element's
-    //     current MediaStream (in case a prior stream leaked the ref).
-    //  4. Detach + load() the video element to fully release the binding.
-    //  5. Wait long enough for Android's CameraService to release the
-    //     device handle (250ms is the empirical floor on most builds).
-    //  6. Re-arm intent and call startCamera(true) with the user's
-    //     CURRENT facing so the reset is predictable (no surprise flip).
+    // v1.2.88 — minimal hard reset that does NOT disturb the GEN+CAM
+    // pipeline state. v1.2.87 was too aggressive (cleared cameraIntent,
+    // called setCameraActive(false), waited 250ms) which made the
+    // segmenter/composite path lose its warm state and the user reported
+    // "we lost the last settings from the gen+cam start". Now we just
+    // clear the in-flight latch (the only real wedge cause), release the
+    // binding, and call startCamera(true) on the SAME facing. No facing
+    // flip, no extra wait, no setCameraActive churn.
     setSourceError(null);
     startCameraInFlightRef.current = false;
-    cameraIntentRef.current = false;
-    try {
-      const v = videoRef.current;
-      const leaked = v && v.srcObject ? (v.srcObject as MediaStream) : null;
-      if (leaked && leaked !== streamRef.current) {
-        try { leaked.getTracks().forEach(t => { try { t.stop(); } catch {} }); } catch {}
-      }
-    } catch {}
     await releaseCameraBinding();
-    setCameraActive(false);
-    await new Promise(r => setTimeout(r, 250));
-    cameraIntentRef.current = true;
     await startCamera(true, cameraFacing);
   }, [cameraFacing, releaseCameraBinding, startCamera]);
 
