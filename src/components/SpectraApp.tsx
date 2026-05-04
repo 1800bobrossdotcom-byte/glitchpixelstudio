@@ -4736,7 +4736,10 @@ export default function SpectraAfter() {
   // ── Accordion state for the glass-mode panel: only one SynthPanel
   // open at a time, default all collapsed so the bottom 1/4 of the
   // screen can show the full panel list as title strips.
-  const [openPanelTitle, setOpenPanelTitle] = useState<string | null>(null);
+  // v1.2.81 — default to opening the PIXEL GENERATOR panel so users
+  // immediately see/feel the procedural texture controls instead of
+  // landing on a quiet pixel-sort screen and wondering if anything works.
+  const [openPanelTitle, setOpenPanelTitle] = useState<string | null>("PIXEL GENERATOR");
   const accordionCtx = useMemo(
     () => ({ openTitle: openPanelTitle, setOpenTitle: setOpenPanelTitle }),
     [openPanelTitle]
@@ -9621,9 +9624,13 @@ export default function SpectraAfter() {
            v1.2.77 — widened: drop the 600px height clamp so taller phones
            (Pixel 8 Pro, foldables, etc.) also reflow on rotate. We still
            guard with max-width:1023px so we never fight the desktop lg: layout. */
-        @media (orientation: landscape) and (max-width: 1023px) {
-          /* v1.2.80 — force landscape reflow directly on .sp-body so we
-             don't depend on Tailwind's flex-col winning vs landscape-row. */
+        @media (orientation: landscape) and (max-height: 600px) {
+          /* v1.2.81 \u2014 switched gate from (max-width:1023px) to
+             (max-height:600px). On modern phones in landscape the CSS
+             width can be 900\u20131180px which sometimes missed the old
+             query; height in landscape is reliably <600px. This guarantees
+             the reflow fires on every phone in landscape orientation,
+             regardless of width. */
           .sp-body { flex-direction: row !important; }
           .landscape-row { flex-direction: row !important; }
           .sp-canvas-pane {
@@ -9644,8 +9651,8 @@ export default function SpectraAfter() {
             max-height: 100% !important;
           }
           .sp-panel-glass {
-            flex: 0 0 18rem !important;
-            width: 18rem !important;
+            flex: 0 0 17rem !important;
+            width: 17rem !important;
             height: 100% !important;
           }
         }
