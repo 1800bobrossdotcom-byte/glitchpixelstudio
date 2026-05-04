@@ -5522,12 +5522,11 @@ export default function SpectraAfter() {
   const [liquid, setLiquid] = useState(0.0);
   // v1.2.58 — Asendorf / Gysin homage rack (v1.2.59: streak/hilbert removed)
   const [glyph, setGlyph] = useState(0.0);
-  // v1.2.65 — REALSORT (sortMix) defaults to 0.65 so PIXEL SORT mode is live
-  // on first paint (paired with default mode = 7 above). The auto-bump
-  // useEffect at ~6363 still fires when the user toggles back into PXL after
-  // dropping the master to 0, but no longer needs to do the heavy lifting on
-  // cold-boot.
-  const [sortMix, setSortMix] = useState(0.65);
+  // v1.2.85 — sortMix defaults to 0 so first paint is pure GEN+CAM
+  // (procedural generator pattern composited with camera segmentation),
+  // not pixel-sort distortion. The auto-bump useEffect at ~6636 still
+  // raises sortMix back to 0.65 the moment the user toggles into PXL.
+  const [sortMix, setSortMix] = useState(0.0);
   const [reactD, setReactD] = useState(0.0);
   const [voroSort, setVoroSort] = useState(0.0);
   const [feedback, setFeedback] = useState(0.0);
@@ -6628,9 +6627,13 @@ export default function SpectraAfter() {
   // INTERVAL/ANGLE knobs (all gated on uSortAmt) actually do something
   // out of the box — previously REALSORT got bumped but AMOUNT stayed
   // at 0 so all the sub-knobs looked dead.
-  const pxlEntryDoneRef = useRef(false);
+  // v1.2.85 — start "done" so the auto-bump does NOT fire on cold boot
+  // (we want sortMix to stay at 0 so first paint shows pure GEN+CAM, not
+  // the sort distortion). User toggling away from PXL and back will reset
+  // this ref via the cleanup branch below.
+  const pxlEntryDoneRef = useRef(true);
   useEffect(() => {
-    if (mode !== 7) return;
+    if (mode !== 7) { pxlEntryDoneRef.current = false; return; }
     if (pxlEntryDoneRef.current) return;
     pxlEntryDoneRef.current = true;
     if (sortMix < 0.05) setSortMix(0.65);
