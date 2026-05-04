@@ -1,8 +1,8 @@
 import type { CapacitorConfig } from "@capacitor/cli";
 
 const config: CapacitorConfig = {
-  appId: "com.lovebeing.spectra",
-  appName: "SPECTRA",
+  appId: "com.lovebeing.glitchpixelstudio",
+  appName: "Glitch Pixel Studio",
   webDir: "out",           // Next.js static export target directory
   server: {
     // hostname is used inside the WKWebView — keep consistent across deploys

@@ -2,6 +2,6 @@
 <resources>
     <string name="app_name">Glitch Pixel Studio</string>
     <string name="title_activity_main">Glitch Pixel Studio</string>
-    <string name="package_name">com.lovebeing.spectra</string>
-    <string name="custom_url_scheme">com.lovebeing.spectra</string>
+    <string name="package_name">com.lovebeing.glitchpixelstudio</string>
+    <string name="custom_url_scheme">com.lovebeing.glitchpixelstudio</string>
 </resources>

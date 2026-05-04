@@ -11,14 +11,14 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace "com.lovebeing.spectra"
+    namespace "com.lovebeing.glitchpixelstudio"
     compileSdk rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.lovebeing.spectra"
+        applicationId "com.lovebeing.glitchpixelstudio"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 78
-        versionName "1.2.66"
+        versionCode 79
+        versionName "1.2.67"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

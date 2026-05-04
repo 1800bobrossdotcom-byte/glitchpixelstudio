@@ -1,4 +1,4 @@
-package com.lovebeing.spectra;
+package com.lovebeing.glitchpixelstudio;
 
 import android.Manifest;
 import android.content.pm.PackageManager;
