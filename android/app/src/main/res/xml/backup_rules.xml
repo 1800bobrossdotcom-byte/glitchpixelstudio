@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Spectra / Glitch Pixel Studio — fullBackupContent rules (SDK 23–30).
+
+  Companion to data_extraction_rules.xml (SDK 31+). On older devices we
+  still honor allowBackup="false" but include this exclusion list as
+  belt-and-braces so any creative-mode "backup includes apps with
+  allowBackup=true" tooling cannot exfiltrate user-generated media.
+-->
+<full-backup-content>
+    <exclude domain="root" />
+    <exclude domain="file" />
+    <exclude domain="database" />
+    <exclude domain="sharedpref" />
+    <exclude domain="external" />
+</full-backup-content>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Spectra / Glitch Pixel Studio — network security policy.
+
+  - Default: HTTPS-only. Cleartext traffic is denied app-wide.
+  - No user-added CAs are trusted (defends against on-device proxy MITM
+    via installed certificates). System CAs only.
+  - The Capacitor WebView loads the bundled static export from
+    https://spectra.lovebeing.app/ (configured in capacitor.config.ts);
+    no plain-http origin is ever required.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

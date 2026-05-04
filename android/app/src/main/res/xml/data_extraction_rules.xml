@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Spectra / Glitch Pixel Studio — backup policy (Android 12+, SDK 31+).
+
+  Pairs with android:allowBackup="false" so neither cloud (Auto Backup)
+  nor device-to-device transfer (D2D) ever exfiltrates user-generated
+  media (recorded GIFs/videos), camera-derived intermediates, project
+  files, or settings. Every node below is explicitly excluded.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+        <exclude domain="file" />
+        <exclude domain="database" />
+        <exclude domain="sharedpref" />
+        <exclude domain="external" />
+    </device-transfer>
+</data-extraction-rules>
