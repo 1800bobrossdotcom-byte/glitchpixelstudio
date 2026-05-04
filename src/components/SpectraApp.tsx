@@ -9242,7 +9242,7 @@ export default function SpectraAfter() {
       try { return Capacitor.isNativePlatform?.() === true; } catch { return false; }
     })();
     if (isNative) {
-      // v1.2.91 — native: write to Documents/GlitchPixelStudio/projects/
+      // v1.2.92 — native: write to Documents/GlitchPixelStudio/projects/
       // and pop the share sheet so the user can copy/email/move it.
       (async () => {
         try {
