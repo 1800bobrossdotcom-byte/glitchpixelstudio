@@ -7389,17 +7389,8 @@ export default function SpectraAfter() {
       // Skip the heavy displacement + generator-overlay pass entirely when the
       // user hasn't dialed in any blend FX — otherwise the default BLEND view
       // shows a permanent rainbow + inverted ghost over the camera.
-      // v1.2.89 — also skip when FACE mode is armed (person-only). In FACE
-      // mode the BG must stay as pure camera footage; the PERSON-OVER-SOURCE
-      // block below handles painting the generator pattern onto the person.
-      // If we let the displacement composite run, it warps the entire camera
-      // frame and the "background = real camera" intent is lost.
       const blendEngaged = pxlArmed || moshArmed;
-      const faceModePersonOnly =
-        faceFxRef.current.active &&
-        faceFxRef.current.texValid &&
-        !faceFxRef.current.invert;
-      if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0 && blendEngaged && !faceModePersonOnly) {
+      if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0 && blendEngaged) {
         let cc = genCompositeCanvasRef.current;
         if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
         if (cc.width !== targetW || cc.height !== targetH) {
@@ -8426,18 +8417,10 @@ export default function SpectraAfter() {
   }, [cameraFacing, cameraActive, startCamera]);
 
   const hardResetCamera = useCallback(async () => {
-    // v1.2.88 — minimal hard reset that does NOT disturb the GEN+CAM
-    // pipeline state. v1.2.87 was too aggressive (cleared cameraIntent,
-    // called setCameraActive(false), waited 250ms) which made the
-    // segmenter/composite path lose its warm state and the user reported
-    // "we lost the last settings from the gen+cam start". Now we just
-    // clear the in-flight latch (the only real wedge cause), release the
-    // binding, and call startCamera(true) on the SAME facing. No facing
-    // flip, no extra wait, no setCameraActive churn.
     setSourceError(null);
-    startCameraInFlightRef.current = false;
     await releaseCameraBinding();
-    await startCamera(true, cameraFacing);
+    const fallbackFacing = cameraFacing === "environment" ? "user" : "environment";
+    await startCamera(true, fallbackFacing);
   }, [cameraFacing, releaseCameraBinding, startCamera]);
 
   // ── Upload source ─────────────────────────────────────────
