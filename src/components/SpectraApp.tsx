@@ -11031,7 +11031,14 @@ export default function SpectraAfter() {
                       onClick={() => {
                         if (sm === "generator") {
                           clearUploadSource();
-                          if (cameraActive) stopCamera();
+                          // v1.2.93 — only stop the camera when face FX is
+                          // OFF. Cold boot lands on GEN+CAM (sourceMode=
+                          // generator + camera auto-started by the faceFx
+                          // boot effect). If the user clicks GEN here we
+                          // preserve that working composite — the segmenter
+                          // needs camera frames anyway. If they truly want
+                          // camera off they can hit CAM ON/OFF directly.
+                          if (cameraActive && faceFxModeRef.current === "OFF") stopCamera();
                           setSourceMode("generator");
                         } else if (sm === "camera") {
                           clearUploadSource();
