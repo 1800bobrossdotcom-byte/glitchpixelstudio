@@ -3,9 +3,8 @@
 import { useRef, useState, useEffect, useCallback, useMemo, useContext, createContext } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { Capacitor } from "@capacitor/core";
-import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
+import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Media } from "@capacitor-community/media";
-import { Share } from "@capacitor/share";
 
 // ═══════════════════════════════════════════════════════════
 //  GPS — WebGL computational vision engine
@@ -9236,53 +9235,11 @@ export default function SpectraAfter() {
       presets,
       quickSlots,
     };
-    const json = JSON.stringify(project, null, 2);
-    const filename = `gps-${Date.now()}.gps`;
-    const isNative = (() => {
-      try { return Capacitor.isNativePlatform?.() === true; } catch { return false; }
-    })();
-    if (isNative) {
-      // v1.2.91 — native: write to Documents/GlitchPixelStudio/projects/
-      // and pop the share sheet so the user can copy/email/move it.
-      (async () => {
-        try {
-          const path = `GlitchPixelStudio/projects/${filename}`;
-          const written = await Filesystem.writeFile({
-            path,
-            data: json,
-            directory: Directory.Documents,
-            recursive: true,
-            encoding: Encoding.UTF8,
-          });
-          try {
-            await Share.share({
-              title: "GPS Project",
-              text: filename,
-              url: written.uri,
-              dialogTitle: "Save / share GPS project",
-            });
-          } catch { /* user cancelled share — file is still written */ }
-          try {
-            window.dispatchEvent(new CustomEvent("gps-saved", {
-              detail: { filename, path: `Documents/${path}` },
-            }));
-          } catch {}
-        } catch (err) {
-          void err;
-          try {
-            window.dispatchEvent(new CustomEvent("gps-saved", {
-              detail: { filename, path: "save failed" },
-            }));
-          } catch {}
-        }
-      })();
-      return;
-    }
-    const blob = new Blob([json], { type: "application/json" });
+    const blob = new Blob([JSON.stringify(project, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = filename;
+    a.download = `gps-${Date.now()}.gps`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }, [mode, gain, brightness, contrast, saturation, hueShift, scanlines, zoom, speed,
