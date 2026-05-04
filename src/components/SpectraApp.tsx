@@ -2903,7 +2903,12 @@ void main() {
     float iframeHold = clamp(uMoshIFrame, 0.0, 1.0);
     float motionCarry = clamp(uMoshMotion, 0.0, 1.0);
     float bleed = clamp(uMoshBleed, 0.0, 1.0);
-    float moshBlend = clamp(dm * (0.52 + iframeHold * 0.56), 0.0, 0.99);
+    // v1.2.66 — "hit source" mandate: the motion-vector mosh tap should
+    // dominate the source frame (it IS the datamoshed image) instead
+    // of ghost-blending at ~50%. Push the floor of moshBlend so even at
+    // moderate INTENS the mosh visibly REPLACES the camera, and let
+    // it ride to ~0.99 at full crank.
+    float moshBlend = clamp(smoothstep(0.0, 0.45, dm) * (0.78 + iframeHold * 0.20), 0.0, 0.99);
     color.rgb = mix(color.rgb, prev, moshBlend);
 
     float jump = floor(uTime * (4.0 + dm * (14.0 + uMoshDistort * 18.0)));
@@ -3021,9 +3026,15 @@ void main() {
   // 14. CPU REAL PIXEL SORT — per-row Asendorf threshold runs sorted by
   // packed RGBA value. Computed in JS at ~20 Hz on a 256x144 downscale,
   // uploaded to uSortTex; the shader just blends.
+  // v1.2.66 — "hit source" mandate: the sorted texture should REPLACE
+  // the camera signal, not ghost-overlay on top of it. We smoothstep
+  // up to full opacity quickly so by REALSORT >= 0.3 the user sees
+  // pure sorted pixels (the Asendorf look), not a 50/50 cross-fade
+  // where the original camera bleeds through.
   if (uSortMix * mask > 0.001) {
     vec3 sorted = texture2D(uSortTex, uv).rgb;
-    color.rgb = mix(color.rgb, sorted, uSortMix * mask);
+    float sortGate = smoothstep(0.0, 0.30, uSortMix * mask);
+    color.rgb = mix(color.rgb, sorted, sortGate);
   }
   // 15. HILBERT WALK SMEAR — folded into PIXEL SORT as MODE=4 (v1.2.59).
   // Pseudo-Hilbert quarter-turn walk: locality-preserving max-luma
@@ -3879,14 +3890,17 @@ function BootScreen({ progress, done, onSkip }: { progress: number; done: boolea
       </div>
 
       {/* Wordmark — appears as load nears completion */}
+      {/* v1.2.66 — rebrand artifact fix: was "SPECTRA". The app is now
+          Glitch Pixel Studio (GPS); the splash wordmark should match.
+          Smaller font + tighter spacing because GPS is short. */}
       <div style={{
-        fontFamily:"'Courier New',monospace", fontSize:18, letterSpacing:"14px",
+        fontFamily:"'Courier New',monospace", fontSize:32, letterSpacing:"22px",
         color:"#F0E6FF", textTransform:"uppercase", marginBottom:10,
         textShadow:"0 0 24px rgba(211,75,255,.55)",
         animation:"bootFadeIn .8s ease .15s both",
-        paddingLeft:14, // optical compensation for letter-spacing on last char
+        paddingLeft:22, // optical compensation for letter-spacing on last char
       }}>
-        SPECTRA
+        GPS
       </div>
 
       {/* Tagline */}
@@ -4409,7 +4423,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
 // ══════════════════════════════════════════════════════════════
 export type Entitlement = "paid" | "studio" | null;
 
-export const APP_VERSION = "1.2.58";
+export const APP_VERSION = "1.2.66";
 
 // v1.2.51 — extended to 30 minutes for paid-tier QA / debugging passes.
 const GRACE_TOTAL_MS = 30 * 60 * 1000; // 30 minutes (testing)
@@ -5243,8 +5257,40 @@ export default function SpectraAfter() {
   // image, not stacked overlays). Each layer has its OWN full parameter
   // set so the layer-tab UI can edit them independently. The MASTER tab
   // broadcasts every edit to all 4 layers at once.
-  type GenBlend = "AVG" | "MAX" | "MIN" | "XOR" | "ADD" | "SUB" | "DIFF" | "MUL";
-  const GEN_BLEND_KEYS = ["AVG","MAX","MIN","XOR","ADD","SUB","DIFF","MUL"] as const;
+  // v1.2.66 — extended blend mode set. The first 8 (AVG..MUL) are the
+  // legacy custom per-pixel blends used by the multi-layer fuse path
+  // (with inter-layer pixel-displacement coupling). The new entries
+  // (NORMAL..LUMI) are Canvas2D globalCompositeOperation blends applied
+  // in the single-layer path or as a final flatten step in multi-layer.
+  // Matches the standard Photoshop / After Effects blend mode menu so
+  // the generator panel exposes the full painter's vocabulary.
+  type GenBlend =
+    | "AVG" | "MAX" | "MIN" | "XOR" | "ADD" | "SUB" | "DIFF" | "MUL"
+    | "NORMAL" | "DARKEN" | "MULTIPLY" | "COLORBURN"
+    | "LIGHTEN" | "SCREEN" | "COLORDODGE"
+    | "OVERLAY" | "SOFTLIGHT" | "HARDLIGHT"
+    | "DIFFERENCE" | "EXCLUSION"
+    | "HUE" | "SATURATION" | "COLOR" | "LUMI";
+  const GEN_BLEND_KEYS = [
+    "AVG","MAX","MIN","XOR","ADD","SUB","DIFF","MUL",
+    "NORMAL","DARKEN","MULTIPLY","COLORBURN",
+    "LIGHTEN","SCREEN","COLORDODGE",
+    "OVERLAY","SOFTLIGHT","HARDLIGHT",
+    "DIFFERENCE","EXCLUSION",
+    "HUE","SATURATION","COLOR","LUMI",
+  ] as const;
+  // Map blend key → Canvas2D globalCompositeOperation. Used by the
+  // single-layer blend path and the multi-layer flatten step.
+  const GEN_BLEND_OP: Record<string, GlobalCompositeOperation> = {
+    MAX: "lighten", MIN: "darken", XOR: "xor",
+    ADD: "lighter", SUB: "difference", DIFF: "difference", MUL: "multiply",
+    NORMAL: "source-over",
+    DARKEN: "darken", MULTIPLY: "multiply", COLORBURN: "color-burn",
+    LIGHTEN: "lighten", SCREEN: "screen", COLORDODGE: "color-dodge",
+    OVERLAY: "overlay", SOFTLIGHT: "soft-light", HARDLIGHT: "hard-light",
+    DIFFERENCE: "difference", EXCLUSION: "exclusion",
+    HUE: "hue", SATURATION: "saturation", COLOR: "color", LUMI: "luminosity",
+  };
   type GenLayer = {
     style: GenStyle; enabled: boolean;
     density: number; scale: number; speed: number;
@@ -6369,14 +6415,26 @@ export default function SpectraAfter() {
   useEffect(()=>{ rgbSwapRef.current=rgbSwap; },[rgbSwap]);
   useEffect(()=>{ ruptureRef.current=rupture; },[rupture]);
   useEffect(()=>{ hsyncRef.current=hsync; },[hsync]);
-  // Auto-bump REALSORT (sortMix) when entering PIXEL SORT mode so the
-  // rack knobs produce a visible result without the user having to crank
-  // the master from zero first. v1.2.64 — REALSORT is now the master
-  // amount that gates every other PIXEL SORT knob, so we bump it (not
-  // sortAmt) on PXL mode entry. Bump to 0.65 to land in the sweet spot.
+  // Auto-bump REALSORT (sortMix) + AMOUNT (sortAmt) ONCE when the user
+  // first enters PIXEL SORT mode in this session, so the rack knobs
+  // produce a visible result without having to crank the master from
+  // zero first. v1.2.66 — bug fix: previously this useEffect listened
+  // to [mode, sortMix] and re-fired every time the user dragged REALSORT
+  // below 0.05, snapping it back to 0.65 — which felt like the app was
+  // "restarting" itself. Now we use a one-shot ref so once the user has
+  // touched the rack we leave their values alone, including 0. Also
+  // bump AMOUNT to 0.5 so the LOW/HIGH/SEGMENT/NOISE/WOBBLE/MODE/
+  // INTERVAL/ANGLE knobs (all gated on uSortAmt) actually do something
+  // out of the box — previously REALSORT got bumped but AMOUNT stayed
+  // at 0 so all the sub-knobs looked dead.
+  const pxlEntryDoneRef = useRef(false);
   useEffect(() => {
-    if (mode === 7 && sortMix < 0.05) setSortMix(0.65);
-  }, [mode, sortMix]);
+    if (mode !== 7) return;
+    if (pxlEntryDoneRef.current) return;
+    pxlEntryDoneRef.current = true;
+    if (sortMix < 0.05) setSortMix(0.65);
+    if (sortAmt < 0.05) setSortAmt(0.5);
+  }, [mode, sortMix, sortAmt]);
   // \u2500\u2500 AUTOMATE: drift generator knobs on an LFO interval. Generator-only.
   useEffect(() => {
     if (!automateOn) return;
@@ -6792,11 +6850,9 @@ export default function SpectraAfter() {
           const fbCtx = fb.getContext("2d");
           if (fbCtx) fbCtx.drawImage(gc, 0, 0); // capture previous frame
           drawPixelGenerator(gc, paramsForLayer(e0.L, e0.idx));
-          const opMap: Record<string, GlobalCompositeOperation> = {
-            MAX: "lighten", MIN: "darken", XOR: "xor",
-            ADD: "lighter", SUB: "difference", DIFF: "difference", MUL: "multiply",
-          };
-          const op = opMap[blendMode] ?? "source-over";
+          // v1.2.66 — use the extended GEN_BLEND_OP map (16+ Photoshop
+          // style blend modes via Canvas2D globalCompositeOperation).
+          const op = GEN_BLEND_OP[blendMode] ?? "source-over";
           const prevAlpha = gctx2.globalAlpha;
           gctx2.globalCompositeOperation = op;
           // v1.2.65 — full alpha so BLEND ops fully transform the source
@@ -6842,7 +6898,17 @@ export default function SpectraAfter() {
             const out = gctx.createImageData(W2, H2);
             const od = out.data;
             const N = layerImages.length;
-            const blendMode = genBlendRef.current;
+            const blendModeRaw = genBlendRef.current;
+            // v1.2.66 — multi-layer per-pixel fuse only knows the
+            // legacy 8 blend modes (they include inter-layer pixel
+            // displacement coupling). For the new Photoshop-style
+            // modes (NORMAL/DARKEN/MULTIPLY/COLORBURN/etc.) we route
+            // the per-pixel fuse through AVG (so coupling still
+            // happens) and then apply the chosen Canvas blend as a
+            // post flatten step further down. This keeps motion alive
+            // for the new modes while still showing the painter blend.
+            const LEGACY_FUSE = new Set(["AVG","MAX","MIN","XOR","ADD","SUB","DIFF","MUL"]);
+            const blendMode = LEGACY_FUSE.has(blendModeRaw) ? blendModeRaw : "AVG";
             // Precompute references for tight inner loop.
             const datas: Uint8ClampedArray[] = layerImages.map(im => im.data);
 
@@ -7038,8 +7104,39 @@ export default function SpectraAfter() {
             if (fctx) {
               fctx.putImageData(out, 0, 0);
               (gctx as CanvasRenderingContext2D & { imageSmoothingEnabled: boolean }).imageSmoothingEnabled = false;
-              gctx.clearRect(0, 0, gc.width, gc.height);
-              gctx.drawImage(fuseCanvas, 0, 0, gc.width, gc.height);
+              // v1.2.66 — for the new Photoshop-style blend modes
+              // (NORMAL/DARKEN/MULTIPLY/COLORBURN/etc.) we apply the
+              // chosen Canvas2D blend as a post-flatten between the
+              // previously rendered gc frame and the new fused frame.
+              // Legacy modes (AVG/MAX/MIN/etc.) keep the original
+              // simple clear+draw path so coupling drives the look.
+              if (!LEGACY_FUSE.has(blendModeRaw)) {
+                const gcExt2 = gc as HTMLCanvasElement & { _gscFlatPrev?: HTMLCanvasElement };
+                let prevC = gcExt2._gscFlatPrev;
+                if (!prevC || prevC.width !== gc.width || prevC.height !== gc.height) {
+                  prevC = document.createElement("canvas");
+                  prevC.width = gc.width; prevC.height = gc.height;
+                  gcExt2._gscFlatPrev = prevC;
+                }
+                const pCtx = prevC.getContext("2d");
+                if (pCtx) {
+                  pCtx.globalCompositeOperation = "source-over";
+                  pCtx.globalAlpha = 1;
+                  pCtx.drawImage(gc, 0, 0);
+                }
+                gctx.clearRect(0, 0, gc.width, gc.height);
+                gctx.globalCompositeOperation = "source-over";
+                gctx.globalAlpha = 1;
+                gctx.drawImage(fuseCanvas, 0, 0, gc.width, gc.height);
+                const op = GEN_BLEND_OP[blendModeRaw] ?? "source-over";
+                gctx.globalCompositeOperation = op;
+                gctx.globalAlpha = 1;
+                gctx.drawImage(prevC, 0, 0);
+                gctx.globalCompositeOperation = "source-over";
+              } else {
+                gctx.clearRect(0, 0, gc.width, gc.height);
+                gctx.drawImage(fuseCanvas, 0, 0, gc.width, gc.height);
+              }
             }
           }
         }
