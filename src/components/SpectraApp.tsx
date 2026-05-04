@@ -6360,12 +6360,14 @@ export default function SpectraAfter() {
   useEffect(()=>{ rgbSwapRef.current=rgbSwap; },[rgbSwap]);
   useEffect(()=>{ ruptureRef.current=rupture; },[rupture]);
   useEffect(()=>{ hsyncRef.current=hsync; },[hsync]);
-  // Auto-bump sortAmt when entering PIXEL SORT mode so the rack knobs
-  // produce a visible result without the user having to crank AMOUNT
-  // from zero first.
+  // Auto-bump REALSORT (sortMix) when entering PIXEL SORT mode so the
+  // rack knobs produce a visible result without the user having to crank
+  // the master from zero first. v1.2.64 — REALSORT is now the master
+  // amount that gates every other PIXEL SORT knob, so we bump it (not
+  // sortAmt) on PXL mode entry. Bump to 0.65 to land in the sweet spot.
   useEffect(() => {
-    if (mode === 7 && sortAmt < 0.05) setSortAmt(0.65);
-  }, [mode, sortAmt]);
+    if (mode === 7 && sortMix < 0.05) setSortMix(0.65);
+  }, [mode, sortMix]);
   // \u2500\u2500 AUTOMATE: drift generator knobs on an LFO interval. Generator-only.
   useEffect(() => {
     if (!automateOn) return;
@@ -7039,7 +7041,9 @@ export default function SpectraAfter() {
       // otherwise the camera passes through clean (no rainbow/invert ghost).
       const armedLayers = comboLayersRef.current;
       void armedLayers;
-      const pxlArmed = (sortAmtRef.current ?? 0) > 0.02;
+      // v1.2.64 — PXL is armed when REALSORT (master) is up. AMOUNT alone
+      // no longer arms the rack since it now multiplies through sortMix.
+      const pxlArmed = (sortMixRef.current ?? 0) > 0.02;
       const moshArmed = (datamoshRef.current ?? 0) > 0.02;
       const tripleArmedCameraDrive = pxlArmed && moshArmed;
 
@@ -7390,7 +7394,13 @@ export default function SpectraAfter() {
     const _aGate  = Math.min(1.0, _aBass * 1.4 + _aBeat * 0.9 + _aLvl * 0.5);
     const _sortBase = sortAmtRef.current;
     const _sortAudio = Math.min(1.0, _sortBase * (1 + _aGate * 0.7) + _aGate * 0.18);
-    setF1(u.uSortAmt, _sortAudio);
+    // v1.2.64 — REALSORT (sortMix) is the master amount for the entire
+    // PIXEL SORT rack. Every shader sort knob (AMOUNT/LOW/HIGH/SEGMENT/
+    // NOISE/WOBBLE/TEAR/MODE/INTERVAL/ANGLE) is now gated through it,
+    // so REALSORT=0 fully bypasses the rack and REALSORT=1 unleashes
+    // the true CPU Asendorf sort + the shader sort at full strength.
+    // AMOUNT is now a relative shader-trim within the REALSORT envelope.
+    setF1(u.uSortAmt, _sortAudio * sortMixRef.current);
     setF1(u.uScanTear, scanTearRef.current);
     setF1(u.uBlockGlitch, blockGlitchRef.current);
     // Datamosh INTENS slider is 0..2. Old mapping used a pow(0.72) curve
@@ -10405,7 +10415,16 @@ export default function SpectraAfter() {
             </SynthPanel>
 
             {/* ── PIXEL SORT RACK ───────────────────────────────────── */}
-            <SynthPanel title="PIXEL SORT" subtitle="PXL · 9 CTRL" accent="rgba(231,174,255,0.95)">
+            <SynthPanel title="PIXEL SORT" subtitle="REALSORT MASTER · 9 CTRL" accent="rgba(174,255,231,0.95)">
+              {/* v1.2.64 — REALSORT is the master amount for the entire rack.
+                  AMOUNT and the other knobs scale within its envelope, so
+                  REALSORT=0 fully bypasses everything and REALSORT=1
+                  unleashes the true CPU Asendorf sort + the shader sort
+                  combo at full strength. Lives on its own row at the top
+                  so it reads as the headline control. */}
+              <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
+                <Knob label="REALSORT" value={sortMix}     min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortMix}/>
+              </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
                 <Knob label="AMOUNT"  value={sortAmt}      min={0} max={1}    step={0.01} defaultValue={0.5}  onChange={setSortAmt}/>
                 <Knob label="LOW"     value={sortLow}      min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortLow}/>
@@ -10414,12 +10433,6 @@ export default function SpectraAfter() {
                 <Knob label="NOISE"   value={sortRandom}   min={0} max={1}    step={0.01} defaultValue={0.2}  onChange={setSortRandom}/>
                 <Knob label="WOBBLE"  value={sortWobble}   min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortWobble}/>
                 <Knob label="TEAR"    value={scanTear}     min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setScanTear}/>
-                {/* v1.2.63 — mirror of the ASENDORF/GYSIN REALSORT knob so
-                    the true CPU pixel sort lives next to the shader sort
-                    rack and combos with AMOUNT / MODE / INTERVAL without
-                    hopping racks. Same sortMix state → single source of
-                    truth, persistence and presets keep working. */}
-                <Knob label="REALSORT" value={sortMix}     min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortMix}/>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
                 <SynthSelector label="MODE" options={["LINE","SPIRAL","BLOCK","SLICE","HILBERT"]} value={Math.round(sortMode)} onChange={(v) => setSortMode(v)}/>
