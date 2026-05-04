@@ -5001,12 +5001,13 @@ export default function SpectraAfter() {
   //    FACE → only the person/face area receives FX, background stays clean
   //    BG   → only the background receives FX, person stays clean
   type FaceFxMode = "OFF" | "FACE" | "BG";
-  // v1.2.46: default to BG so the viewer's body is preserved and FX
-  // chew the background — instant demo of the AI-segmented mask.
-  const [faceFxMode, setFaceFxMode] = useState<FaceFxMode>("BG");
+  // v1.2.83: default to FACE so FX wrap the SUBJECT (foreground person)
+  // — the user wanted to see procedural FX painting THEIR body, not the
+  // wall behind them. Background segmentation hid the effect.
+  const [faceFxMode, setFaceFxMode] = useState<FaceFxMode>("FACE");
   // v1.2.53 — ref mirror so the camera-acquire path can re-check the
   // user's current intent after each await without re-binding the closure.
-  const faceFxModeRef = useRef<FaceFxMode>("BG");
+  const faceFxModeRef = useRef<FaceFxMode>("FACE");
   useEffect(() => { faceFxModeRef.current = faceFxMode; }, [faceFxMode]);
   const [faceFxToast, setFaceFxToast] = useState<string | null>(null);
   const faceFxRef = useRef<{ active: boolean; invert: boolean; texValid: boolean; cx: number; cy: number; r: number; }>({
