@@ -2273,7 +2273,6 @@ uniform float uZoom;
 // Glitch/Pixel Sorting/Datamosh FX
 uniform float uSortAmt;      // pixel sort intensity
 uniform float uScanTear;     // scanline tear/glitch
-uniform float uRGBDrift;     // RGB channel drift
 uniform float uBlockGlitch;  // block corruption
 uniform float uDatamosh;     // datamosh blend
 uniform float uChrash;       // chroma crash
@@ -2293,7 +2292,6 @@ uniform float uFaceInvert;     // 0 = FX inside face/person, 1 = FX outside
 uniform float uFaceFeather;    // soft edge width for AI mask
 // Novel Signal FX
 uniform float uLiquid;       // curl-noise liquid warp
-uniform float uTimeSmear;    // luminance-weighted temporal smear
 uniform float uFeedback;     // zoom+rotate feedback tunnel
 uniform float uContour;      // iso-luminance neon contour lines
 uniform float uAscii;        // cell-density ascii/block ramp
@@ -2301,11 +2299,10 @@ uniform float uVenetian;     // time-sliced venetian blind bands
 uniform float uSortKey;      // 0 lum,1 hue,2 sat,3 r,4 g,5 b,6 intensity,7 min
 uniform float uSortLow;      // lower sorting threshold
 uniform float uSortHigh;     // upper sorting threshold
-uniform float uSortDirection;// 0 horizontal, 1 vertical (legacy; superseded by uSortAngle)
 uniform float uSortSegment;  // segment size modulation
 uniform float uSortRandom;   // modulation depth: sine-wave distorts lo/hi band per scan-line
 uniform float uSortWobble;   // signal phasing: VHS luma-noise + tape-error bands on sorted pixels
-uniform float uSortMode;     // 0 LINE, 1 SPIRAL, 2 BLOCK, 3 SLICE
+uniform float uSortMode;     // 0 LINE, 1 SPIRAL, 2 BLOCK, 3 SLICE, 4 HILBERT
 uniform float uSortInterval; // pixelsort-style interval gate: 0 BAND,1 BRIGHT,2 DARK,3 RAND,4 WAVE,5 EDGE,6 NONE
 uniform float uSortAngle;    // scan direction: 0 HORZ,1 VERT,2 DIAG↗,3 DIAG↘
 uniform float uRgbR;         // RGBNDR red-channel oscillator depth
@@ -2338,10 +2335,8 @@ uniform float uHexfold;          // 12-fold hexagonal symmetry
 // ── v1.2.58 — Asendorf / Gysin homage rack ─────────────────────────────
 uniform sampler2D uGlyphAtlas;   // TEXTURE6 — 4x4 ASCII ramp atlas (Gysin/ertdfgcvb)
 uniform sampler2D uSortTex;      // TEXTURE5 — CPU pixel-sort result (real Asendorf, throttled)
-uniform float uStreak;           // Asendorf threshold directional smear (shader-only)
 uniform float uGlyph;            // Gysin glyph-atlas grid render
 uniform float uSortMix;          // CPU pixel-sort blend (driven by JS readback)
-uniform float uHilbert;          // Locality-preserving Hilbert-walk smear
 uniform float uReact;            // Gray-Scott reaction-diffusion mosh
 uniform float uVoroSort;         // Voronoi luma-sorted cell quantizer
 uniform float uModeParams[8]; // per-mode rack params (slot 0=AMOUNT, 1=MIX, 2..7 mode-specific)
@@ -2476,14 +2471,15 @@ void main() {
   // the original UV.
   vec3 sortedCol = vec3(0.0);
   float sortBlend = 0.0;
-  if (uSortAmt * mask > 0.001) {
+  // v1.2.59 \u2014 mode 4 (HILBERT) bypasses this scanline body and is
+  // handled by the dedicated HILBERT block further below.
+  if (uSortAmt * mask > 0.001 && uSortMode < 3.5) {
     float key = floor(clamp(uSortKey, 0.0, 7.0) + 0.5);
     float modeF = floor(clamp(uSortMode, 0.0, 3.0) + 0.5);
     float lo = min(uSortLow, uSortHigh);
     float hi = max(uSortLow, uSortHigh);
-    // pixelsort-style scan angle (0 HORZ / 1 VERT / 2 DIAG↗ / 3 DIAG↘);
-    // legacy uSortDirection is folded in as a +1 bias when uSortAngle is 0.
-    float angF = floor(clamp(uSortAngle + (uSortDirection > 0.5 ? 1.0 : 0.0), 0.0, 3.0) + 0.5);
+    // pixelsort-style scan angle (0 HORZ / 1 VERT / 2 DIAG↗ / 3 DIAG↘)
+    float angF = floor(clamp(uSortAngle, 0.0, 3.0) + 0.5);
     bool sortVert = (angF > 0.5 && angF < 1.5);
     vec2 px = vec2(1.0 / uResolution.x, 1.0 / uResolution.y);
     vec2 step1;
@@ -2665,11 +2661,6 @@ void main() {
   if (uScanTear * mask > 0.001) {
     float band = step(0.5, fract(uv.y * uResolution.y * (0.2 + uScanTear * mask * 2.0) + uTime * 2.0));
     uv.x += band * (rand(vec2(uv.y, uTime)) - 0.5) * uScanTear * mask * 0.12;
-  }
-  // 3. RGB channel drift
-  if (uRGBDrift * mask > 0.001) {
-    float drift = uRGBDrift * mask * 0.03 * sin(uTime + uv.y * 10.0);
-    uv.x += drift;
   }
   // 4. Block glitch (block corruption + JPEG-style DCT block paint at high values)
   if (uBlockGlitch * mask > 0.001) {
@@ -2863,13 +2854,6 @@ void main() {
     float shiftB = texture2D(uCamera, clamp(uv - vec2(caa * 2.0,  caa * 0.4), 0.001, 0.999)).b;
     color.rgb = mix(vec3(origR, origG, origB), vec3(shiftR, shiftG, shiftB), uChrash * mask);
   }
-  // 7. Time smear (luminance-weighted temporal paint)
-  if (uTimeSmear * mask > 0.001) {
-    vec3 prev = texture2D(uPrevFrame, uv).rgb;
-    float motion = length(color.rgb - prev);
-    float smearAmt = clamp(uTimeSmear * mask * (0.4 + motion * 1.2), 0.0, 0.94);
-    color.rgb = mix(color.rgb, prev, smearAmt);
-  }
   // 8. Feedback tunnel (zoom+rotate prev-frame loop)
   if (uFeedback * mask > 0.001) {
     vec2 center = vec2(0.5);
@@ -2930,26 +2914,6 @@ void main() {
     color.rgb = mix(color.rgb, bandColor, uVenetian * mask * 0.9);
   }
   // ── v1.2.58 ASENDORF / GYSIN homage block ─────────────────────────────
-  // 12. ASENDORF STREAK — luma-threshold directional smear (shader-only,
-  // approximates the Asendorf 2010 ASDFPixelSort look without CPU readback).
-  // For pixels above the threshold, walk a slowly-rotating ray and adopt
-  // the brightest neighbour. The walk length scales with intensity.
-  if (uStreak * mask > 0.001) {
-    float thr = mix(0.92, 0.18, uStreak);
-    if (lum(color.rgb) > thr) {
-      float ang = uTime * 0.13 + uv.y * 0.6;
-      vec2 stride = vec2(cos(ang), sin(ang)) / uResolution * (3.0 + uStreak * 14.0);
-      vec3 best = color.rgb;
-      float bestL = lum(best);
-      for (int i = 1; i <= 24; i++) {
-        vec2 sUv = clamp(uv - stride * float(i), 0.001, 0.999);
-        vec3 s = texture2D(uCamera, sUv).rgb;
-        float sL = lum(s);
-        if (sL > bestL) { bestL = sL; best = s; }
-      }
-      color.rgb = mix(color.rgb, best, uStreak * mask);
-    }
-  }
   // 13. GYSIN ASCII GLYPH GRID — 4x4 atlas of ramp characters (ertdfgcvb).
   // Each cell quantizes camera luma into one of 16 glyphs, atlas alpha
   // (R channel) modulates a colourised glyph; mixed back over the source.
@@ -2976,24 +2940,23 @@ void main() {
     vec3 sorted = texture2D(uSortTex, uv).rgb;
     color.rgb = mix(color.rgb, sorted, uSortMix * mask);
   }
-  // 15. HILBERT WALK SMEAR — pseudo-Hilbert quarter-turn walk per step
-  // gives locality-preserving max-luma propagation that doesn't show the
-  // axis-aligned banding of row/column smear.
-  if (uHilbert * mask > 0.001) {
+  // 15. HILBERT WALK SMEAR — folded into PIXEL SORT as MODE=4 (v1.2.59).
+  // Pseudo-Hilbert quarter-turn walk: locality-preserving max-luma
+  // propagation, no axis-aligned banding. Strength = uSortAmt.
+  if (uSortAmt * mask > 0.001 && uSortMode > 3.5) {
     vec3 best = color.rgb;
     float bestL = lum(best);
     vec2 p = uv;
-    vec2 step = 1.0 / uResolution * (2.0 + uHilbert * 14.0);
+    vec2 hStep = 1.0 / uResolution * (2.0 + uSortAmt * 14.0);
     for (int i = 0; i < 12; i++) {
       float t = float(i);
-      // Hilbert-style 90° turns + occasional U-turn
       float a = floor(t * 0.5) * 1.5708 + mod(t, 2.0) * 1.5708;
-      p = clamp(p + vec2(cos(a), sin(a)) * step, 0.001, 0.999);
+      p = clamp(p + vec2(cos(a), sin(a)) * hStep, 0.001, 0.999);
       vec3 s = texture2D(uCamera, p).rgb;
       float sL = lum(s);
       if (sL > bestL) { bestL = sL; best = s; }
     }
-    color.rgb = mix(color.rgb, best, uHilbert * mask);
+    color.rgb = mix(color.rgb, best, uSortAmt * mask);
   }
   // 16. REACTION-DIFFUSION MOSH — Gray-Scott PDE on the prev-frame R/G
   // channels (used as chemical concentrations U,V). Camera luma feeds V,
@@ -3918,13 +3881,11 @@ interface SpectraPreset {
   speed: number;
   sortAmt: number;
   scanTear: number;
-  rgbDrift: number;
   blockGlitch: number;
   datamosh: number;
   moshHard?: boolean;
   chrash: number;
   liquid: number;
-  timeSmear: number;
   feedback: number;
   contour: number;
   ascii: number;
@@ -3932,8 +3893,7 @@ interface SpectraPreset {
   sortKey: number;
   sortLow: number;
   sortHigh: number;
-  sortDirection: number;
-  sortMode?: number; // 0 LINE, 1 SPIRAL, 2 BLOCK, 3 SLICE (older presets predate this field)
+  sortMode?: number; // 0 LINE, 1 SPIRAL, 2 BLOCK, 3 SLICE, 4 HILBERT (older presets predate this field)
   sortSegment: number;
   sortRandom: number;
   sortWobble: number;
@@ -3965,13 +3925,11 @@ type SessionStateV1 = {
   speed: number;
   sortAmt: number;
   scanTear: number;
-  rgbDrift: number;
   blockGlitch: number;
   datamosh: number;
   moshHard: boolean;
   chrash: number;
   liquid: number;
-  timeSmear: number;
   feedback: number;
   contour: number;
   ascii: number;
@@ -3979,7 +3937,6 @@ type SessionStateV1 = {
   sortKey: number;
   sortLow: number;
   sortHigh: number;
-  sortDirection: number;
   sortMode?: number;
   sortSegment: number;
   sortRandom: number;
@@ -5263,20 +5220,16 @@ export default function SpectraAfter() {
   // background gets sorted).
   const [sortAmt, setSortAmt] = useState(0.5);
   const [scanTear, setScanTear] = useState(0.0);
-  const [rgbDrift, setRGBDrift] = useState(0.0);
   const [blockGlitch, setBlockGlitch] = useState(0.0);
   const [datamosh, setDatamosh] = useState(0.0);
   const [moshHard, setMoshHard] = useState(false);
   const [chrash, setChrash] = useState(0.0);
   const [liquid, setLiquid] = useState(0.0);
-  // v1.2.58 — Asendorf / Gysin homage rack
-  const [streak, setStreak] = useState(0.0);
+  // v1.2.58 — Asendorf / Gysin homage rack (v1.2.59: streak/hilbert removed)
   const [glyph, setGlyph] = useState(0.0);
   const [sortMix, setSortMix] = useState(0.0);
-  const [hilbert, setHilbert] = useState(0.0);
   const [reactD, setReactD] = useState(0.0);
   const [voroSort, setVoroSort] = useState(0.0);
-  const [timeSmear, setTimeSmear] = useState(0.0);
   const [feedback, setFeedback] = useState(0.0);
   const [contour, setContour] = useState(0.0);
   const [ascii, setAscii] = useState(0.0);
@@ -5289,8 +5242,7 @@ export default function SpectraAfter() {
   const [sortKey, setSortKey] = useState(0);
   const [sortLow, setSortLow] = useState(0.35);
   const [sortHigh, setSortHigh] = useState(0.92);
-  const [sortDirection, setSortDirection] = useState(0);
-  const [sortMode, setSortMode] = useState(0); // 0 LINE, 1 SPIRAL, 2 BLOCK, 3 SLICE
+  const [sortMode, setSortMode] = useState(0); // 0 LINE, 1 SPIRAL, 2 BLOCK, 3 SLICE, 4 HILBERT
   const [sortSegment, setSortSegment] = useState(0.35);
   const [sortRandom, setSortRandom] = useState(0.18);
   const [sortWobble, setSortWobble] = useState(0.12);
@@ -5881,17 +5833,17 @@ export default function SpectraAfter() {
     const names = ["uCamera","uPrevFrame","uMode","uTime","uResolution","uVideoSize",
       "uGain","uMirror","uTouch","uTouchActive","uAudio",
       "uBrightness","uContrast","uSaturation","uHueShift","uScanlines","uZoom",
-      "uSortAmt","uScanTear","uRGBDrift","uBlockGlitch","uDatamosh","uChrash","uMask",
-      "uLiquid","uTimeSmear","uFeedback","uContour","uAscii","uVenetian",
+      "uSortAmt","uScanTear","uBlockGlitch","uDatamosh","uChrash","uMask",
+      "uLiquid","uFeedback","uContour","uAscii","uVenetian",
       "uKaleido","uDisrupt","uDisruptCount","uDisruptSize","uDisruptContrary",
-      "uSortKey","uSortLow","uSortHigh","uSortDirection","uSortSegment","uSortRandom","uSortWobble","uSortMode",
+      "uSortKey","uSortLow","uSortHigh","uSortSegment","uSortRandom","uSortWobble","uSortMode",
       "uSortInterval","uSortAngle",
       "uRgbR","uRgbG","uRgbB","uRgbBars","uRgbSwap",
       "uRupture","uHSync",
       "uMoshIFrame","uMoshMotion","uMoshBleed","uMoshMap","uMoshDistort",
       "uFaceActive","uFaceCenter","uFaceRadius","uFaceInvert",
       "uFaceTex","uFaceTexValid","uFaceFeather",
-      "uStreak","uGlyph","uSortMix","uHilbert","uReact","uVoroSort","uGlyphAtlas","uSortTex",
+      "uGlyph","uSortMix","uReact","uVoroSort","uGlyphAtlas","uSortTex",
       "uModeParams[0]"];
       // Mask texture for touch FX
       const maskTex = gl.createTexture();
@@ -6079,16 +6031,13 @@ export default function SpectraAfter() {
   const cameraFacingRef = useRef<"environment"|"user">("environment");
   const sortAmtRef = useRef(sortAmt);
   const scanTearRef = useRef(scanTear);
-  const rgbDriftRef = useRef(rgbDrift);
   const blockGlitchRef = useRef(blockGlitch);
   const datamoshRef = useRef(datamosh);
   const moshHardRef = useRef(moshHard);
   const chrashRef = useRef(chrash);
   const liquidRef = useRef(liquid);
-  const streakRef = useRef(streak);
   const glyphRef = useRef(glyph);
   const sortMixRef = useRef(sortMix);
-  const hilbertRef = useRef(hilbert);
   const reactDRef = useRef(reactD);
   const voroSortRef = useRef(voroSort);
   // v1.2.58 — CPU pixel-sort scratch + Gysin glyph atlas
@@ -6097,7 +6046,6 @@ export default function SpectraAfter() {
   const cpuSortTexRef = useRef<WebGLTexture | null>(null);
   const cpuSortTickRef = useRef(0);
   const glyphAtlasTexRef = useRef<WebGLTexture | null>(null);
-  const timeSmearRef = useRef(timeSmear);
   const feedbackRef = useRef(feedback);
   const contourRef = useRef(contour);
   const asciiRef = useRef(ascii);
@@ -6110,7 +6058,6 @@ export default function SpectraAfter() {
   const sortKeyRef = useRef(sortKey);
   const sortLowRef = useRef(sortLow);
   const sortHighRef = useRef(sortHigh);
-  const sortDirectionRef = useRef(sortDirection);
   const sortModeRef = useRef(sortMode);
   const sortSegmentRef = useRef(sortSegment);
   const sortRandomRef = useRef(sortRandom);
@@ -6245,19 +6192,15 @@ export default function SpectraAfter() {
   useEffect(()=>{ genBlendRef.current=genBlend; },[genBlend]);
   useEffect(()=>{ sortAmtRef.current=sortAmt; },[sortAmt]);
   useEffect(()=>{ scanTearRef.current=scanTear; },[scanTear]);
-  useEffect(()=>{ rgbDriftRef.current=rgbDrift; },[rgbDrift]);
   useEffect(()=>{ blockGlitchRef.current=blockGlitch; },[blockGlitch]);
   useEffect(()=>{ datamoshRef.current=datamosh; },[datamosh]);
   useEffect(()=>{ moshHardRef.current=moshHard; },[moshHard]);
   useEffect(()=>{ chrashRef.current=chrash; },[chrash]);
   useEffect(()=>{ liquidRef.current=liquid; },[liquid]);
-  useEffect(()=>{ streakRef.current=streak; },[streak]);
   useEffect(()=>{ glyphRef.current=glyph; },[glyph]);
   useEffect(()=>{ sortMixRef.current=sortMix; },[sortMix]);
-  useEffect(()=>{ hilbertRef.current=hilbert; },[hilbert]);
   useEffect(()=>{ reactDRef.current=reactD; },[reactD]);
   useEffect(()=>{ voroSortRef.current=voroSort; },[voroSort]);
-  useEffect(()=>{ timeSmearRef.current=timeSmear; },[timeSmear]);
   useEffect(()=>{ feedbackRef.current=feedback; },[feedback]);
   useEffect(()=>{ contourRef.current=contour; },[contour]);
   useEffect(()=>{ asciiRef.current=ascii; },[ascii]);
@@ -6270,7 +6213,6 @@ export default function SpectraAfter() {
   useEffect(()=>{ sortKeyRef.current=sortKey; },[sortKey]);
   useEffect(()=>{ sortLowRef.current=sortLow; },[sortLow]);
   useEffect(()=>{ sortHighRef.current=sortHigh; },[sortHigh]);
-  useEffect(()=>{ sortDirectionRef.current=sortDirection; },[sortDirection]);
   useEffect(()=>{ sortModeRef.current=sortMode; },[sortMode]);
   useEffect(()=>{ sortSegmentRef.current=sortSegment; },[sortSegment]);
   useEffect(()=>{ sortRandomRef.current=sortRandom; },[sortRandom]);
@@ -7293,7 +7235,6 @@ export default function SpectraAfter() {
     const _sortAudio = Math.min(1.0, _sortBase * (1 + _aGate * 0.7) + _aGate * 0.18);
     setF1(u.uSortAmt, _sortAudio);
     setF1(u.uScanTear, scanTearRef.current);
-    setF1(u.uRGBDrift, rgbDriftRef.current);
     setF1(u.uBlockGlitch, blockGlitchRef.current);
     // Datamosh INTENS slider is 0..2. Old mapping used a pow(0.72) curve
     // plus an aggressive HARD multiplier that clipped at 5.0 around the
@@ -7311,14 +7252,11 @@ export default function SpectraAfter() {
     setF1(u.uDatamosh, dmMapped);
     setF1(u.uChrash, chrashRef.current);
     setF1(u.uLiquid, liquidRef.current);
-    // v1.2.58 — Asendorf / Gysin homage rack uniform writes
-    setF1(u.uStreak, streakRef.current);
+    // v1.2.58 — Asendorf / Gysin homage rack uniform writes (v1.2.59: streak/hilbert removed)
     setF1(u.uGlyph, glyphRef.current);
     setF1(u.uSortMix, sortMixRef.current);
-    setF1(u.uHilbert, hilbertRef.current);
     setF1(u.uReact, reactDRef.current);
     setF1(u.uVoroSort, voroSortRef.current);
-    setF1(u.uTimeSmear, timeSmearRef.current);
     setF1(u.uFeedback, feedbackRef.current);
     setF1(u.uContour, contourRef.current);
     setF1(u.uAscii, asciiRef.current);
@@ -7331,7 +7269,6 @@ export default function SpectraAfter() {
     setF1(u.uSortKey, sortKeyRef.current);
     setF1(u.uSortLow, sortLowRef.current);
     setF1(u.uSortHigh, sortHighRef.current);
-    setF1(u.uSortDirection, sortDirectionRef.current);
     setF1(u.uSortMode, sortModeRef.current);
     setF1(u.uSortSegment, sortSegmentRef.current);
     setF1(u.uSortRandom, sortRandomRef.current);
@@ -7425,13 +7362,11 @@ export default function SpectraAfter() {
     }
 
     // Copy rendered framebuffer to previous frame texture for temporal feedback effects
-    // v1.2.57 — Skip the full-canvas copy when no FX actually samples
-    // uPrevFrame this frame. Only uTimeSmear / uDatamosh / uChrash read
-    // the previous-frame texture (uLiquid is curl-noise only). When all
-    // three are below their shader-side thresholds the copy is wasted
-    // fillrate. Saves a 1080p+ readback per frame on idle modes.
+    // v1.2.57 / v1.2.59 — Skip the full-canvas copy when no FX actually
+    // samples uPrevFrame this frame. Only uDatamosh / uChrash now read
+    // the previous-frame texture. When both are below their shader-side
+    // thresholds the copy is wasted fillrate.
     const _needsPrevCopy =
-      (timeSmearRef.current > 0.001) ||
       (datamoshRef.current > 0.02) ||
       (chrashRef.current > 0.001);
     if (_needsPrevCopy) {
@@ -7982,13 +7917,11 @@ export default function SpectraAfter() {
 
     setSortAmt(0.0);
     setScanTear(0.0);
-    setRGBDrift(0.0);
     setBlockGlitch(0.0);
     setDatamosh(0.0);
     setMoshHard(false);
     setChrash(0.0);
     setLiquid(0.0);
-    setTimeSmear(0.0);
     setFeedback(0.0);
     setContour(0.0);
     setAscii(0.0);
@@ -8001,7 +7934,6 @@ export default function SpectraAfter() {
     setSortKey(0);
     setSortLow(0.35);
     setSortHigh(0.92);
-    setSortDirection(0);
     setSortMode(0);
     setSortSegment(0.35);
     setSortRandom(0.18);
@@ -8487,13 +8419,11 @@ export default function SpectraAfter() {
     speed,
     sortAmt,
     scanTear,
-    rgbDrift,
     blockGlitch,
     datamosh,
     moshHard,
     chrash,
     liquid,
-    timeSmear,
     feedback,
     contour,
     ascii,
@@ -8506,7 +8436,6 @@ export default function SpectraAfter() {
     sortKey,
     sortLow,
     sortHigh,
-    sortDirection,
     sortMode,
     sortSegment,
     sortRandom,
@@ -8517,7 +8446,7 @@ export default function SpectraAfter() {
     moshMap,
     moshDistort,
     paramsByMode,
-  }), [mode, gain, brightness, contrast, saturation, hueShift, scanlines, zoom, speed, sortAmt, scanTear, rgbDrift, blockGlitch, datamosh, moshHard, chrash, liquid, timeSmear, feedback, contour, ascii, venetian, sortKey, sortLow, sortHigh, sortDirection, sortMode, sortSegment, sortRandom, sortWobble, moshIFrame, moshMotion, moshBleed, moshMap, moshDistort, paramsByMode, kaleido, disrupt, disruptCount, disruptSize, disruptContrary]);
+  }), [mode, gain, brightness, contrast, saturation, hueShift, scanlines, zoom, speed, sortAmt, scanTear, blockGlitch, datamosh, moshHard, chrash, liquid, feedback, contour, ascii, venetian, sortKey, sortLow, sortHigh, sortMode, sortSegment, sortRandom, sortWobble, moshIFrame, moshMotion, moshBleed, moshMap, moshDistort, paramsByMode, kaleido, disrupt, disruptCount, disruptSize, disruptContrary]);
 
   const applyPreset = useCallback((p: SpectraPreset) => {
     setMode(p.mode);
@@ -8531,13 +8460,11 @@ export default function SpectraAfter() {
     setSpeed(p.speed);
     setSortAmt(p.sortAmt);
     setScanTear(p.scanTear);
-    setRGBDrift(p.rgbDrift);
     setBlockGlitch(p.blockGlitch);
     setDatamosh(p.datamosh);
     setMoshHard(!!p.moshHard);
     setChrash(p.chrash);
     setLiquid(p.liquid);
-    setTimeSmear(p.timeSmear);
     setFeedback(p.feedback);
     setContour(p.contour);
     setAscii(p.ascii);
@@ -8550,7 +8477,6 @@ export default function SpectraAfter() {
     setSortKey(p.sortKey ?? 0);
     setSortLow(p.sortLow ?? 0.35);
     setSortHigh(p.sortHigh ?? 0.92);
-    setSortDirection(p.sortDirection ?? 0);
     setSortMode(p.sortMode ?? 0);
     setSortSegment(p.sortSegment ?? 0.35);
     setSortRandom(p.sortRandom ?? 0.18);
@@ -8637,10 +8563,10 @@ export default function SpectraAfter() {
     const project = {
       version: "spectra-v1" as const,
       mode, gain, brightness, contrast, saturation, hueShift, scanlines, zoom, speed,
-      sortAmt, scanTear, rgbDrift, blockGlitch, datamosh, moshHard, chrash, liquid,
-      timeSmear, feedback, contour, ascii, venetian,
+      sortAmt, scanTear, blockGlitch, datamosh, moshHard, chrash, liquid,
+      feedback, contour, ascii, venetian,
       kaleido, disrupt, disruptCount, disruptSize, disruptContrary,
-      sortKey, sortLow, sortHigh, sortDirection, sortMode, sortSegment, sortRandom, sortWobble,
+      sortKey, sortLow, sortHigh, sortMode, sortSegment, sortRandom, sortWobble,
       moshIFrame, moshMotion, moshBleed, moshMap, moshDistort,
       exportFormat, exportQuality, exportProfile,
       openSections: Array.from(openSections),
@@ -8656,9 +8582,9 @@ export default function SpectraAfter() {
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }, [mode, gain, brightness, contrast, saturation, hueShift, scanlines, zoom, speed,
-      sortAmt, scanTear, rgbDrift, blockGlitch, datamosh, moshHard, chrash, liquid,
-      timeSmear, feedback, contour, ascii, venetian, sortKey, sortLow, sortHigh,
-      sortDirection, sortMode, sortSegment, sortRandom, sortWobble, moshIFrame, moshMotion,
+      sortAmt, scanTear, blockGlitch, datamosh, moshHard, chrash, liquid,
+      feedback, contour, ascii, venetian, sortKey, sortLow, sortHigh,
+      sortMode, sortSegment, sortRandom, sortWobble, moshIFrame, moshMotion,
       moshBleed, moshMap, moshDistort, exportFormat, exportQuality,
       exportProfile, openSections, paramsByMode, presets, quickSlots]);
 
@@ -8682,13 +8608,11 @@ export default function SpectraAfter() {
           speed: p.speed ?? 1.0,
           sortAmt: p.sortAmt ?? 0.0,
           scanTear: p.scanTear ?? 0.0,
-          rgbDrift: p.rgbDrift ?? 0.0,
           blockGlitch: p.blockGlitch ?? 0.0,
           datamosh: p.datamosh ?? 0.0,
           moshHard: !!p.moshHard,
           chrash: p.chrash ?? 0.0,
           liquid: p.liquid ?? 0.0,
-          timeSmear: p.timeSmear ?? 0.0,
           feedback: p.feedback ?? 0.0,
           contour: p.contour ?? 0.0,
           ascii: p.ascii ?? 0.0,
@@ -8701,7 +8625,6 @@ export default function SpectraAfter() {
           sortKey: p.sortKey ?? 0,
           sortLow: p.sortLow ?? 0.35,
           sortHigh: p.sortHigh ?? 0.92,
-          sortDirection: p.sortDirection ?? 0,
           sortMode: p.sortMode ?? 0,
           sortSegment: p.sortSegment ?? 0.35,
           sortRandom: p.sortRandom ?? 0.18,
@@ -8828,13 +8751,11 @@ export default function SpectraAfter() {
 
       setSortAmt(0.0);
       setScanTear(0.0);
-      setRGBDrift(0.0);
       setBlockGlitch(0.0);
       setDatamosh(0.0);
       setMoshHard(false);
       setChrash(0.0);
       setLiquid(0.0);
-      setTimeSmear(0.0);
       setFeedback(0.0);
       setContour(0.0);
       setAscii(0.0);
@@ -8847,7 +8768,6 @@ export default function SpectraAfter() {
       setSortKey(0);
       setSortLow(0.35);
       setSortHigh(0.92);
-      setSortDirection(0);
       setSortMode(0);
       setSortSegment(0.35);
       setSortRandom(0.18);
@@ -8880,13 +8800,11 @@ export default function SpectraAfter() {
       speed,
       sortAmt,
       scanTear,
-      rgbDrift,
       blockGlitch,
       datamosh,
       moshHard,
       chrash,
       liquid,
-      timeSmear,
       feedback,
       contour,
       ascii,
@@ -8899,7 +8817,6 @@ export default function SpectraAfter() {
       sortKey,
       sortLow,
       sortHigh,
-      sortDirection,
       sortSegment,
       sortRandom,
       sortWobble,
@@ -8917,11 +8834,11 @@ export default function SpectraAfter() {
     localStorage.setItem(SESSION_KEY, JSON.stringify(payload));
   }, [
     mode, gain, brightness, contrast, saturation, hueShift, scanlines, zoom, speed,
-    sortAmt, scanTear, rgbDrift, blockGlitch, datamosh, moshHard, chrash, liquid,
-    timeSmear, feedback, contour, ascii, venetian,
+    sortAmt, scanTear, blockGlitch, datamosh, moshHard, chrash, liquid,
+    feedback, contour, ascii, venetian,
     kaleido, disrupt, disruptCount, disruptSize, disruptContrary,
     sortKey, sortLow, sortHigh,
-    sortDirection, sortSegment, sortRandom, sortWobble, moshIFrame, moshMotion,
+    sortSegment, sortRandom, sortWobble, moshIFrame, moshMotion,
     moshBleed, moshMap, moshDistort, exportFormat, exportQuality,
     exportProfile, openSections,
     paramsByMode,
@@ -10264,14 +10181,10 @@ export default function SpectraAfter() {
                 <Knob label="SEGMENT" value={sortSegment}  min={0} max={1}    step={0.01} defaultValue={0.5}  onChange={setSortSegment}/>
                 <Knob label="NOISE"   value={sortRandom}   min={0} max={1}    step={0.01} defaultValue={0.2}  onChange={setSortRandom}/>
                 <Knob label="WOBBLE"  value={sortWobble}   min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortWobble}/>
-                <Knob label="DRIFT"   value={rgbDrift}     min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setRGBDrift}/>
                 <Knob label="TEAR"    value={scanTear}     min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setScanTear}/>
               </div>
-              <div style={{ display: "flex", justifyContent: "center", marginTop: 12 }}>
-                <SynthSwitch label="DIR" on={sortDirection >= 0.5} onChange={(v) => setSortDirection(v ? 1 : 0)} onLabel="VERT" offLabel="HORZ"/>
-              </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
-                <SynthSelector label="MODE" options={["LINE","SPIRAL","BLOCK","SLICE"]} value={Math.round(sortMode)} onChange={(v) => setSortMode(v)}/>
+                <SynthSelector label="MODE" options={["LINE","SPIRAL","BLOCK","SLICE","HILBERT"]} value={Math.round(sortMode)} onChange={(v) => setSortMode(v)}/>
                 <SynthSelector label="INTERVAL" options={["BAND","BRIGHT","DARK","RAND","WAVE","EDGE","NONE"]} value={Math.round(sortInterval)} onChange={(v) => setSortInterval(v)}/>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
@@ -10282,8 +10195,8 @@ export default function SpectraAfter() {
                   className="sp-btn"
                   onClick={() => {
                     setSortAmt(0.5); setSortLow(0.0); setSortHigh(1.0); setSortSegment(0.5);
-                    setSortRandom(0.2); setSortWobble(0.0); setRGBDrift(0.0); setScanTear(0.0);
-                    setSortDirection(0); setSortMode(0); setSortInterval(0); setSortAngle(0);
+                    setSortRandom(0.2); setSortWobble(0.0); setScanTear(0.0);
+                    setSortMode(0); setSortInterval(0); setSortAngle(0);
                   }}
                   style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
                   title="Reset every PIXEL SORT control to default"
@@ -10360,7 +10273,6 @@ export default function SpectraAfter() {
                 <Knob label="BLEED"    value={moshBleed}    min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setMoshBleed}/>
                 <Knob label="MAP"      value={moshMap}      min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setMoshMap}/>
                 <Knob label="COMPRES"  value={moshDistort}  min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setMoshDistort}/>
-                <Knob label="VECTOR"   value={timeSmear}    min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setTimeSmear}/>
                 <Knob label="CHRASH"   value={chrash}       min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setChrash}/>
                 <Knob label="FEEDBK"   value={feedback}     min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setFeedback}/>
                 <Knob label="BLOCK"    value={blockGlitch}  min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setBlockGlitch}/>
@@ -10374,7 +10286,7 @@ export default function SpectraAfter() {
                   className="sp-btn"
                   onClick={() => {
                     setDatamosh(0.0); setMoshIFrame(0.0); setMoshMotion(0.0); setMoshBleed(0.0);
-                    setMoshMap(0.0); setMoshDistort(0.0); setTimeSmear(0.0); setChrash(0.0);
+                    setMoshMap(0.0); setMoshDistort(0.0); setChrash(0.0);
                     setFeedback(0.0); setBlockGlitch(0.0); setLiquid(0.0); setMoshHard(false);
                   }}
                   style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
@@ -10387,16 +10299,14 @@ export default function SpectraAfter() {
                 STREAK   = Asendorf threshold directional smear (shader-only)
                 GLYPH    = Gysin (ertdfgcvb) ASCII glyph atlas grid
                 REALSORT = real CPU Asendorf row-sort, 256x144 @ 20 Hz, sampled back
-                HILBERT  = locality-preserving max-luma walk (no row/col banding)
                 REACT-D  = Gray-Scott reaction-diffusion mosh on prev-frame
                 VOROSRT  = Voronoi cell quantizer, brightest tap per cell
+                (v1.2.59: STREAK removed; HILBERT folded into PIXEL SORT MODE=4)
             */}
-            <SynthPanel title="ASENDORF / GYSIN" subtitle="PIXEL HOMAGE · 6 CTRL" accent="rgba(174,255,231,0.95)">
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(6,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
-                <Knob label="STREAK"   value={streak}   min={0} max={1} step={0.01} defaultValue={0.0} onChange={setStreak}/>
+            <SynthPanel title="ASENDORF / GYSIN" subtitle="PIXEL HOMAGE · 4 CTRL" accent="rgba(174,255,231,0.95)">
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
                 <Knob label="GLYPH"    value={glyph}    min={0} max={1} step={0.01} defaultValue={0.0} onChange={setGlyph}/>
                 <Knob label="REALSORT" value={sortMix}  min={0} max={1} step={0.01} defaultValue={0.0} onChange={setSortMix}/>
-                <Knob label="HILBERT"  value={hilbert}  min={0} max={1} step={0.01} defaultValue={0.0} onChange={setHilbert}/>
                 <Knob label="REACT-D"  value={reactD}   min={0} max={1} step={0.01} defaultValue={0.0} onChange={setReactD}/>
                 <Knob label="VOROSRT"  value={voroSort} min={0} max={1} step={0.01} defaultValue={0.0} onChange={setVoroSort}/>
               </div>
@@ -10404,7 +10314,7 @@ export default function SpectraAfter() {
                 <button
                   className="sp-btn"
                   onClick={() => {
-                    setStreak(0); setGlyph(0); setSortMix(0); setHilbert(0); setReactD(0); setVoroSort(0);
+                    setGlyph(0); setSortMix(0); setReactD(0); setVoroSort(0);
                   }}
                   style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
                   title="Reset every ASENDORF / GYSIN control to default"
