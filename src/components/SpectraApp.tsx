@@ -7353,12 +7353,14 @@ export default function SpectraAfter() {
           texSource = gc; srcW = gc.width; srcH = gc.height;
         }
       } else if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0) {
-        // v1.2.71 \u2014 GEN+CAM with no FX armed: previously we passed the
-        // camera through clean, so the user tapped GEN+CAM, saw only the
-        // camera, and reported "GEN+CAM is not working". Now do a simple
-        // hard-light composite of the generator over the live camera so
-        // both layers are visible by default. Dialing PXL/MOSH on top of
-        // this still routes into the full displacement+blend path above.
+        // v1.2.71/72 — GEN+CAM with no FX armed. Earlier attempts used
+        // hard-light at 0.85α, but the generator is often near-grey when
+        // no params are dialed, so hard-light produced a near-identity
+        // composite and the user reported "GEN+CAM is not working" (it
+        // looked like camera-only). Now do a guaranteed-visible double
+        // composite: camera base, then generator at 50% alpha (normal
+        // blend) so both layers are unambiguously present, then a small
+        // screen pass on top so generator brights pop into the camera.
         let cc = genCompositeCanvasRef.current;
         if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
         if (cc.width !== targetW || cc.height !== targetH) {
@@ -7370,8 +7372,14 @@ export default function SpectraAfter() {
           cctx.globalAlpha = 1;
           cctx.clearRect(0, 0, cc.width, cc.height);
           cctx.drawImage(video, 0, 0, cc.width, cc.height);
-          cctx.globalCompositeOperation = "hard-light";
-          cctx.globalAlpha = 0.85;
+          // 50% straight-alpha generator overlay — always visible.
+          cctx.globalCompositeOperation = "source-over";
+          cctx.globalAlpha = 0.55;
+          cctx.drawImage(gc, 0, 0, cc.width, cc.height);
+          // Screen pass: generator brights add into the camera so neon
+          // edges punch through without washing dark areas.
+          cctx.globalCompositeOperation = "screen";
+          cctx.globalAlpha = 0.45;
           cctx.drawImage(gc, 0, 0, cc.width, cc.height);
           cctx.globalCompositeOperation = "source-over";
           cctx.globalAlpha = 1;
@@ -9066,7 +9074,7 @@ export default function SpectraAfter() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `spectra-${Date.now()}.spectra`;
+    a.download = `gps-${Date.now()}.gps`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }, [mode, gain, brightness, contrast, saturation, hueShift, scanlines, zoom, speed,
@@ -9873,53 +9881,9 @@ export default function SpectraAfter() {
         </div>
       )}
 
-      {/* v1.2.71 — Floating top-of-viewport HANDS-FREE pill. Always
-          reachable for a solo dancer, never buried under panels. Tap
-          to arm: 3-2-1 count-IN, then 60 s auto-record with a count-OUT
-          for the final 3 s. Tap again at any phase to cancel/stop.
-          Hidden during boot/intro to avoid clobbering those screens. */}
-      {!introVisible && bootDone && (
-        <button
-          onClick={startHandsFree}
-          title="3-2-1 countdown, then auto-record 60 s, then auto-stop"
-          style={{
-            position: "fixed",
-            top: 84,
-            left: "50%",
-            transform: "translateX(-50%)",
-            zIndex: 99997,
-            pointerEvents: "auto",
-            minWidth: 200,
-            padding: "10px 18px",
-            borderRadius: 999,
-            border: handsFreeCountdown != null
-              ? "1.5px solid rgba(255,120,140,0.95)"
-              : "1.5px solid rgba(255,200,120,0.85)",
-            background: handsFreeCountdown != null
-              ? "linear-gradient(180deg, rgba(80,8,16,0.92) 0%, rgba(40,2,8,0.92) 100%)"
-              : "linear-gradient(180deg, rgba(58,8,82,0.88) 0%, rgba(26,2,36,0.92) 100%)",
-            color: handsFreeCountdown != null
-              ? "rgba(255,220,225,0.98)"
-              : "rgba(255,235,205,0.96)",
-            fontFamily: "'Courier New',monospace",
-            fontSize: 13,
-            letterSpacing: "2px",
-            fontWeight: 700,
-            textTransform: "uppercase",
-            cursor: "pointer",
-            boxShadow: handsFreeCountdown != null
-              ? "0 0 22px rgba(255,40,80,0.6), 0 4px 14px rgba(0,0,0,0.7)"
-              : "0 0 18px rgba(232,160,32,0.45), 0 4px 14px rgba(0,0,0,0.7)",
-            ...(handsFreeCountdown != null ? { animation: "activeGlow 1s ease-in-out infinite" } : {}),
-          }}
-        >{handsFreeCountdown == null
-            ? `⏱ HANDS-FREE · ${HANDS_FREE_SEC}s`
-            : handsFreeCountdown.phase === "in"
-              ? `✕ CANCEL · ${handsFreeCountdown.n}…`
-              : handsFreeCountdown.phase === "out"
-                ? `✕ STOP · ${handsFreeCountdown.n}s`
-                : `✕ STOP · ${handsFreeCountdown.n}s LEFT`}</button>
-      )}
+      {/* v1.2.72 — HANDS-FREE floating button removed; lives back in the
+          EXPORT panel next to RECORD. The big top pill obfuscated other
+          UI controls, so we only keep the big-numeral overlay below. */}
 
       {/* v1.2.71 — HANDS-FREE big-numeral overlay. Three phases:
           IN (gold, 3-2-1 pre-record), REC (small persistent secs-left
@@ -10251,7 +10215,7 @@ export default function SpectraAfter() {
 
       {/* Hidden video */}
       <video ref={videoRef} style={{ display: "none" }} playsInline muted autoPlay/>
-      <input ref={projectFileInputRef} type="file" accept=".spectra,application/json" style={{ display: "none" }}
+      <input ref={projectFileInputRef} type="file" accept=".gps,.spectra,application/json" style={{ display: "none" }}
         onChange={e => { const f = e.target.files?.[0]; if (f) { loadProject(f); } e.target.value = ""; }}/>
 
       {/* ── Top bar (GPS — slim, navy gradient, electric-blue accent)
@@ -11492,12 +11456,29 @@ export default function SpectraAfter() {
                   ...(recording ? { animation: "activeGlow 1s ease-in-out infinite" } : {}),
                 }}
               >{recording ? "■ STOP RECORDING" : "● RECORD"}</button>
-              {/* v1.2.71 — HANDS-FREE button moved to a floating top-of-
-                  viewport pill (rendered near the runtime overlays) so a
-                  solo dancer can always reach it. See `position: fixed`
-                  block below. */}
+              {/* v1.2.72 — HANDS-FREE compact button: 3-2-1 count-IN, then
+                  60 s auto-record, then 3-2-1 count-OUT, then auto-stop.
+                  Tap again at any phase to cancel/stop. Lives next to
+                  RECORD so it doesn't obscure other UI. */}
+              <button
+                className="sp-tile"
+                onClick={startHandsFree}
+                title="3-2-1 countdown, then auto-record 60 s, then auto-stop"
+                style={{
+                  ...modeBtnStyle,
+                  ...(handsFreeCountdown != null ? modeBtnActive : {}),
+                  width: "100%", minHeight: 36, fontSize: 10, letterSpacing: "1.5px",
+                  ...(handsFreeCountdown != null ? { animation: "activeGlow 1s ease-in-out infinite" } : {}),
+                }}
+              >{handsFreeCountdown == null
+                  ? `⏱ HANDS-FREE · ${HANDS_FREE_SEC}s`
+                  : handsFreeCountdown.phase === "in"
+                    ? `✕ CANCEL · ${handsFreeCountdown.n}…`
+                    : handsFreeCountdown.phase === "out"
+                      ? `✕ STOP · ${handsFreeCountdown.n}s`
+                      : `✕ STOP · ${handsFreeCountdown.n}s LEFT`}</button>
               <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(200,180,220,0.4)", textAlign: "center", textTransform: "uppercase" }}>
-                Tip: HANDS-FREE button is at top of screen
+                Tip: hold canvas also records
               </div>
 
               <div style={{ height: 4 }}/>
