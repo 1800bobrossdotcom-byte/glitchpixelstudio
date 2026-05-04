@@ -2437,18 +2437,31 @@ void main() {
       // roto sits exactly where the person is in the rendered frame.
       vec2 fUv = vec2(vUv.x, 1.0 - vUv.y);
       if (uMirror > 0.5) fUv.x = 1.0 - fUv.x;
-      // Sample with a 3-tap box for a softer roto edge — the model
-      // outputs hard pixels which would otherwise alias the FX zones.
-      vec2 px = vec2(1.0) / max(uResolution, vec2(1.0));
-      float p = texture2D(uFaceTex, fUv).r;
+      // v1.2.70 — wider 9-tap box for a softer, slightly EXPANDED
+      // roto edge. Pixel offset bumped from 1px to ~1.75px so the
+      // sampled neighbourhood overlaps further outside the segmenter's
+      // hard pixel boundary, producing both more feather AND a small
+      // outward grow. Combined with the canvas-side dilation+trail in
+      // the segmenter callback, this guarantees full coverage at the
+      // body silhouette during motion, with no jagged FX clipping.
+      vec2 px = vec2(1.75) / max(uResolution, vec2(1.0));
+      float p  = texture2D(uFaceTex, fUv).r;
       float p1 = texture2D(uFaceTex, fUv + vec2( px.x,  0.0)).r;
       float p2 = texture2D(uFaceTex, fUv + vec2(-px.x,  0.0)).r;
       float p3 = texture2D(uFaceTex, fUv + vec2( 0.0,  px.y)).r;
       float p4 = texture2D(uFaceTex, fUv + vec2( 0.0, -px.y)).r;
-      float avg = (p + p1 + p2 + p3 + p4) * 0.2;
+      float p5 = texture2D(uFaceTex, fUv + vec2( px.x,  px.y)).r;
+      float p6 = texture2D(uFaceTex, fUv + vec2(-px.x,  px.y)).r;
+      float p7 = texture2D(uFaceTex, fUv + vec2( px.x, -px.y)).r;
+      float p8 = texture2D(uFaceTex, fUv + vec2(-px.x, -px.y)).r;
+      float avg = (p + p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8) * (1.0 / 9.0);
       // Feathered threshold gives a controllable roto edge.
+      // v1.2.70 — midpoint dropped from 0.5 to 0.42 so anything with
+      // ~42% person-confidence or higher counts as inside. This grows
+      // the mask outward by a few pixels at the silhouette so FX wrap
+      // the body edge instead of revealing a thin background gutter.
       float t = clamp(uFaceFeather, 0.005, 0.5);
-      fm = smoothstep(0.5 - t, 0.5 + t, avg);
+      fm = smoothstep(0.42 - t, 0.42 + t, avg);
     } else {
       // Centered-oval fallback (no detector / no model loaded yet).
       float ar = uResolution.x / max(uResolution.y, 1.0);
@@ -5178,8 +5191,39 @@ export default function SpectraAfter() {
               // broken roto after switching back to camera mode (the bloated
               // mask covered most of the frame). Clearing every tick forces
               // the mask to reflect ONLY the current segmenter output.
-              maskCtx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
-              maskCtx.drawImage(scratchCanvas, 0, 0, maskCanvas.width, maskCanvas.height);
+      // v1.2.70 — MASK MOTION BLUR + EXPANSION. Previously this did a
+      // hard clearRect every segmenter tick, so when the body moved
+      // faster than the ~10 Hz cadence the mask would lag the limb and
+      // the FX rim would peel off the edge of the dancer ("slow to
+      // match the body"). We now:
+      //   1. Fade the prior-frame mask by 45% (translucent black fill)
+      //      so it lingers softly instead of vanishing.
+      //   2. Composite the new mask with `lighter` so the union of
+      //      prior + current wins per-pixel — limbs in motion get a
+      //      short trailing skirt that bridges segmenter ticks.
+      //   3. Apply a small outward expansion by drawing the mask 8
+      //      times offset by 1px in a ring — the equivalent of a 1-px
+      //      morphological dilation, giving full coverage at the body
+      //      silhouette so FX never "clip" inside the person's outline.
+      // The shader-side feather then rounds these dilated, trail-fed
+      // edges into a soft roto, not a jagged popping cut-out.
+      maskCtx.globalCompositeOperation = "source-over";
+      maskCtx.fillStyle = "rgba(0,0,0,0.45)";
+      maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
+      maskCtx.globalCompositeOperation = "lighter";
+      const _dW = maskCanvas.width, _dH = maskCanvas.height;
+      // 1-px ring dilation (8 cardinal+diagonal offsets) for slight
+      // border expansion — ensures FX fully cover the body edge.
+      const _ringOff: Array<[number, number]> = [
+        [-1, 0], [1, 0], [0, -1], [0, 1],
+        [-1, -1], [1, -1], [-1, 1], [1, 1],
+      ];
+      for (const [ox, oy] of _ringOff) {
+        maskCtx.drawImage(scratchCanvas, ox, oy, _dW, _dH);
+      }
+      // Final centered draw at full strength so the core mask wins.
+      maskCtx.drawImage(scratchCanvas, 0, 0, _dW, _dH);
+      maskCtx.globalCompositeOperation = "source-over";
               // Upload to WebGL face texture.
               const gl = glRef.current;
               const tex = faceTextureRef.current;
@@ -5731,6 +5775,13 @@ export default function SpectraAfter() {
   const crossFeedRef = useRef(false);
   useEffect(() => { crossFeedRef.current = crossFeed; }, [crossFeed]);
   const [recordingHint, setRecordingHint] = useState<string | null>(null);
+  // v1.2.70 \u2014 HANDS-FREE record: tap the button, get a 3-2-1 countdown
+  // so you can step into frame and start dancing, then recording auto-
+  // starts and runs for the configured recordMaxSec, then auto-stops.
+  // Lets a solo performer roto-dance their whole body without touching
+  // the device. handsFreeCountdown null = idle, 3/2/1 = visible numeral.
+  const [handsFreeCountdown, setHandsFreeCountdown] = useState<number | null>(null);
+  const handsFreeTimerRef = useRef<number | null>(null);
   const [abSnapshot, setAbSnapshot] = useState<SpectraPreset | null>(null);
   const [cameraRequesting, setCameraRequesting] = useState(false);
 
@@ -8675,6 +8726,35 @@ export default function SpectraAfter() {
     };
   }, []);
 
+  // v1.2.70 \u2014 hands-free record kickoff. Cancellable while counting.
+  // Tap once: 3\u20262\u20261 countdown overlay then auto-start record (which will
+  // self-stop when recordMaxSec elapses). Tap during countdown: cancel.
+  const startHandsFree = useCallback(() => {
+    // If we're mid-record OR mid-countdown, treat the tap as a cancel /
+    // stop so the user can always abort with the same button.
+    if (recordingRef.current) { stopRecordingRef.current(); return; }
+    if (handsFreeTimerRef.current != null) {
+      window.clearTimeout(handsFreeTimerRef.current);
+      handsFreeTimerRef.current = null;
+      setHandsFreeCountdown(null);
+      return;
+    }
+    let n = 3;
+    setHandsFreeCountdown(n);
+    const step = () => {
+      n -= 1;
+      if (n <= 0) {
+        setHandsFreeCountdown(null);
+        handsFreeTimerRef.current = null;
+        startRecordingRef.current();
+      } else {
+        setHandsFreeCountdown(n);
+        handsFreeTimerRef.current = window.setTimeout(step, 1000);
+      }
+    };
+    handsFreeTimerRef.current = window.setTimeout(step, 1000);
+  }, []);
+
   const captureStill = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -9730,6 +9810,38 @@ export default function SpectraAfter() {
             >DISMISS ✕</button>
           </div>
           <pre style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{runtimeError}</pre>
+        </div>
+      )}
+
+      {/* v1.2.70 \u2014 HANDS-FREE big-numeral countdown overlay. Sits above
+          everything (incl. toasts) but is pointer-transparent so the user
+          can still cancel via the panel button. */}
+      {handsFreeCountdown != null && (
+        <div
+          style={{
+            position: "fixed", inset: 0, zIndex: 99999,
+            display: "flex", flexDirection: "column",
+            alignItems: "center", justifyContent: "center",
+            pointerEvents: "none",
+            background: "radial-gradient(circle at center, rgba(15,5,28,0.35) 0%, rgba(15,5,28,0.0) 60%)",
+          }}
+        >
+          <div style={{
+            fontFamily: "'Courier New',monospace",
+            fontSize: 220, lineHeight: 1, fontWeight: 900,
+            color: "rgba(255,235,205,0.98)",
+            letterSpacing: "8px",
+            textShadow: "0 0 40px rgba(232,160,32,0.95), 0 0 14px rgba(255,80,160,0.7)",
+            transform: "scale(1)",
+            animation: "activeGlow 1s ease-in-out infinite",
+          }}>{handsFreeCountdown}</div>
+          <div style={{
+            marginTop: 24,
+            fontFamily: "'Courier New',monospace",
+            fontSize: 12, letterSpacing: "3px",
+            color: "rgba(255,235,205,0.85)",
+            textTransform: "uppercase",
+          }}>HANDS-FREE \u00b7 RECORDS {recordMaxSec}s</div>
         </div>
       )}
 
@@ -11240,6 +11352,25 @@ export default function SpectraAfter() {
                   ...(recording ? { animation: "activeGlow 1s ease-in-out infinite" } : {}),
                 }}
               >{recording ? "■ STOP RECORDING" : "● RECORD"}</button>
+              {/* v1.2.70 \u2014 HANDS-FREE: 3-2-1 countdown then auto-record for
+                  recordMaxSec, then auto-stop. Lets a solo dancer step into
+                  frame and perform without touching the device. Tap again
+                  during countdown OR recording to cancel/stop. */}
+              <button
+                className="sp-tile"
+                onClick={startHandsFree}
+                title="3-2-1 countdown, then auto-record for the configured duration"
+                style={{
+                  ...modeBtnStyle,
+                  ...(handsFreeCountdown != null ? modeBtnActive : {}),
+                  width: "100%", minHeight: 40, fontSize: 11, letterSpacing: "1.6px",
+                  ...(handsFreeCountdown != null ? { animation: "activeGlow 1s ease-in-out infinite" } : {}),
+                }}
+              >{handsFreeCountdown != null
+                  ? `\u2715 CANCEL  \u2014  ${handsFreeCountdown}\u2026`
+                  : recording
+                    ? "\u25A0 STOP"
+                    : `\u23F1 HANDS-FREE  \u2014  ${recordMaxSec}s`}</button>
               <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(200,180,220,0.4)", textAlign: "center", textTransform: "uppercase" }}>
                 Tip: hold canvas also records
               </div>
