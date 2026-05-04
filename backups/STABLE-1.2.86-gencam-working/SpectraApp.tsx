@@ -8417,35 +8417,10 @@ export default function SpectraAfter() {
   }, [cameraFacing, cameraActive, startCamera]);
 
   const hardResetCamera = useCallback(async () => {
-    // v1.2.87 — proper hard reset. Previous version released the binding,
-    // flipped facing, and called startCamera() once. That broke when the
-    // in-flight latch was still set (startCamera would early-return) or
-    // when the GEN+CAM auto-start effect immediately re-fired against the
-    // half-released binding. Rebuild the whole pipeline:
-    //  1. Surface a transient toast/error clear so the UI updates.
-    //  2. Force-clear in-flight + intent latches so nothing early-returns.
-    //  3. Stop every track on streamRef AND on the video element's
-    //     current MediaStream (in case a prior stream leaked the ref).
-    //  4. Detach + load() the video element to fully release the binding.
-    //  5. Wait long enough for Android's CameraService to release the
-    //     device handle (250ms is the empirical floor on most builds).
-    //  6. Re-arm intent and call startCamera(true) with the user's
-    //     CURRENT facing so the reset is predictable (no surprise flip).
     setSourceError(null);
-    startCameraInFlightRef.current = false;
-    cameraIntentRef.current = false;
-    try {
-      const v = videoRef.current;
-      const leaked = v && v.srcObject ? (v.srcObject as MediaStream) : null;
-      if (leaked && leaked !== streamRef.current) {
-        try { leaked.getTracks().forEach(t => { try { t.stop(); } catch {} }); } catch {}
-      }
-    } catch {}
     await releaseCameraBinding();
-    setCameraActive(false);
-    await new Promise(r => setTimeout(r, 250));
-    cameraIntentRef.current = true;
-    await startCamera(true, cameraFacing);
+    const fallbackFacing = cameraFacing === "environment" ? "user" : "environment";
+    await startCamera(true, fallbackFacing);
   }, [cameraFacing, releaseCameraBinding, startCamera]);
 
   // ── Upload source ─────────────────────────────────────────
