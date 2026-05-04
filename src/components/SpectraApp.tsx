@@ -7258,9 +7258,18 @@ export default function SpectraAfter() {
             dctx.drawImage(texSource as CanvasImageSource, 0, 0, SW, SH);
             const img = dctx.getImageData(0, 0, SW, SH);
             const px32 = new Uint32Array(img.data.buffer);
+            // v1.2.61 — sort key is LUMA packed into the high byte so the
+            // numeric .sort() reorders the run by brightness (classic
+            // Asendorf look), not by raw blue-dominant RGBA32. We build a
+            // parallel Uint32 (luma<<24 | runIndex) key array, sort it,
+            // then scatter the original pixels into a scratch in key order.
             // Threshold maps the slider so higher uSortMix = lower threshold
             // = more pixels caught in runs (more visible sort). Range 60..200.
             const thr = Math.max(20, Math.min(220, Math.floor(200 - sortMixRef.current * 140)));
+            // Hoisted scratch buffers — reused across every run in every
+            // row of the frame to avoid per-run GC churn.
+            const keysAll = new Uint32Array(SW);
+            const scratch = new Uint32Array(SW);
             for (let y = 0; y < SH; y++) {
               const rowOff = y * SW;
               let x = 0;
@@ -7284,17 +7293,31 @@ export default function SpectraAfter() {
                 }
                 const len = x - start;
                 if (len > 1) {
-                  // Uint32Array.sort is numeric — sorts the run in place
-                  px32.subarray(rowOff + start, rowOff + start + len).sort();
+                  // Build (luma<<24 | localIndex) keys into a sub-view of
+                  // the hoisted buffers, sort numerically, scatter pixels
+                  // in luma order back into px32. Local index in the low
+                  // 24 bits ensures unique keys (stable enough order).
+                  const keys = keysAll.subarray(0, len);
+                  for (let i = 0; i < len; i++) {
+                    const p = px32[rowOff + start + i];
+                    const r = p & 0xff, g = (p >>> 8) & 0xff, b = (p >>> 16) & 0xff;
+                    const L = (r * 76 + g * 150 + b * 29) >>> 8;
+                    keys[i] = (L << 24) | i;
+                  }
+                  keys.sort();
+                  for (let i = 0; i < len; i++) scratch[i] = px32[rowOff + start + (keys[i] & 0xffffff)];
+                  for (let i = 0; i < len; i++) px32[rowOff + start + i] = scratch[i];
                 }
               }
             }
             octx.putImageData(img, 0, 0);
             gl.activeTexture(gl.TEXTURE5);
             gl.bindTexture(gl.TEXTURE_2D, cpuSortTexRef.current);
-            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 1);
+            // v1.2.61 — match the global UNPACK_FLIP_Y_WEBGL=false set at
+            // GL init. Previously we forced flip=1 here which made the
+            // sorted tex render upside-down relative to the camera tex,
+            // so the REALSORT knob looked like it just inverted the frame.
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, oc);
-            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
           }
         } catch { /* CPU sort tick is best-effort; ignore failures */ }
       }
