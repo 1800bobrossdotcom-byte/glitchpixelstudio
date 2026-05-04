@@ -4724,6 +4724,24 @@ export default function SpectraAfter() {
   // ── Boot state
   const [bootProgress, setBootProgress] = useState(0);
   const [bootDone, setBootDone] = useState(false);
+  // v1.2.83 — JS-driven landscape detection. Earlier attempts to
+  // reflow via CSS media queries had inconsistent results across the
+  // various WebView builds Capacitor ships, so we observe the
+  // viewport directly and apply layout via inline className/style.
+  const [isLandscape, setIsLandscape] = useState(false);
+  useEffect(() => {
+    const update = () => {
+      if (typeof window === "undefined") return;
+      setIsLandscape(window.innerWidth > window.innerHeight && window.innerHeight < 600);
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
+    };
+  }, []);
   // ── First-load intro + bug report modal
   const [introVisible, setIntroVisible] = useState(true);
   const [bugOpen, setBugOpen] = useState(false);
@@ -10529,17 +10547,25 @@ export default function SpectraAfter() {
       {/* ── Body: camera top, settings bottom (mobile); side-by-side (lg).
            v1.2.76 — also goes side-by-side on phones in landscape
            orientation so anamorphic shots get a real wide canvas. */}
-      <div className="sp-body flex-1 min-h-0 flex flex-col lg:flex-row landscape-row overflow-hidden">
+      <div
+        className="sp-body flex-1 min-h-0 flex overflow-hidden"
+        style={{ flexDirection: isLandscape ? "row" : "column" }}
+      >
 
         {/* Camera viewport — top half on mobile, left pane on desktop.
             When an accordion panel is open we shrink this pane so the
             open panel can occupy more vertical real estate. Other
             (collapsed) panels stay visible as headers. */}
         <div
-          className="sp-canvas-pane flex-none lg:h-auto lg:flex-1 relative bg-black overflow-hidden flex items-center justify-center"
-          style={{ height: openPanelTitle ? "26dvh" : "45dvh", transition: "height 220ms ease" }}
+          className="sp-canvas-pane relative bg-black overflow-hidden flex items-center justify-center"
+          style={isLandscape
+            ? { flex: "1 1 0", height: "100%", minWidth: 0, minHeight: 0 }
+            : { flex: "none", height: openPanelTitle ? "26dvh" : "45dvh", transition: "height 220ms ease" }}
         >
-          <div style={{ position: "relative", aspectRatio: "1 / 1", height: "100%", maxHeight: "100%", maxWidth: "100%" }}>
+          <div style={isLandscape
+            ? { position: "relative", width: "100%", height: "100%" }
+            : { position: "relative", aspectRatio: "1 / 1", height: "100%", maxHeight: "100%", maxWidth: "100%" }}
+          >
             {/* Scanlines overlay */}
             <div style={{
               position: "absolute", inset: 0, zIndex: 2, pointerEvents: "none",
@@ -10858,7 +10884,9 @@ export default function SpectraAfter() {
         <div
           ref={panelRef}
           className={"sp-panel-glass flex-1 min-h-0 overflow-y-auto lg:w-[23rem] lg:flex-none" + (neonMode && openPanelTitle ? " glass-expanded" : "")}
-          style={{ background: "linear-gradient(180deg,#0F001C 0%,#080012 100%)", borderTop: `1px solid rgba(61,10,92,0.9)`, position: "relative" }}
+          style={isLandscape
+            ? { background: "linear-gradient(180deg,#0F001C 0%,#080012 100%)", borderTop: `1px solid rgba(61,10,92,0.9)`, position: "relative", flex: "0 0 17rem", width: "17rem", height: "100%" }
+            : { background: "linear-gradient(180deg,#0F001C 0%,#080012 100%)", borderTop: `1px solid rgba(61,10,92,0.9)`, position: "relative" }}
           onPointerDown={(e) => {
             // v1.2.69 — ONLY arm the pull-to-reload gesture when the pointer
             // landed on the panel's own scroll surface, NOT on a child like a
