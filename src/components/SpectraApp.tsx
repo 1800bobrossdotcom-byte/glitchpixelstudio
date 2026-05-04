@@ -6074,8 +6074,12 @@ export default function SpectraAfter() {
       gl.bindTexture(gl.TEXTURE_2D, sTex);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      // v1.2.68 — NEAREST sampling on the CPU sort texture. The CPU
+      // Asendorf sort runs at 256x144; LINEAR upscaled it into a soft
+      // blur the moment REALSORT was the only knob engaged. NEAREST
+      // preserves the crisp per-row sort pixels people expect.
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
       cpuSortTexRef.current = sTex;
     }
@@ -7503,13 +7507,14 @@ export default function SpectraAfter() {
     const _aGate  = Math.min(1.0, _aBass * 1.4 + _aBeat * 0.9 + _aLvl * 0.5);
     const _sortBase = sortAmtRef.current;
     const _sortAudio = Math.min(1.0, _sortBase * (1 + _aGate * 0.7) + _aGate * 0.18);
-    // v1.2.64 — REALSORT (sortMix) is the master amount for the entire
-    // PIXEL SORT rack. Every shader sort knob (AMOUNT/LOW/HIGH/SEGMENT/
-    // NOISE/WOBBLE/TEAR/MODE/INTERVAL/ANGLE) is now gated through it,
-    // so REALSORT=0 fully bypasses the rack and REALSORT=1 unleashes
-    // the true CPU Asendorf sort + the shader sort at full strength.
-    // AMOUNT is now a relative shader-trim within the REALSORT envelope.
-    setF1(u.uSortAmt, _sortAudio * sortMixRef.current);
+    // v1.2.68 — DECOUPLE the shader sort knobs from REALSORT. Previously
+    // every shader knob (AMOUNT/LOW/HIGH/SEGMENT/NOISE/WOBBLE/TEAR/MODE/
+    // INTERVAL/ANGLE) was multiplied by sortMix, so when REALSORT was at
+    // 0 the sub-knobs felt completely dead — turning AMOUNT did literally
+    // nothing. Now REALSORT only controls the CPU Asendorf cross-fade
+    // (uSortMix); AMOUNT directly drives the shader sort uniform so each
+    // sub-knob produces a visible, independent change.
+    setF1(u.uSortAmt, _sortAudio);
     setF1(u.uScanTear, scanTearRef.current);
     setF1(u.uBlockGlitch, blockGlitchRef.current);
     // Datamosh INTENS slider is 0..2. Old mapping used a pow(0.72) curve
