@@ -5757,11 +5757,13 @@ export default function SpectraAfter() {
   }, []);
   // DRAW is currently only safe over static image uploads (live camera + generator
   // share the live render path with the FX mask, which the draw overlay corrupts).
-  // v1.2.77 — DRAW now also works over video/gif uploads. Strokes
-  // get composited INTO the source frame (see render loop) so the
-  // shader glitch FX warp/corrupt the painted lines, not just sit
-  // as a faint blend overlay.
-  const drawAvailable = sourceMode === "upload" && (uploadKind === "image" || uploadKind === "video");
+  // v1.2.78 — DRAW feature disabled (user request: kept conflicting with
+  // upload pipeline + obscured glitch FX). All draw-related state, refs,
+  // pointer handlers and the bake-in compositor remain in the file but
+  // gated off by this single flag, so they're unreachable from the UI.
+  // Re-enable by removing the literal `false` and restoring the original
+  // condition: sourceMode === "upload" && (uploadKind === "image" || uploadKind === "video")
+  const drawAvailable = false;
   // Auto-bail out of DRAW the moment the source stops being an image upload.
   useEffect(() => {
     if (!drawAvailable && drawActive) {
@@ -7450,41 +7452,35 @@ export default function SpectraAfter() {
           texSource = gc; srcW = gc.width; srcH = gc.height;
         }
       } else if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0) {
-        // v1.2.71/72 — GEN+CAM with no FX armed.
-        // v1.2.77 — ROTOSCOPE FIX. When face/person FX is engaged in
-        // GEN+CAM mode, the BG must be PURE GENERATOR — not the
-        // camera-blended composite — because the cut-out person from
-        // the camera will be stamped on top a few lines below as the
-        // foreground. Otherwise the camera leaks into the BG and the
-        // FG/BG split (uFaceInvert) becomes a no-op (camera shows on
-        // both sides). When face FX is OFF, keep the existing 50/50
-        // composite so GEN+CAM-without-roto still looks alive.
-        if (faceFxRef.current.active && faceFxRef.current.texValid) {
-          texSource = gc; srcW = gc.width; srcH = gc.height;
+        // v1.2.71/72 — GEN+CAM with no FX armed. v1.2.78 — reverted the
+        // v1.2.77 rotoscope branch (which used pure generator BG when
+        // faceFxRef.active was true). With faceFxMode defaulting to "BG",
+        // that path was always taken at boot and — if the segmenter hadn't
+        // initialised yet — the camera never appeared in GEN+CAM mode.
+        // Restore the always-on 55/45 + screen composite so cam+gen always
+        // shows both layers, regardless of segmenter state.
+        let cc = genCompositeCanvasRef.current;
+        if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
+        if (cc.width !== targetW || cc.height !== targetH) {
+          cc.width = targetW; cc.height = targetH;
+        }
+        const cctx = cc.getContext("2d");
+        if (cctx) {
+          cctx.globalCompositeOperation = "source-over";
+          cctx.globalAlpha = 1;
+          cctx.clearRect(0, 0, cc.width, cc.height);
+          cctx.drawImage(video, 0, 0, cc.width, cc.height);
+          cctx.globalCompositeOperation = "source-over";
+          cctx.globalAlpha = 0.55;
+          cctx.drawImage(gc, 0, 0, cc.width, cc.height);
+          cctx.globalCompositeOperation = "screen";
+          cctx.globalAlpha = 0.45;
+          cctx.drawImage(gc, 0, 0, cc.width, cc.height);
+          cctx.globalCompositeOperation = "source-over";
+          cctx.globalAlpha = 1;
+          texSource = cc; srcW = cc.width; srcH = cc.height;
         } else {
-          let cc = genCompositeCanvasRef.current;
-          if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
-          if (cc.width !== targetW || cc.height !== targetH) {
-            cc.width = targetW; cc.height = targetH;
-          }
-          const cctx = cc.getContext("2d");
-          if (cctx) {
-            cctx.globalCompositeOperation = "source-over";
-            cctx.globalAlpha = 1;
-            cctx.clearRect(0, 0, cc.width, cc.height);
-            cctx.drawImage(video, 0, 0, cc.width, cc.height);
-            cctx.globalCompositeOperation = "source-over";
-            cctx.globalAlpha = 0.55;
-            cctx.drawImage(gc, 0, 0, cc.width, cc.height);
-            cctx.globalCompositeOperation = "screen";
-            cctx.globalAlpha = 0.45;
-            cctx.drawImage(gc, 0, 0, cc.width, cc.height);
-            cctx.globalCompositeOperation = "source-over";
-            cctx.globalAlpha = 1;
-            texSource = cc; srcW = cc.width; srcH = cc.height;
-          } else {
-            texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
-          }
+          texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
         }
       } else {
         texSource = gc; srcW = gc.width; srcH = gc.height;
@@ -10368,31 +10364,13 @@ export default function SpectraAfter() {
         flexShrink: 0, zIndex: 20,
         boxShadow: "0 2px 12px rgba(0,0,0,0.85), 0 0 18px rgba(176,20,240,0.22)",
       }}>
-        {/* Left — brand pill (icon + tight wordmark; truncates on tight phones) */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: "0 1 auto" }}>
+        {/* Left — brand icon only (v1.2.78: wordmark removed; single-row nav was wrapping on phones) */}
+        <div style={{ display: "flex", alignItems: "center", flex: "0 0 auto" }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={GPS_APP_ICON} alt="GPS" width={32} height={32} style={{
-            width: 32, height: 32, borderRadius: 7, objectFit: "cover",
+          <img src={GPS_APP_ICON} alt="Glitch Pixel Studio" width={36} height={36} style={{
+            width: 36, height: 36, borderRadius: 8, objectFit: "cover",
             boxShadow: "0 0 12px rgba(26,28,242,0.55), 0 0 4px rgba(111,125,255,0.6) inset",
-            flexShrink: 0,
           }}/>
-          <div style={{
-            display: "flex", flexDirection: "row", alignItems: "baseline", gap: 5,
-            lineHeight: 1.0, minWidth: 0,
-            fontFamily: "var(--font-nunito,'Nunito',sans-serif)",
-            fontWeight: 800,
-            fontSize: "clamp(11px, 2.6vw, 16px)",
-            letterSpacing: "1.2px",
-            textTransform: "uppercase",
-            color: "#F4F6FF",
-            textShadow: "0 0 10px rgba(111,125,255,0.45)",
-            whiteSpace: "nowrap",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-          }}>
-            <span style={{ color: "#E7AEFF" }}>Glitch Pixel</span>
-            <span style={{ color: "#FF8500", letterSpacing: "1.2px" }}>Studio</span>
-          </div>
         </div>
         {/* Right — action icons, evenly spaced, never wrap */}
         <div style={{ display: "flex", gap: 4, alignItems: "center", justifyContent: "flex-end", flex: "0 0 auto" }}>
@@ -10400,34 +10378,19 @@ export default function SpectraAfter() {
             className="sp-btn"
             onClick={() => {
               if (cameraActive) { void flipCamera(); }
-              else { setCameraFacing(f => f === "environment" ? "user" : "environment"); }
+              else { void startCamera(true); }
             }}
             style={{
               ...topBtnStyle,
-              width: 36, height: 36, padding: 0, fontSize: 14, borderRadius: 9, letterSpacing: 0,
-              opacity: cameraActive ? 1 : 0.7,
-              color: cameraFacing === "user" ? T.ochre : undefined,
-              borderColor: cameraFacing === "user" ? T.amber : undefined,
+              width: 44, height: 36, padding: 0, fontSize: 11, borderRadius: 9, letterSpacing: "0.4px",
+              opacity: 1,
+              color: cameraActive ? T.ochre : undefined,
+              borderColor: cameraActive ? T.amber : undefined,
+              boxShadow: cameraActive ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
             }}
-            title={cameraActive ? "Flip camera" : `Camera will start as ${cameraFacing === "environment" ? "REAR" : "FRONT"}`}
-          >{cameraFacing === "user" ? "🤳" : "🔄"}</button>
-          <button
-            className="sp-btn"
-            onClick={() => { if (drawAvailable) setDrawActive(a => !a); }}
-            disabled={!drawAvailable}
-            style={{
-              ...topBtnStyle,
-              width: 36, height: 36, padding: 0, fontSize: 14, borderRadius: 9, letterSpacing: 0,
-              color: drawActive ? T.ochre : (drawAvailable ? undefined : "rgba(244,246,255,0.32)"),
-              borderColor: drawActive ? T.amber : (drawAvailable ? undefined : "rgba(244,246,255,0.18)"),
-              boxShadow: drawActive ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
-              opacity: drawAvailable ? 1 : 0.45,
-              cursor: drawAvailable ? "pointer" : "not-allowed",
-            }}
-            title={drawAvailable
-              ? "DRAW: paint glitch strokes onto the upload (FX corrupt them)"
-              : "DRAW unlocks when an IMAGE or VIDEO upload is the source"}
-          >✎</button>
+            title={cameraActive ? `Camera ON — tap to FLIP (now ${cameraFacing === "environment" ? "REAR" : "FRONT"})` : "Tap to START camera"}
+          >{cameraActive ? (cameraFacing === "user" ? "FLIP" : "FLIP") : "CAM"}</button>
+          {/* v1.2.78 — DRAW button removed (feature disabled). */}
           <button
             className="sp-btn"
             onClick={() => setAudioActive(a => !a)}
