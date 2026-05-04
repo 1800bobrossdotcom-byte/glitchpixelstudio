@@ -9622,9 +9622,18 @@ export default function SpectraAfter() {
             height: 100% !important;
             flex: 1 1 auto !important;
             min-height: 0 !important;
+            min-width: 0 !important;
+          }
+          /* v1.2.78 — drop the inline aspect-ratio:1/1 in landscape so
+             the canvas fills the available pane width instead of getting
+             pinned to a tiny square sized off the short landscape height. */
+          .sp-canvas-pane > div {
+            aspect-ratio: auto !important;
+            width: 100% !important;
+            height: 100% !important;
           }
           .sp-panel-glass {
-            width: 20rem !important;
+            width: 18rem !important;
             flex: none !important;
           }
         }
@@ -10589,16 +10598,17 @@ export default function SpectraAfter() {
                 });
               }}
               style={{
-                /* v1.2.77 — moved from top-left to bottom-left so it sits
-                   in the natural thumb arc (small-handed / one-handed /
-                   gamer-grip). Slightly larger hit target too. */
-                position: "absolute", left: 12, bottom: 12, zIndex: 7,
+                /* v1.2.78 — bottom-left was getting buried under the
+                   bottom toolbar / safe-area inset. Pin to fixed top-
+                   right of the viewport with a very high zIndex so it
+                   floats above EVERYTHING (nav, panels, recorder UI). */
+                position: "fixed", right: 10, top: 56, zIndex: 9999,
                 width: 44, height: 44, borderRadius: 10,
-                background: uiHidden ? "rgba(231,174,255,0.22)" : "rgba(10,2,36,0.7)",
-                border: "1px solid rgba(231,174,255,0.55)",
+                background: uiHidden ? "rgba(231,174,255,0.32)" : "rgba(10,2,36,0.78)",
+                border: "1px solid rgba(231,174,255,0.65)",
                 color: "#F4F6FF", fontSize: 18,
                 cursor: "pointer",
-                boxShadow: "0 0 10px rgba(0,0,0,0.7)",
+                boxShadow: "0 0 12px rgba(0,0,0,0.85)",
               }}
               title={uiHidden ? "Show UI" : "Hide UI · view canvas only"}
             >{uiHidden ? "▲" : "▽"}</button>
