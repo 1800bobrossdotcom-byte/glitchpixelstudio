@@ -4757,7 +4757,7 @@ export default function SpectraAfter() {
   // v1.2.81 — default to opening the PIXEL GENERATOR panel so users
   // immediately see/feel the procedural texture controls instead of
   // landing on a quiet pixel-sort screen and wondering if anything works.
-  const [openPanelTitle, setOpenPanelTitle] = useState<string | null>("PIXEL GENERATOR");
+  const [openPanelTitle, setOpenPanelTitle] = useState<string | null>(null);
   const accordionCtx = useMemo(
     () => ({ openTitle: openPanelTitle, setOpenTitle: setOpenPanelTitle }),
     [openPanelTitle]
@@ -7491,7 +7491,18 @@ export default function SpectraAfter() {
         //    fall back to the always-on 55/45 + screen composite so the
         //    user still sees BOTH layers and never gets a black screen.
         if (faceFxRef.current.active && faceFxRef.current.texValid) {
-          texSource = gc; srcW = gc.width; srcH = gc.height;
+          // v1.2.86 — when FACE mode is armed (invert=false), the
+          // intent is "person covered in generator pattern", so we
+          // hand the composite block below the camera frame as the
+          // base and let it stamp the GENERATOR clipped to the
+          // person mask on top. When BG mode is armed (invert=true),
+          // we keep the original "generator background + clean
+          // person on top" path.
+          if (faceFxRef.current.invert) {
+            texSource = gc; srcW = gc.width; srcH = gc.height;
+          } else {
+            texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
+          }
         } else {
           let cc = genCompositeCanvasRef.current;
           if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
@@ -7558,11 +7569,21 @@ export default function SpectraAfter() {
           if (out.width !== W || out.height !== H) { out.width = W; out.height = H; }
           const octx = out.getContext("2d");
           if (pctx && octx) {
-            // 1. Fill scratch with the camera frame (un-mirrored, raw stream).
+            // v1.2.86 — branch on FACE vs BG.
+            //   BG (invert=true): scratch = video clipped to person,
+            //     stamped over generator background. (clean person)
+            //   FACE (invert=false): scratch = generator clipped to
+            //     person, stamped over the live camera frame so the
+            //     subject appears wearing the procedural pattern
+            //     while their surroundings stay real.
+            const stampSource: CanvasImageSource = faceFxRef.current.invert
+              ? (video as CanvasImageSource)
+              : (genCanvasRef.current as CanvasImageSource);
+            // 1. Fill scratch with the chosen layer.
             pctx.globalCompositeOperation = "source-over";
             pctx.globalAlpha = 1;
             pctx.clearRect(0, 0, W, H);
-            pctx.drawImage(video, 0, 0, W, H);
+            pctx.drawImage(stampSource, 0, 0, W, H);
             // 2. Knock out non-person pixels by intersecting with the mask
             //    alpha (mask alpha was set to mask value in v1.2.51).
             pctx.globalCompositeOperation = "destination-in";
