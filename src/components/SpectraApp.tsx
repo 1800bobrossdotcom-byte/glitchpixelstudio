@@ -5805,6 +5805,12 @@ export default function SpectraAfter() {
 
   // ── Export
   const [recording, setRecording] = useState(false);
+  // v1.2.76 — UI HIDE / IMMERSIVE toggle. When true, top bar + controls
+  // pane collapse and the canvas fills the screen. Also calls Capacitor
+  // StatusBar.hide() and the standard Fullscreen API so the device
+  // chrome (status bar + nav bar) actually goes away on Android, not
+  // just the in-app chrome. The float-over-canvas eye button restores.
+  const [uiHidden, setUiHidden] = useState(false);
   const [fps, setFps] = useState(0);
   const [exportFormat, setExportFormat] = useState<"gif" | "video">("gif");
   const [exportQuality, setExportQuality] = useState<"standard" | "high" | "ultra">("high");
@@ -9568,10 +9574,21 @@ export default function SpectraAfter() {
   return (
     <div
       ref={tiltRootRef}
-      className={"flex flex-col h-dvh overflow-hidden text-white" + (neonMode ? " neon-mode" : "")}
+      className={"flex flex-col h-dvh overflow-hidden text-white" + (neonMode ? " neon-mode" : "") + (uiHidden ? " ui-hidden" : "")}
       style={{ fontFamily: "'Courier New', monospace", background: "#000" }}
     >
       <style>{`
+        /* v1.2.76 — IMMERSIVE / HIDE-UI mode. */
+        .ui-hidden .sp-panel-glass { display: none !important; }
+        .ui-hidden .sp-canvas-pane { height: 100dvh !important; flex: 1 1 auto !important; }
+
+        /* v1.2.76 — PHONE LANDSCAPE reflow (Tailwind lg: is desktop-only). */
+        @media (orientation: landscape) and (max-height: 600px) {
+          .landscape-row { flex-direction: row !important; }
+          .sp-canvas-pane { height: 100% !important; flex: 1 1 auto !important; }
+          .sp-panel-glass { width: 22rem !important; flex: none !important; }
+        }
+
         /* ── 2.5D SLOT-MACHINE WHEEL FOR SYNTHPANELS ──
            The settings pane is the wheel container; each .sp-rack is a slot
            that gets perspective-tilted in JS based on distance from center.
@@ -10293,7 +10310,9 @@ export default function SpectraAfter() {
 
       {/* ── Top bar (GPS — slim, navy gradient, electric-blue accent)
            TWO-LINE LAYOUT: row 1 = logo + wordmark (centered, no buttons
-           crowding it). Row 2 = all the action buttons. */}
+           crowding it). Row 2 = all the action buttons.
+           v1.2.76 — hidden when uiHidden is true (immersive view). */}
+      {!uiHidden && (
       <div style={{
         paddingTop: 4, paddingBottom: 4,
         background: "linear-gradient(180deg, #3A0852 0%, #1A0224 100%)",
@@ -10401,10 +10420,11 @@ export default function SpectraAfter() {
               : handsFreeCountdown.phase === "in"
                 ? `✕ ${handsFreeCountdown.n}…`
                 : `✕ ${handsFreeCountdown.n}s`}</button>
-          {/* v1.2.73 — FULLSCREEN toggle. Uses the standard
-              Fullscreen API on the document element so the entire app
-              chrome goes edge-to-edge. Tapping again returns to the
-              normal work view. */}
+          {/* v1.2.73 — FULLSCREEN toggle. v1.2.76 — also hides the top
+              bar + controls pane (immersive viewing) and uses Capacitor
+              StatusBar to actually hide the Android system chrome. The
+              standard Fullscreen API alone does not affect system bars
+              inside a WebView. The floating eye on the canvas restores. */}
           <button
             className="sp-btn"
             onClick={() => {
@@ -10421,22 +10441,37 @@ export default function SpectraAfter() {
               } else {
                 (el.requestFullscreen?.() || el.webkitRequestFullscreen?.())?.catch(() => {});
               }
+              setUiHidden(v => {
+                const next = !v;
+                if (Capacitor.isNativePlatform()) {
+                  import("@capacitor/status-bar").then(({ StatusBar }) => {
+                    if (next) { StatusBar.hide().catch(() => {}); StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {}); }
+                    else { StatusBar.show().catch(() => {}); StatusBar.setOverlaysWebView({ overlay: false }).catch(() => {}); }
+                  }).catch(() => {});
+                }
+                return next;
+              });
             }}
             style={{ ...topBtnStyle, fontSize: 14 }}
-            title="Fullscreen / return to work view"
+            title="Fullscreen / hide UI to view work"
           >⛶</button>
         </div>
       </div>
+      )}
 
       {/* ── TE gradient flourish strip (OP-1 knob color language) */}
+      {!uiHidden && (
       <div style={{
         height: 3, flexShrink: 0,
         background: `linear-gradient(90deg, ${TE.blue} 0%, ${TE.green} 30%, ${TE.amber} 58%, ${TE.lilac} 78%, ${TE.red} 100%)`,
         opacity: 0.72,
       }}/>
+      )}
 
-      {/* ── Body: camera top, settings bottom (mobile); side-by-side (lg) */}
-      <div className="sp-body flex-1 min-h-0 flex flex-col lg:flex-row overflow-hidden">
+      {/* ── Body: camera top, settings bottom (mobile); side-by-side (lg).
+           v1.2.76 — also goes side-by-side on phones in landscape
+           orientation so anamorphic shots get a real wide canvas. */}
+      <div className="sp-body flex-1 min-h-0 flex flex-col lg:flex-row landscape-row overflow-hidden">
 
         {/* Camera viewport — top half on mobile, left pane on desktop.
             When an accordion panel is open we shrink this pane so the
@@ -10458,7 +10493,30 @@ export default function SpectraAfter() {
 
             <button
               className={"sp-btn sp-photo-btn" + (neonMode ? " sp-photo-btn-neon" : "")}
-              onClick={captureStill}
+              onPointerDown={(e) => {
+                e.preventDefault();
+                holdFiredRef.current = false;
+                if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+                holdTimerRef.current = setTimeout(() => {
+                  holdFiredRef.current = true;
+                  startRecordingRef.current();
+                }, 350);
+              }}
+              onPointerUp={(e) => {
+                e.preventDefault();
+                if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
+                if (holdFiredRef.current) {
+                  // Hold released — stop the recording (gif/video).
+                  stopRecordingRef.current();
+                } else {
+                  // Quick tap — still photo.
+                  captureStill();
+                }
+              }}
+              onPointerLeave={() => {
+                if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
+                if (holdFiredRef.current) { stopRecordingRef.current(); holdFiredRef.current = false; }
+              }}
               style={{
                 ...topBtnStyle,
                 position: "absolute",
@@ -10470,9 +10528,52 @@ export default function SpectraAfter() {
                 fontSize: 11,
                 borderRadius: 10,
                 letterSpacing: "0.8px",
+                background: recording ? "rgba(224,61,61,0.85)" : (topBtnStyle.background as string | undefined),
+                borderColor: recording ? "#E03D3D" : (topBtnStyle.borderColor as string | undefined),
+                boxShadow: recording ? "0 0 18px rgba(224,61,61,0.85)" : topBtnStyle.boxShadow,
               }}
-              title="Take Photo"
-            >PHOTO</button>
+              title="Tap = photo · Hold = record GIF/video (release to stop)"
+            >{recording ? "REC●" : "PHOTO"}</button>
+            {/* v1.2.76 — inline hint so users discover the press-and-hold
+                gesture without reading docs. Sits under the PHOTO button,
+                fades when actively recording so it doesn't fight the REC pip. */}
+            <div style={{
+              position: "absolute", right: 10, bottom: 54, zIndex: 6,
+              width: 66, textAlign: "center",
+              fontFamily: "'Courier New',monospace",
+              fontSize: 7.5, letterSpacing: "1px",
+              color: "rgba(231,174,255,0.78)",
+              textShadow: "0 0 4px rgba(0,0,0,0.85)",
+              pointerEvents: "none",
+              opacity: recording ? 0.0 : 0.92,
+              transition: "opacity 180ms ease",
+            }}>TAP · HOLD=REC</div>
+            {/* v1.2.76 — floating eye toggle, always over the canvas, so
+                even when the chrome is hidden the user can bring it back. */}
+            <button
+              onClick={() => {
+                setUiHidden(v => {
+                  const next = !v;
+                  if (Capacitor.isNativePlatform()) {
+                    import("@capacitor/status-bar").then(({ StatusBar }) => {
+                      if (next) { StatusBar.hide().catch(() => {}); StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {}); }
+                      else { StatusBar.show().catch(() => {}); StatusBar.setOverlaysWebView({ overlay: false }).catch(() => {}); }
+                    }).catch(() => {});
+                  }
+                  return next;
+                });
+              }}
+              style={{
+                position: "absolute", left: 10, top: 10, zIndex: 7,
+                width: 36, height: 36, borderRadius: 8,
+                background: uiHidden ? "rgba(231,174,255,0.18)" : "rgba(10,2,36,0.65)",
+                border: "1px solid rgba(231,174,255,0.55)",
+                color: "#F4F6FF", fontSize: 16,
+                cursor: "pointer",
+                boxShadow: "0 0 8px rgba(0,0,0,0.6)",
+              }}
+              title={uiHidden ? "Show UI" : "Hide UI · view canvas only"}
+            >{uiHidden ? "▲" : "▽"}</button>
 
 
             <canvas
