@@ -10405,7 +10405,7 @@ export default function SpectraAfter() {
             </SynthPanel>
 
             {/* ── PIXEL SORT RACK ───────────────────────────────────── */}
-            <SynthPanel title="PIXEL SORT" subtitle="PXL · 8 CTRL" accent="rgba(231,174,255,0.95)">
+            <SynthPanel title="PIXEL SORT" subtitle="PXL · 9 CTRL" accent="rgba(231,174,255,0.95)">
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
                 <Knob label="AMOUNT"  value={sortAmt}      min={0} max={1}    step={0.01} defaultValue={0.5}  onChange={setSortAmt}/>
                 <Knob label="LOW"     value={sortLow}      min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortLow}/>
@@ -10414,6 +10414,12 @@ export default function SpectraAfter() {
                 <Knob label="NOISE"   value={sortRandom}   min={0} max={1}    step={0.01} defaultValue={0.2}  onChange={setSortRandom}/>
                 <Knob label="WOBBLE"  value={sortWobble}   min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortWobble}/>
                 <Knob label="TEAR"    value={scanTear}     min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setScanTear}/>
+                {/* v1.2.63 — mirror of the ASENDORF/GYSIN REALSORT knob so
+                    the true CPU pixel sort lives next to the shader sort
+                    rack and combos with AMOUNT / MODE / INTERVAL without
+                    hopping racks. Same sortMix state → single source of
+                    truth, persistence and presets keep working. */}
+                <Knob label="REALSORT" value={sortMix}     min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortMix}/>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
                 <SynthSelector label="MODE" options={["LINE","SPIRAL","BLOCK","SLICE","HILBERT"]} value={Math.round(sortMode)} onChange={(v) => setSortMode(v)}/>
@@ -10429,6 +10435,7 @@ export default function SpectraAfter() {
                     setSortAmt(0.5); setSortLow(0.0); setSortHigh(1.0); setSortSegment(0.5);
                     setSortRandom(0.2); setSortWobble(0.0); setScanTear(0.0);
                     setSortMode(0); setSortInterval(0); setSortAngle(0);
+                    setSortMix(0.0);
                   }}
                   style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
                   title="Reset every PIXEL SORT control to default"
