@@ -2866,6 +2866,23 @@ void main() {
     color.rgb = mix(color.rgb, sortedCol, clamp(sortBlend, 0.0, 1.0));
   }
 
+  // 14. CPU REAL PIXEL SORT — per-row Asendorf threshold runs sorted by
+  // packed RGBA value. Computed in JS at ~20 Hz on a 256x144 downscale,
+  // uploaded to uSortTex; the shader just blends.
+  // v1.2.69 — MOVED ABOVE the DATAMOSH block so the mosh stage operates
+  // on the SORTED signal (color.rgb), not the raw camera. Combined with
+  // the end-of-frame prev-frame copy capturing the final composite, this
+  // creates a real cross-feed: sort artefacts inform mosh smear this frame,
+  // and the moshed sort feeds back into next frame mosh taps. Result is
+  // ONE blended master output, not two stacked ghost layers. The AI fg/bg
+  // mask already gates both stages with the same mask value so the
+  // person/scene split rips through the unified pixel signal.
+  if (uSortMix * mask > 0.001) {
+    vec3 sorted = texture2D(uSortTex, uv).rgb;
+    float sortGate = smoothstep(0.0, 0.30, uSortMix * mask);
+    color.rgb = mix(color.rgb, sorted, sortGate);
+  }
+
   // 5. Datamosh blend (blend with prev frame)
   if (uDatamosh * mask > 0.001) {
     float sceneLuma = lum(color.rgb);
@@ -3023,19 +3040,9 @@ void main() {
     vec3 glyphCol = vec3(gA) * (cellCol * 0.55 + vec3(cellL) * 0.55);
     color.rgb = mix(color.rgb, glyphCol, uGlyph * mask);
   }
-  // 14. CPU REAL PIXEL SORT — per-row Asendorf threshold runs sorted by
-  // packed RGBA value. Computed in JS at ~20 Hz on a 256x144 downscale,
-  // uploaded to uSortTex; the shader just blends.
-  // v1.2.66 — "hit source" mandate: the sorted texture should REPLACE
-  // the camera signal, not ghost-overlay on top of it. We smoothstep
-  // up to full opacity quickly so by REALSORT >= 0.3 the user sees
-  // pure sorted pixels (the Asendorf look), not a 50/50 cross-fade
-  // where the original camera bleeds through.
-  if (uSortMix * mask > 0.001) {
-    vec3 sorted = texture2D(uSortTex, uv).rgb;
-    float sortGate = smoothstep(0.0, 0.30, uSortMix * mask);
-    color.rgb = mix(color.rgb, sorted, sortGate);
-  }
+  // 14. CPU REAL PIXEL SORT — (block moved above DATAMOSH in v1.2.69 for
+  // unified sort+mosh signal; see the relocated uSortMix * mask block
+  // right before the DATAMOSH stage above.)
   // 15. HILBERT WALK SMEAR — folded into PIXEL SORT as MODE=4 (v1.2.59).
   // Pseudo-Hilbert quarter-turn walk: locality-preserving max-luma
   // propagation, no axis-aligned banding. Strength = uSortAmt.
@@ -6278,6 +6285,29 @@ export default function SpectraAfter() {
   useEffect(()=>{ sourceModeRef.current=sourceMode; },[sourceMode]);
   useEffect(()=>{ genStyleRef.current=genStyle; },[genStyle]);
   useEffect(()=>{ genPaletteRef.current=genPalette; },[genPalette]);
+  // v1.2.69 — UNIVERSAL PALETTE: the COLOR rack palette buttons used to
+  // only affect generator output (palKey was only read inside the
+  // sourceMode === "generator" branch). User reported "universal palette
+  // is not working" because in CAMERA / UPLOAD mode tapping WARM / COOL /
+  // PINK / ACID / RAINBOW did nothing visible. Map each named palette to
+  // a hueShift + saturation pair so the master COLOR palette tints EVERY
+  // source uniformly. MONO desaturates. CUSTOM is a no-op so the user's
+  // own HUE/SAT knob values stay intact. One-shot per palette change.
+  useEffect(() => {
+    type PalRecipe = { hueShift: number; saturation: number };
+    const recipe: Partial<Record<GenPalette, PalRecipe>> = {
+      MONO:    { hueShift:  0.00, saturation: 0.0 },
+      WARM:    { hueShift:  0.06, saturation: 1.35 },
+      COOL:    { hueShift: -0.18, saturation: 1.35 },
+      PINK:    { hueShift:  0.32, saturation: 1.55 },
+      ACID:    { hueShift:  0.22, saturation: 1.75 },
+      RAINBOW: { hueShift:  0.00, saturation: 1.85 },
+    };
+    const r = recipe[genPalette];
+    if (!r) return; // CUSTOM: leave user's HUE / SAT knobs alone
+    setHueShift(r.hueShift);
+    setSaturation(r.saturation);
+  }, [genPalette]);
   useEffect(()=>{ genAutoCycleRef.current=genAutoCycle; },[genAutoCycle]);
   useEffect(()=>{ genResolutionRef.current=genResolution; },[genResolution]);
   useEffect(()=>{ genDensityRef.current=genDensity; },[genDensity]);
@@ -10375,6 +10405,16 @@ export default function SpectraAfter() {
           className={"sp-panel-glass flex-1 min-h-0 overflow-y-auto lg:w-[23rem] lg:flex-none" + (neonMode && openPanelTitle ? " glass-expanded" : "")}
           style={{ background: "linear-gradient(180deg,#0F001C 0%,#080012 100%)", borderTop: `1px solid rgba(61,10,92,0.9)`, position: "relative" }}
           onPointerDown={(e) => {
+            // v1.2.69 — ONLY arm the pull-to-reload gesture when the pointer
+            // landed on the panel's own scroll surface, NOT on a child like a
+            // knob, button, switch, or selector. Previously a downward knob
+            // drag at scrollTop=0 would arm the gesture and reload the WebView
+            // — which on Android Capacitor looked exactly like a hard crash
+            // (camera/WebGL torn down, splash flash, knob settings reset). This
+            // single guard fixes the user-reported "REALSORT crash", "datamosh
+            // does nothing" (every test turn-down reloaded the app), and the
+            // generic "any knob nulling out resets the app" bug.
+            if (e.target !== e.currentTarget) return;
             if (!panelRef.current || panelRef.current.scrollTop > 0) return;
             pullStartYRef.current = e.clientY;
           }}
