@@ -2437,31 +2437,37 @@ void main() {
       // roto sits exactly where the person is in the rendered frame.
       vec2 fUv = vec2(vUv.x, 1.0 - vUv.y);
       if (uMirror > 0.5) fUv.x = 1.0 - fUv.x;
-      // v1.2.70 — wider 9-tap box for a softer, slightly EXPANDED
-      // roto edge. Pixel offset bumped from 1px to ~1.75px so the
-      // sampled neighbourhood overlaps further outside the segmenter's
-      // hard pixel boundary, producing both more feather AND a small
-      // outward grow. Combined with the canvas-side dilation+trail in
-      // the segmenter callback, this guarantees full coverage at the
-      // body silhouette during motion, with no jagged FX clipping.
-      vec2 px = vec2(1.75) / max(uResolution, vec2(1.0));
-      float p  = texture2D(uFaceTex, fUv).r;
-      float p1 = texture2D(uFaceTex, fUv + vec2( px.x,  0.0)).r;
-      float p2 = texture2D(uFaceTex, fUv + vec2(-px.x,  0.0)).r;
-      float p3 = texture2D(uFaceTex, fUv + vec2( 0.0,  px.y)).r;
-      float p4 = texture2D(uFaceTex, fUv + vec2( 0.0, -px.y)).r;
-      float p5 = texture2D(uFaceTex, fUv + vec2( px.x,  px.y)).r;
-      float p6 = texture2D(uFaceTex, fUv + vec2(-px.x,  px.y)).r;
-      float p7 = texture2D(uFaceTex, fUv + vec2( px.x, -px.y)).r;
-      float p8 = texture2D(uFaceTex, fUv + vec2(-px.x, -px.y)).r;
-      float avg = (p + p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8) * (1.0 / 9.0);
+      // v1.2.71 — wider 9-tap box at 2.5px + mid-tap ring at 1.25px
+      // for an even softer roto edge with a few extra pixels of outward
+      // coverage. The model still hugs the body too tightly when limbs
+      // move fast — the mid-ring fills the half-pixel gap between the
+      // outer 2.5px taps and the centre, so the smoothstep below has a
+      // smoother gradient to feather across, and the silhouette grows
+      // ~3 px outward instead of 1.
+      vec2 px  = vec2(2.5)  / max(uResolution, vec2(1.0));
+      vec2 pxm = vec2(1.25) / max(uResolution, vec2(1.0));
+      float p   = texture2D(uFaceTex, fUv).r;
+      float p1  = texture2D(uFaceTex, fUv + vec2( px.x,  0.0)).r;
+      float p2  = texture2D(uFaceTex, fUv + vec2(-px.x,  0.0)).r;
+      float p3  = texture2D(uFaceTex, fUv + vec2( 0.0,  px.y)).r;
+      float p4  = texture2D(uFaceTex, fUv + vec2( 0.0, -px.y)).r;
+      float p5  = texture2D(uFaceTex, fUv + vec2( px.x,  px.y)).r;
+      float p6  = texture2D(uFaceTex, fUv + vec2(-px.x,  px.y)).r;
+      float p7  = texture2D(uFaceTex, fUv + vec2( px.x, -px.y)).r;
+      float p8  = texture2D(uFaceTex, fUv + vec2(-px.x, -px.y)).r;
+      float m1  = texture2D(uFaceTex, fUv + vec2( pxm.x,  0.0)).r;
+      float m2  = texture2D(uFaceTex, fUv + vec2(-pxm.x,  0.0)).r;
+      float m3  = texture2D(uFaceTex, fUv + vec2( 0.0,  pxm.y)).r;
+      float m4  = texture2D(uFaceTex, fUv + vec2( 0.0, -pxm.y)).r;
+      float avg = (p + p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + m1 + m2 + m3 + m4) * (1.0 / 13.0);
       // Feathered threshold gives a controllable roto edge.
-      // v1.2.70 — midpoint dropped from 0.5 to 0.42 so anything with
-      // ~42% person-confidence or higher counts as inside. This grows
-      // the mask outward by a few pixels at the silhouette so FX wrap
-      // the body edge instead of revealing a thin background gutter.
+      // v1.2.71 — midpoint dropped further (0.42 → 0.36) so anything with
+      // ~36% person-confidence counts as inside. Combined with the wider
+      // tap kernel above and the canvas-side dilation in the segmenter
+      // callback, the mask now covers the whole face/body with a few extra
+      // pixels of margin so FX never reveal a bg gutter at the silhouette.
       float t = clamp(uFaceFeather, 0.005, 0.5);
-      fm = smoothstep(0.42 - t, 0.42 + t, avg);
+      fm = smoothstep(0.36 - t, 0.36 + t, avg);
     } else {
       // Centered-oval fallback (no detector / no model loaded yet).
       float ar = uResolution.x / max(uResolution.y, 1.0);
@@ -5212,11 +5218,14 @@ export default function SpectraAfter() {
       maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
       maskCtx.globalCompositeOperation = "lighter";
       const _dW = maskCanvas.width, _dH = maskCanvas.height;
-      // 1-px ring dilation (8 cardinal+diagonal offsets) for slight
-      // border expansion — ensures FX fully cover the body edge.
+      // 1.2.71 — Two-pixel-radius ring dilation (12 offsets, 1px and
+      // 2px) for a few more pixels of border expansion. Combined with
+      // the wider shader-side feather, this guarantees full coverage
+      // around the face/body during motion.
       const _ringOff: Array<[number, number]> = [
         [-1, 0], [1, 0], [0, -1], [0, 1],
         [-1, -1], [1, -1], [-1, 1], [1, 1],
+        [-2, 0], [2, 0], [0, -2], [0, 2],
       ];
       for (const [ox, oy] of _ringOff) {
         maskCtx.drawImage(scratchCanvas, ox, oy, _dW, _dH);
@@ -5775,12 +5784,18 @@ export default function SpectraAfter() {
   const crossFeedRef = useRef(false);
   useEffect(() => { crossFeedRef.current = crossFeed; }, [crossFeed]);
   const [recordingHint, setRecordingHint] = useState<string | null>(null);
-  // v1.2.70 \u2014 HANDS-FREE record: tap the button, get a 3-2-1 countdown
-  // so you can step into frame and start dancing, then recording auto-
-  // starts and runs for the configured recordMaxSec, then auto-stops.
-  // Lets a solo performer roto-dance their whole body without touching
-  // the device. handsFreeCountdown null = idle, 3/2/1 = visible numeral.
-  const [handsFreeCountdown, setHandsFreeCountdown] = useState<number | null>(null);
+  // v1.2.71 — HANDS-FREE record: floating top-of-screen button so a solo
+  // dancer can always reach it without scrolling. Tapping starts a 3-2-1
+  // count-IN overlay (so they can step into frame), then auto-records for
+  // a fixed 60 s, with the last 3 s shown as a 3-2-1 count-OUT overlay so
+  // they know to hold the pose. handsFreeCountdown encodes both phases:
+  //   { phase: "in",  n: 3|2|1 } — pre-record countdown
+  //   { phase: "rec", n: <secs remaining> } — live recording (mid-shoot)
+  //   { phase: "out", n: 3|2|1 } — final 3 s of recording (count-out)
+  //   null = idle.
+  type HandsFreeState = { phase: "in" | "rec" | "out"; n: number } | null;
+  const HANDS_FREE_SEC = 60;
+  const [handsFreeCountdown, setHandsFreeCountdown] = useState<HandsFreeState>(null);
   const handsFreeTimerRef = useRef<number | null>(null);
   const [abSnapshot, setAbSnapshot] = useState<SpectraPreset | null>(null);
   const [cameraRequesting, setCameraRequesting] = useState(false);
@@ -7338,8 +7353,32 @@ export default function SpectraAfter() {
           texSource = gc; srcW = gc.width; srcH = gc.height;
         }
       } else if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0) {
-        // BLEND requested but no FX dialed in — pass camera through clean.
-        texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
+        // v1.2.71 \u2014 GEN+CAM with no FX armed: previously we passed the
+        // camera through clean, so the user tapped GEN+CAM, saw only the
+        // camera, and reported "GEN+CAM is not working". Now do a simple
+        // hard-light composite of the generator over the live camera so
+        // both layers are visible by default. Dialing PXL/MOSH on top of
+        // this still routes into the full displacement+blend path above.
+        let cc = genCompositeCanvasRef.current;
+        if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
+        if (cc.width !== targetW || cc.height !== targetH) {
+          cc.width = targetW; cc.height = targetH;
+        }
+        const cctx = cc.getContext("2d");
+        if (cctx) {
+          cctx.globalCompositeOperation = "source-over";
+          cctx.globalAlpha = 1;
+          cctx.clearRect(0, 0, cc.width, cc.height);
+          cctx.drawImage(video, 0, 0, cc.width, cc.height);
+          cctx.globalCompositeOperation = "hard-light";
+          cctx.globalAlpha = 0.85;
+          cctx.drawImage(gc, 0, 0, cc.width, cc.height);
+          cctx.globalCompositeOperation = "source-over";
+          cctx.globalAlpha = 1;
+          texSource = cc; srcW = cc.width; srcH = cc.height;
+        } else {
+          texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
+        }
       } else {
         texSource = gc; srcW = gc.width; srcH = gc.height;
       }
@@ -8726,34 +8765,55 @@ export default function SpectraAfter() {
     };
   }, []);
 
-  // v1.2.70 \u2014 hands-free record kickoff. Cancellable while counting.
-  // Tap once: 3\u20262\u20261 countdown overlay then auto-start record (which will
-  // self-stop when recordMaxSec elapses). Tap during countdown: cancel.
+  // v1.2.71 — hands-free record: 3-2-1 count-IN, auto-record for a fixed
+  // 60 s with a per-second mid-shoot timer, last 3 s shown as a 3-2-1
+  // count-OUT, then auto-stop. Tap again at any phase to cancel/stop.
   const startHandsFree = useCallback(() => {
-    // If we're mid-record OR mid-countdown, treat the tap as a cancel /
-    // stop so the user can always abort with the same button.
-    if (recordingRef.current) { stopRecordingRef.current(); return; }
     if (handsFreeTimerRef.current != null) {
       window.clearTimeout(handsFreeTimerRef.current);
       handsFreeTimerRef.current = null;
+    }
+    if (recordingRef.current) {
+      stopRecordingRef.current();
       setHandsFreeCountdown(null);
       return;
     }
+    if (handsFreeCountdown != null) {
+      setHandsFreeCountdown(null);
+      return;
+    }
+    // Force a 60 s take regardless of the EXPORT panel selection — dancers
+    // need the runway and 60 s is the studio-tier ceiling already.
+    setRecordMaxSec(60);
+    recordMaxSecRef.current = 60;
     let n = 3;
-    setHandsFreeCountdown(n);
-    const step = () => {
+    setHandsFreeCountdown({ phase: "in", n });
+    const tickIn = () => {
       n -= 1;
       if (n <= 0) {
-        setHandsFreeCountdown(null);
-        handsFreeTimerRef.current = null;
         startRecordingRef.current();
+        let remaining = HANDS_FREE_SEC;
+        setHandsFreeCountdown({ phase: "rec", n: remaining });
+        const tickRec = () => {
+          remaining -= 1;
+          if (remaining <= 0) {
+            stopRecordingRef.current();
+            setHandsFreeCountdown(null);
+            handsFreeTimerRef.current = null;
+            return;
+          }
+          const phase: "rec" | "out" = remaining <= 3 ? "out" : "rec";
+          setHandsFreeCountdown({ phase, n: remaining });
+          handsFreeTimerRef.current = window.setTimeout(tickRec, 1000);
+        };
+        handsFreeTimerRef.current = window.setTimeout(tickRec, 1000);
       } else {
-        setHandsFreeCountdown(n);
-        handsFreeTimerRef.current = window.setTimeout(step, 1000);
+        setHandsFreeCountdown({ phase: "in", n });
+        handsFreeTimerRef.current = window.setTimeout(tickIn, 1000);
       }
     };
-    handsFreeTimerRef.current = window.setTimeout(step, 1000);
-  }, []);
+    handsFreeTimerRef.current = window.setTimeout(tickIn, 1000);
+  }, [handsFreeCountdown]);
 
   const captureStill = useCallback(() => {
     const canvas = canvasRef.current;
@@ -9813,9 +9873,59 @@ export default function SpectraAfter() {
         </div>
       )}
 
-      {/* v1.2.70 \u2014 HANDS-FREE big-numeral countdown overlay. Sits above
-          everything (incl. toasts) but is pointer-transparent so the user
-          can still cancel via the panel button. */}
+      {/* v1.2.71 — Floating top-of-viewport HANDS-FREE pill. Always
+          reachable for a solo dancer, never buried under panels. Tap
+          to arm: 3-2-1 count-IN, then 60 s auto-record with a count-OUT
+          for the final 3 s. Tap again at any phase to cancel/stop.
+          Hidden during boot/intro to avoid clobbering those screens. */}
+      {!introVisible && bootDone && (
+        <button
+          onClick={startHandsFree}
+          title="3-2-1 countdown, then auto-record 60 s, then auto-stop"
+          style={{
+            position: "fixed",
+            top: 84,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 99997,
+            pointerEvents: "auto",
+            minWidth: 200,
+            padding: "10px 18px",
+            borderRadius: 999,
+            border: handsFreeCountdown != null
+              ? "1.5px solid rgba(255,120,140,0.95)"
+              : "1.5px solid rgba(255,200,120,0.85)",
+            background: handsFreeCountdown != null
+              ? "linear-gradient(180deg, rgba(80,8,16,0.92) 0%, rgba(40,2,8,0.92) 100%)"
+              : "linear-gradient(180deg, rgba(58,8,82,0.88) 0%, rgba(26,2,36,0.92) 100%)",
+            color: handsFreeCountdown != null
+              ? "rgba(255,220,225,0.98)"
+              : "rgba(255,235,205,0.96)",
+            fontFamily: "'Courier New',monospace",
+            fontSize: 13,
+            letterSpacing: "2px",
+            fontWeight: 700,
+            textTransform: "uppercase",
+            cursor: "pointer",
+            boxShadow: handsFreeCountdown != null
+              ? "0 0 22px rgba(255,40,80,0.6), 0 4px 14px rgba(0,0,0,0.7)"
+              : "0 0 18px rgba(232,160,32,0.45), 0 4px 14px rgba(0,0,0,0.7)",
+            ...(handsFreeCountdown != null ? { animation: "activeGlow 1s ease-in-out infinite" } : {}),
+          }}
+        >{handsFreeCountdown == null
+            ? `⏱ HANDS-FREE · ${HANDS_FREE_SEC}s`
+            : handsFreeCountdown.phase === "in"
+              ? `✕ CANCEL · ${handsFreeCountdown.n}…`
+              : handsFreeCountdown.phase === "out"
+                ? `✕ STOP · ${handsFreeCountdown.n}s`
+                : `✕ STOP · ${handsFreeCountdown.n}s LEFT`}</button>
+      )}
+
+      {/* v1.2.71 — HANDS-FREE big-numeral overlay. Three phases:
+          IN (gold, 3-2-1 pre-record), REC (small persistent secs-left
+          pill mid-shoot, no big numeral), OUT (red 3-2-1 final-3-secs
+          warning so the dancer holds the pose). Pointer-transparent so
+          the floating top button stays tappable for cancel. */}
       {handsFreeCountdown != null && (
         <div
           style={{
@@ -9823,25 +9933,55 @@ export default function SpectraAfter() {
             display: "flex", flexDirection: "column",
             alignItems: "center", justifyContent: "center",
             pointerEvents: "none",
-            background: "radial-gradient(circle at center, rgba(15,5,28,0.35) 0%, rgba(15,5,28,0.0) 60%)",
+            background: handsFreeCountdown.phase === "rec"
+              ? "transparent"
+              : (handsFreeCountdown.phase === "out"
+                  ? "radial-gradient(circle at center, rgba(40,5,12,0.45) 0%, rgba(15,5,28,0.0) 60%)"
+                  : "radial-gradient(circle at center, rgba(15,5,28,0.35) 0%, rgba(15,5,28,0.0) 60%)"),
           }}
         >
-          <div style={{
-            fontFamily: "'Courier New',monospace",
-            fontSize: 220, lineHeight: 1, fontWeight: 900,
-            color: "rgba(255,235,205,0.98)",
-            letterSpacing: "8px",
-            textShadow: "0 0 40px rgba(232,160,32,0.95), 0 0 14px rgba(255,80,160,0.7)",
-            transform: "scale(1)",
-            animation: "activeGlow 1s ease-in-out infinite",
-          }}>{handsFreeCountdown}</div>
-          <div style={{
-            marginTop: 24,
-            fontFamily: "'Courier New',monospace",
-            fontSize: 12, letterSpacing: "3px",
-            color: "rgba(255,235,205,0.85)",
-            textTransform: "uppercase",
-          }}>HANDS-FREE \u00b7 RECORDS {recordMaxSec}s</div>
+          {handsFreeCountdown.phase === "rec" ? (
+            <div style={{
+              position: "absolute", top: 96, left: "50%",
+              transform: "translateX(-50%)",
+              fontFamily: "'Courier New',monospace",
+              fontSize: 16, letterSpacing: "3px",
+              color: "rgba(255,210,210,0.95)",
+              padding: "6px 14px",
+              border: "1px solid rgba(255,80,120,0.8)",
+              borderRadius: 4,
+              background: "rgba(40,0,8,0.55)",
+              textShadow: "0 0 8px rgba(255,80,120,0.9)",
+              boxShadow: "0 0 14px rgba(255,40,80,0.55)",
+            }}>● REC · {handsFreeCountdown.n}s LEFT</div>
+          ) : (
+            <>
+              <div style={{
+                fontFamily: "'Courier New',monospace",
+                fontSize: 220, lineHeight: 1, fontWeight: 900,
+                color: handsFreeCountdown.phase === "out"
+                  ? "rgba(255,180,190,0.98)"
+                  : "rgba(255,235,205,0.98)",
+                letterSpacing: "8px",
+                textShadow: handsFreeCountdown.phase === "out"
+                  ? "0 0 40px rgba(255,40,80,0.95), 0 0 14px rgba(255,80,160,0.8)"
+                  : "0 0 40px rgba(232,160,32,0.95), 0 0 14px rgba(255,80,160,0.7)",
+                transform: "scale(1)",
+                animation: "activeGlow 1s ease-in-out infinite",
+              }}>{handsFreeCountdown.n}</div>
+              <div style={{
+                marginTop: 24,
+                fontFamily: "'Courier New',monospace",
+                fontSize: 12, letterSpacing: "3px",
+                color: handsFreeCountdown.phase === "out"
+                  ? "rgba(255,210,210,0.95)"
+                  : "rgba(255,235,205,0.85)",
+                textTransform: "uppercase",
+              }}>{handsFreeCountdown.phase === "out"
+                  ? "HOLD · STOPPING"
+                  : `HANDS-FREE · RECORDS ${HANDS_FREE_SEC}s`}</div>
+            </>
+          )}
         </div>
       )}
 
@@ -11352,27 +11492,12 @@ export default function SpectraAfter() {
                   ...(recording ? { animation: "activeGlow 1s ease-in-out infinite" } : {}),
                 }}
               >{recording ? "■ STOP RECORDING" : "● RECORD"}</button>
-              {/* v1.2.70 \u2014 HANDS-FREE: 3-2-1 countdown then auto-record for
-                  recordMaxSec, then auto-stop. Lets a solo dancer step into
-                  frame and perform without touching the device. Tap again
-                  during countdown OR recording to cancel/stop. */}
-              <button
-                className="sp-tile"
-                onClick={startHandsFree}
-                title="3-2-1 countdown, then auto-record for the configured duration"
-                style={{
-                  ...modeBtnStyle,
-                  ...(handsFreeCountdown != null ? modeBtnActive : {}),
-                  width: "100%", minHeight: 40, fontSize: 11, letterSpacing: "1.6px",
-                  ...(handsFreeCountdown != null ? { animation: "activeGlow 1s ease-in-out infinite" } : {}),
-                }}
-              >{handsFreeCountdown != null
-                  ? `\u2715 CANCEL  \u2014  ${handsFreeCountdown}\u2026`
-                  : recording
-                    ? "\u25A0 STOP"
-                    : `\u23F1 HANDS-FREE  \u2014  ${recordMaxSec}s`}</button>
+              {/* v1.2.71 — HANDS-FREE button moved to a floating top-of-
+                  viewport pill (rendered near the runtime overlays) so a
+                  solo dancer can always reach it. See `position: fixed`
+                  block below. */}
               <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(200,180,220,0.4)", textAlign: "center", textTransform: "uppercase" }}>
-                Tip: hold canvas also records
+                Tip: HANDS-FREE button is at top of screen
               </div>
 
               <div style={{ height: 4 }}/>
