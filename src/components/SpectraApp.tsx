@@ -2727,6 +2727,91 @@ void main() {
     aK = abs(aK - wedge * 0.5);
     uv = clamp(vec2(0.5 + cos(aK) * rK / max(aspK, 0.0001), 0.5 + sin(aK) * rK), 0.001, 0.999);
   }
+  // 4c.1 TILE — toroidal tessellation (1..6 tiles). Combos with KALEIDO:
+  // tile FIRST, then kaleido folds the tessellated grid into a wedge.
+  if (uTile * mask > 0.001) {
+    float n = 1.0 + clamp(uTile, 0.0, 1.0) * 5.0;
+    uv = fract((uv - 0.5) * n + 0.5);
+  }
+  // 4c.2 INVERT — circle inversion (turn frame inside-out around centre).
+  if (uInvert * mask > 0.001) {
+    vec2 dI = uv - 0.5;
+    float rI2 = dot(dI, dI);
+    if (rI2 > 0.0001) {
+      float k = 0.05 + clamp(uInvert, 0.0, 1.0) * 0.20;
+      vec2 invUv = 0.5 + dI * (k / rI2);
+      uv = clamp(mix(uv, invUv, clamp(uInvert, 0.0, 1.0)), 0.001, 0.999);
+    }
+  }
+  // 4c.3 DROSTE — log-polar recursive zoom (Escher print-shop drift).
+  if (uDroste * mask > 0.001) {
+    vec2 dD = uv - 0.5;
+    float rD = length(dD);
+    if (rD > 0.001) {
+      float aD = atan(dD.y, dD.x);
+      float zoom = exp(mod(log(rD) + uTime * 0.15 * uDroste, 1.0)) * 0.4;
+      uv = clamp(0.5 + zoom * vec2(cos(aD), sin(aD)), 0.001, 0.999);
+    }
+  }
+  // 4c.4 SPIRAL — logarithmic angular twist (vortex).
+  if (uSpiral * mask > 0.001) {
+    vec2 dS = uv - 0.5;
+    float rS = length(dS);
+    if (rS > 0.001) {
+      float aS = atan(dS.y, dS.x) + log(rS) * uSpiral * 4.0;
+      uv = clamp(0.5 + rS * vec2(cos(aS), sin(aS)), 0.001, 0.999);
+    }
+  }
+  // 4c.5 YANTRA — 6-fold sacred-geometry sharp slicing (rotating, no mirror).
+  if (uYantra * mask > 0.001) {
+    float aspY = uResolution.x / max(uResolution.y, 1.0);
+    vec2 dY = (uv - 0.5) * vec2(aspY, 1.0);
+    float aY = atan(dY.y, dY.x) + uYantra * uTime * 0.3;
+    float rY = length(dY);
+    aY = mod(aY, 1.04719755);
+    uv = clamp(vec2(0.5 + cos(aY) * rY / max(aspY, 0.0001), 0.5 + sin(aY) * rY), 0.001, 0.999);
+  }
+  // 4c.6 MANDALA — concentric ring mirror (onion banding).
+  if (uMandala * mask > 0.001) {
+    vec2 dM = uv - 0.5;
+    float rM = length(dM);
+    if (rM > 0.001) {
+      float aM = atan(dM.y, dM.x);
+      float rings = 2.0 + clamp(uMandala, 0.0, 1.0) * 8.0;
+      float rR = abs(fract(rM * rings) - 0.5) * 2.0 / rings;
+      uv = clamp(0.5 + rR * vec2(cos(aM), sin(aM)), 0.001, 0.999);
+    }
+  }
+  // 4c.7 ROSETTE — rose-curve petal radial modulation r += k*cos(p*θ).
+  if (uRosette * mask > 0.001) {
+    vec2 dR = uv - 0.5;
+    float aR = atan(dR.y, dR.x);
+    float petals = 3.0 + floor(clamp(uRosette, 0.0, 1.0) * 9.0);
+    float modR = 1.0 + cos(petals * aR) * uRosette * 0.4;
+    uv = clamp(0.5 + dR * modR, 0.001, 0.999);
+  }
+  // 4c.8 STARFOLD — N-pointed star polygon symmetry (3..12 points).
+  if (uStarfold * mask > 0.001) {
+    float aspSt = uResolution.x / max(uResolution.y, 1.0);
+    vec2 dSt = (uv - 0.5) * vec2(aspSt, 1.0);
+    float rSt = length(dSt);
+    float aSt = atan(dSt.y, dSt.x);
+    float points = 3.0 + floor(clamp(uStarfold, 0.0, 1.0) * 9.0);
+    float wSt = 6.2831853 / points;
+    aSt = mod(aSt, wSt) - wSt * 0.5;
+    float rMod = rSt * (1.0 + cos(aSt * points) * uStarfold * 0.3);
+    uv = clamp(vec2(0.5 + cos(aSt) * rMod / max(aspSt, 0.0001), 0.5 + sin(aSt) * rMod), 0.001, 0.999);
+  }
+  // 4c.9 HEXFOLD — 12-fold hexagonal axial symmetry (snowflake).
+  if (uHexfold * mask > 0.001) {
+    float aspH = uResolution.x / max(uResolution.y, 1.0);
+    vec2 dH = (uv - 0.5) * vec2(aspH, 1.0);
+    float aH = atan(dH.y, dH.x);
+    float rH = length(dH);
+    aH = mod(aH, 0.523598776);
+    aH = abs(aH - 0.261799388);
+    uv = clamp(vec2(0.5 + cos(aH) * rH / max(aspH, 0.0001), 0.5 + sin(aH) * rH), 0.001, 0.999);
+  }
   // 4d. DISRUPT — up to 8 roaming "pixel-grouping" blobs travel on a
   // hash-driven random walk. Inside each blob the UV gets pushed
   // OPPOSITE the blob's velocity ("contrary core") so the disrupted
@@ -3907,6 +3992,15 @@ interface SpectraPreset {
   disruptCount?: number;
   disruptSize?: number;
   disruptContrary?: number;
+  tile?: number;
+  invertSym?: number;
+  droste?: number;
+  spiral?: number;
+  yantra?: number;
+  mandala?: number;
+  rosette?: number;
+  starfold?: number;
+  hexfold?: number;
   // Phase 1B (rack port): optional per-mode parameter snapshots. Older saved
   // presets predate the rack and will simply omit this field.
   paramsByMode?: Record<number, Record<string, number>>;
@@ -3951,6 +4045,15 @@ type SessionStateV1 = {
   disruptCount?: number;
   disruptSize?: number;
   disruptContrary?: number;
+  tile?: number;
+  invertSym?: number;
+  droste?: number;
+  spiral?: number;
+  yantra?: number;
+  mandala?: number;
+  rosette?: number;
+  starfold?: number;
+  hexfold?: number;
   exportFormat: "gif" | "video";
   exportQuality: "standard" | "high" | "ultra";
   exportProfile: ExportProfile;
@@ -5235,6 +5338,18 @@ export default function SpectraAfter() {
   const [ascii, setAscii] = useState(0.0);
   const [venetian, setVenetian] = useState(0.0);
   const [kaleido, setKaleido] = useState(0.0);
+  // v1.2.60 — 9 sister UV warps that combo with KALEIDO. Each is an independent
+  // mask-gated UV warp; chained sequentially after KALEIDO so any combination
+  // produces a unique radial pattern. Defaults to 0 (off).
+  const [tile, setTile] = useState(0.0);
+  const [invertSym, setInvertSym] = useState(0.0);
+  const [droste, setDroste] = useState(0.0);
+  const [spiral, setSpiral] = useState(0.0);
+  const [yantra, setYantra] = useState(0.0);
+  const [mandala, setMandala] = useState(0.0);
+  const [rosette, setRosette] = useState(0.0);
+  const [starfold, setStarfold] = useState(0.0);
+  const [hexfold, setHexfold] = useState(0.0);
   const [disrupt, setDisrupt] = useState(0.0);
   const [disruptCount, setDisruptCount] = useState(0.4);
   const [disruptSize, setDisruptSize] = useState(0.4);
@@ -5836,6 +5951,7 @@ export default function SpectraAfter() {
       "uSortAmt","uScanTear","uBlockGlitch","uDatamosh","uChrash","uMask",
       "uLiquid","uFeedback","uContour","uAscii","uVenetian",
       "uKaleido","uDisrupt","uDisruptCount","uDisruptSize","uDisruptContrary",
+      "uTile","uInvert","uDroste","uSpiral","uYantra","uMandala","uRosette","uStarfold","uHexfold",
       "uSortKey","uSortLow","uSortHigh","uSortSegment","uSortRandom","uSortWobble","uSortMode",
       "uSortInterval","uSortAngle",
       "uRgbR","uRgbG","uRgbB","uRgbBars","uRgbSwap",
@@ -6051,6 +6167,15 @@ export default function SpectraAfter() {
   const asciiRef = useRef(ascii);
   const venetianRef = useRef(venetian);
   const kaleidoRef = useRef(kaleido);
+  const tileRef = useRef(tile);
+  const invertSymRef = useRef(invertSym);
+  const drosteRef = useRef(droste);
+  const spiralRef = useRef(spiral);
+  const yantraRef = useRef(yantra);
+  const mandalaRef = useRef(mandala);
+  const rosetteRef = useRef(rosette);
+  const starfoldRef = useRef(starfold);
+  const hexfoldRef = useRef(hexfold);
   const disruptRef = useRef(disrupt);
   const disruptCountRef = useRef(disruptCount);
   const disruptSizeRef = useRef(disruptSize);
@@ -6206,6 +6331,15 @@ export default function SpectraAfter() {
   useEffect(()=>{ asciiRef.current=ascii; },[ascii]);
   useEffect(()=>{ venetianRef.current=venetian; },[venetian]);
   useEffect(()=>{ kaleidoRef.current=kaleido; },[kaleido]);
+  useEffect(()=>{ tileRef.current=tile; },[tile]);
+  useEffect(()=>{ invertSymRef.current=invertSym; },[invertSym]);
+  useEffect(()=>{ drosteRef.current=droste; },[droste]);
+  useEffect(()=>{ spiralRef.current=spiral; },[spiral]);
+  useEffect(()=>{ yantraRef.current=yantra; },[yantra]);
+  useEffect(()=>{ mandalaRef.current=mandala; },[mandala]);
+  useEffect(()=>{ rosetteRef.current=rosette; },[rosette]);
+  useEffect(()=>{ starfoldRef.current=starfold; },[starfold]);
+  useEffect(()=>{ hexfoldRef.current=hexfold; },[hexfold]);
   useEffect(()=>{ disruptRef.current=disrupt; },[disrupt]);
   useEffect(()=>{ disruptCountRef.current=disruptCount; },[disruptCount]);
   useEffect(()=>{ disruptSizeRef.current=disruptSize; },[disruptSize]);
@@ -7262,6 +7396,15 @@ export default function SpectraAfter() {
     setF1(u.uAscii, asciiRef.current);
     setF1(u.uVenetian, venetianRef.current);
     setF1(u.uKaleido, kaleidoRef.current);
+    setF1(u.uTile, tileRef.current);
+    setF1(u.uInvert, invertSymRef.current);
+    setF1(u.uDroste, drosteRef.current);
+    setF1(u.uSpiral, spiralRef.current);
+    setF1(u.uYantra, yantraRef.current);
+    setF1(u.uMandala, mandalaRef.current);
+    setF1(u.uRosette, rosetteRef.current);
+    setF1(u.uStarfold, starfoldRef.current);
+    setF1(u.uHexfold, hexfoldRef.current);
     setF1(u.uDisrupt, disruptRef.current);
     setF1(u.uDisruptCount, disruptCountRef.current);
     setF1(u.uDisruptSize, disruptSizeRef.current);
@@ -7931,6 +8074,15 @@ export default function SpectraAfter() {
     setDisruptCount(0.4);
     setDisruptSize(0.4);
     setDisruptContrary(1.0);
+    setTile(0.0);
+    setInvertSym(0.0);
+    setDroste(0.0);
+    setSpiral(0.0);
+    setYantra(0.0);
+    setMandala(0.0);
+    setRosette(0.0);
+    setStarfold(0.0);
+    setHexfold(0.0);
     setSortKey(0);
     setSortLow(0.35);
     setSortHigh(0.92);
@@ -8433,6 +8585,15 @@ export default function SpectraAfter() {
     disruptCount,
     disruptSize,
     disruptContrary,
+    tile,
+    invertSym,
+    droste,
+    spiral,
+    yantra,
+    mandala,
+    rosette,
+    starfold,
+    hexfold,
     sortKey,
     sortLow,
     sortHigh,
@@ -8446,7 +8607,7 @@ export default function SpectraAfter() {
     moshMap,
     moshDistort,
     paramsByMode,
-  }), [mode, gain, brightness, contrast, saturation, hueShift, scanlines, zoom, speed, sortAmt, scanTear, blockGlitch, datamosh, moshHard, chrash, liquid, feedback, contour, ascii, venetian, sortKey, sortLow, sortHigh, sortMode, sortSegment, sortRandom, sortWobble, moshIFrame, moshMotion, moshBleed, moshMap, moshDistort, paramsByMode, kaleido, disrupt, disruptCount, disruptSize, disruptContrary]);
+  }), [mode, gain, brightness, contrast, saturation, hueShift, scanlines, zoom, speed, sortAmt, scanTear, blockGlitch, datamosh, moshHard, chrash, liquid, feedback, contour, ascii, venetian, sortKey, sortLow, sortHigh, sortMode, sortSegment, sortRandom, sortWobble, moshIFrame, moshMotion, moshBleed, moshMap, moshDistort, paramsByMode, kaleido, disrupt, disruptCount, disruptSize, disruptContrary, tile, invertSym, droste, spiral, yantra, mandala, rosette, starfold, hexfold]);
 
   const applyPreset = useCallback((p: SpectraPreset) => {
     setMode(p.mode);
@@ -8474,6 +8635,15 @@ export default function SpectraAfter() {
     setDisruptCount(p.disruptCount ?? 0.4);
     setDisruptSize(p.disruptSize ?? 0.4);
     setDisruptContrary(p.disruptContrary ?? 1.0);
+    setTile(p.tile ?? 0.0);
+    setInvertSym(p.invertSym ?? 0.0);
+    setDroste(p.droste ?? 0.0);
+    setSpiral(p.spiral ?? 0.0);
+    setYantra(p.yantra ?? 0.0);
+    setMandala(p.mandala ?? 0.0);
+    setRosette(p.rosette ?? 0.0);
+    setStarfold(p.starfold ?? 0.0);
+    setHexfold(p.hexfold ?? 0.0);
     setSortKey(p.sortKey ?? 0);
     setSortLow(p.sortLow ?? 0.35);
     setSortHigh(p.sortHigh ?? 0.92);
@@ -8566,6 +8736,7 @@ export default function SpectraAfter() {
       sortAmt, scanTear, blockGlitch, datamosh, moshHard, chrash, liquid,
       feedback, contour, ascii, venetian,
       kaleido, disrupt, disruptCount, disruptSize, disruptContrary,
+      tile, invertSym, droste, spiral, yantra, mandala, rosette, starfold, hexfold,
       sortKey, sortLow, sortHigh, sortMode, sortSegment, sortRandom, sortWobble,
       moshIFrame, moshMotion, moshBleed, moshMap, moshDistort,
       exportFormat, exportQuality, exportProfile,
@@ -8622,6 +8793,15 @@ export default function SpectraAfter() {
           disruptCount: p.disruptCount ?? 0.4,
           disruptSize: p.disruptSize ?? 0.4,
           disruptContrary: p.disruptContrary ?? 1.0,
+          tile: p.tile ?? 0.0,
+          invertSym: p.invertSym ?? 0.0,
+          droste: p.droste ?? 0.0,
+          spiral: p.spiral ?? 0.0,
+          yantra: p.yantra ?? 0.0,
+          mandala: p.mandala ?? 0.0,
+          rosette: p.rosette ?? 0.0,
+          starfold: p.starfold ?? 0.0,
+          hexfold: p.hexfold ?? 0.0,
           sortKey: p.sortKey ?? 0,
           sortLow: p.sortLow ?? 0.35,
           sortHigh: p.sortHigh ?? 0.92,
@@ -8765,6 +8945,15 @@ export default function SpectraAfter() {
       setDisruptCount(0.4);
       setDisruptSize(0.4);
       setDisruptContrary(1.0);
+      setTile(0.0);
+      setInvertSym(0.0);
+      setDroste(0.0);
+      setSpiral(0.0);
+      setYantra(0.0);
+      setMandala(0.0);
+      setRosette(0.0);
+      setStarfold(0.0);
+      setHexfold(0.0);
       setSortKey(0);
       setSortLow(0.35);
       setSortHigh(0.92);
@@ -8814,6 +9003,15 @@ export default function SpectraAfter() {
       disruptCount,
       disruptSize,
       disruptContrary,
+      tile,
+      invertSym,
+      droste,
+      spiral,
+      yantra,
+      mandala,
+      rosette,
+      starfold,
+      hexfold,
       sortKey,
       sortLow,
       sortHigh,
@@ -8837,6 +9035,7 @@ export default function SpectraAfter() {
     sortAmt, scanTear, blockGlitch, datamosh, moshHard, chrash, liquid,
     feedback, contour, ascii, venetian,
     kaleido, disrupt, disruptCount, disruptSize, disruptContrary,
+    tile, invertSym, droste, spiral, yantra, mandala, rosette, starfold, hexfold,
     sortKey, sortLow, sortHigh,
     sortSegment, sortRandom, sortWobble, moshIFrame, moshMotion,
     moshBleed, moshMap, moshDistort, exportFormat, exportQuality,
@@ -10587,15 +10786,52 @@ export default function SpectraAfter() {
                   );
                 })}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
                 <Knob label="DISRUPT"  value={disrupt}         min={0} max={1} step={0.01} defaultValue={0.0} onChange={setDisrupt}/>
                 <Knob label="COUNT"    value={disruptCount}    min={0} max={1} step={0.01} defaultValue={0.4} onChange={setDisruptCount}/>
                 <Knob label="SIZE"     value={disruptSize}     min={0} max={1} step={0.01} defaultValue={0.4} onChange={setDisruptSize}/>
                 <Knob label="CONTRARY" value={disruptContrary} min={0} max={1} step={0.01} defaultValue={1.0} onChange={setDisruptContrary}/>
-                <Knob label="KALEIDO"  value={kaleido}         min={0} max={1} step={0.01} defaultValue={0.0} onChange={setKaleido}/>
               </div>
               <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(231,174,255,0.55)", textAlign: "center" }}>
-                roving pixel-groups disrupt with contrary motion · kaleido folds uv into wedges
+                roving pixel-groups disrupt with contrary motion
+              </div>
+            </SynthPanel>
+
+            {/* ── v1.2.60 RADIAL FX rack ───────────────────────────────────────
+                10 mask-gated UV warps chained sequentially. Order in shader:
+                KALEIDO → TILE → INVERT → DROSTE → SPIRAL → YANTRA → MANDALA
+                → ROSETTE → STARFOLD → HEXFOLD. Any combo produces a unique
+                pattern because each warp feeds the next. Kaleido is the
+                anchor; the 9 sisters were declared in v1.2.58 but never
+                wired — wired in v1.2.60 as combo-friendly siblings. */}
+            <SynthPanel title="RADIAL FX" subtitle="UV WARPS · 10 CTRL · COMBOS" accent="rgba(231,174,255,0.95)">
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
+                <Knob label="KALEIDO"  value={kaleido}   min={0} max={1} step={0.01} defaultValue={0.0} onChange={setKaleido}/>
+                <Knob label="TILE"     value={tile}      min={0} max={1} step={0.01} defaultValue={0.0} onChange={setTile}/>
+                <Knob label="INVERT"   value={invertSym} min={0} max={1} step={0.01} defaultValue={0.0} onChange={setInvertSym}/>
+                <Knob label="DROSTE"   value={droste}    min={0} max={1} step={0.01} defaultValue={0.0} onChange={setDroste}/>
+                <Knob label="SPIRAL"   value={spiral}    min={0} max={1} step={0.01} defaultValue={0.0} onChange={setSpiral}/>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 8, marginTop: 8, justifyItems: "center" }}>
+                <Knob label="YANTRA"   value={yantra}    min={0} max={1} step={0.01} defaultValue={0.0} onChange={setYantra}/>
+                <Knob label="MANDALA"  value={mandala}   min={0} max={1} step={0.01} defaultValue={0.0} onChange={setMandala}/>
+                <Knob label="ROSETTE"  value={rosette}   min={0} max={1} step={0.01} defaultValue={0.0} onChange={setRosette}/>
+                <Knob label="STARFOLD" value={starfold}  min={0} max={1} step={0.01} defaultValue={0.0} onChange={setStarfold}/>
+                <Knob label="HEXFOLD"  value={hexfold}   min={0} max={1} step={0.01} defaultValue={0.0} onChange={setHexfold}/>
+              </div>
+              <div style={{ display: "flex", justifyContent: "center", marginTop: 10 }}>
+                <button
+                  className="sp-btn"
+                  onClick={() => {
+                    setKaleido(0); setTile(0); setInvertSym(0); setDroste(0); setSpiral(0);
+                    setYantra(0); setMandala(0); setRosette(0); setStarfold(0); setHexfold(0);
+                  }}
+                  style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
+                  title="Reset every RADIAL FX control to 0"
+                >HARD RESET</button>
+              </div>
+              <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(231,174,255,0.55)", textAlign: "center" }}>
+                chain any combo · each warp feeds the next · all mask-gated
               </div>
             </SynthPanel>
 
