@@ -2263,6 +2263,9 @@ uniform float uMirror;
 uniform vec2 uTouch;
 uniform float uTouchActive;
 uniform float uAudio;
+uniform float uABass;   // v1.2.74 — bass band (0..1)
+uniform float uATreb;   // v1.2.74 — treble band (0..1)
+uniform float uABeat;   // v1.2.74 — beat impulse (decays each frame)
 uniform float uBrightness;
 uniform float uContrast;
 uniform float uSaturation;
@@ -2313,6 +2316,7 @@ uniform float uRgbSwap;      // RGBNDR channel permutation: 0 RGB,1 GBR,2 BRG,3 
 uniform float uRupture;      // RUPTURE (cyberboy666/_rupture_-style analog destroy combo)
 uniform float uHSync;        // H-sync slip: per-row horizontal tear-and-shift
 uniform float uMoshIFrame;   // iframe suppression emulation
+uniform float uDisruptShape; // v1.2.74 — 0 BLOB, 1 RING, 2 HEX, 3 CROSS, 4 STRIPE, 5 SPIRAL
 uniform float uMoshMotion;   // motion vector carry / propagation
 uniform float uMoshBleed;    // color texture bleed amount
 uniform float uMoshMap;      // mask-weighted mosh mapping
@@ -2862,8 +2866,41 @@ void main() {
       vec2 vDir = vlen > 0.0001 ? vel / vlen : vec2(1.0, 0.0);
       vec2 dB = uv - c;
       float dist = length(dB);
+      // v1.2.74 — DISRUPTER SHAPE selector. core/halo masks vary per shape.
+      float shapeF = floor(clamp(uDisruptShape, 0.0, 5.0) + 0.5);
       float core = 1.0 - smoothstep(0.0, radius, dist);
       float halo = (1.0 - smoothstep(radius, radius * 2.5, dist)) * (1.0 - core);
+      if (shapeF > 0.5 && shapeF < 1.5) {
+        // RING — donut: core is a thin ring at radius*0.6.
+        float r0 = radius * 0.55;
+        float ringD = abs(dist - r0);
+        core = 1.0 - smoothstep(0.0, radius * 0.18, ringD);
+        halo = (1.0 - smoothstep(radius * 0.18, radius * 0.7, ringD)) * (1.0 - core);
+      } else if (shapeF < 2.5) {
+        // HEX — six-pointed flower mask.
+        float aH = atan(dB.y, dB.x);
+        float petals = abs(cos(aH * 3.0));
+        float rH = radius * (0.6 + petals * 0.55);
+        core = 1.0 - smoothstep(0.0, rH, dist);
+        halo = (1.0 - smoothstep(rH, rH * 2.0, dist)) * (1.0 - core);
+      } else if (shapeF < 3.5) {
+        // CROSS — orthogonal bars through the centre.
+        float bar = min(abs(dB.x), abs(dB.y));
+        float armLen = max(abs(dB.x), abs(dB.y));
+        core = (1.0 - smoothstep(0.0, radius * 0.18, bar)) * (1.0 - smoothstep(0.0, radius * 1.4, armLen));
+        halo = (1.0 - smoothstep(radius * 0.18, radius * 0.45, bar)) * (1.0 - smoothstep(0.0, radius * 1.4, armLen)) * (1.0 - core);
+      } else if (shapeF < 4.5) {
+        // STRIPE — horizontal scanline strip across the row of c.
+        float stripeD = abs(dB.y);
+        core = (1.0 - smoothstep(0.0, radius * 0.18, stripeD)) * (1.0 - smoothstep(0.0, 0.55, abs(dB.x)));
+        halo = (1.0 - smoothstep(radius * 0.18, radius * 0.45, stripeD)) * (1.0 - smoothstep(0.0, 0.55, abs(dB.x))) * (1.0 - core);
+      } else if (shapeF >= 4.5) {
+        // SPIRAL — angular swirl bands.
+        float aS = atan(dB.y, dB.x);
+        float swirl = sin(aS * 5.0 + dist * 28.0 - tD * 2.5);
+        core = (1.0 - smoothstep(0.0, radius, dist)) * (0.5 + 0.5 * swirl);
+        halo = (1.0 - smoothstep(radius, radius * 2.0, dist)) * (1.0 - core);
+      }
       vec2 contraryPush = -vDir * core * 0.18 * (0.5 + contraryK * 1.5);
       vec2 followShove  =  vDir * halo * 0.10 * (1.0 - contraryK);
       totalDisp += contraryPush + followShove;
@@ -2913,7 +2950,12 @@ void main() {
     float tonalMap = smoothstep(0.18, 0.82, sceneLuma);
     float dmMap = mix(1.0, clamp(motionMap * 0.65 + tonalMap * 0.35, 0.0, 1.0), clamp(uMoshMap, 0.0, 1.0));
     float dmMask = mask * dmMap;
-    float dm = uDatamosh * dmMask * (0.65 + uMoshDistort * 0.85);
+    // v1.2.74 — audio injection. Beat punches dm up so kicks visibly
+    // explode datamosh; bass adds a slow swell so steady low end rides
+    // with the beat.
+    float dm = uDatamosh * dmMask * (0.65 + uMoshDistort * 0.85)
+             + uABeat * dmMask * 0.55
+             + uABass * dmMask * 0.18;
     // 4-tap motion-vector best-match: instead of grabbing prev[uv] flat,
     // sample prev at 4 small directional offsets and pick the one whose
     // colour is CLOSEST to the current pixel. That tap is the local
@@ -2946,6 +2988,23 @@ void main() {
     // it ride to ~0.99 at full crank.
     float moshBlend = clamp(smoothstep(0.0, 0.45, dm) * (0.78 + iframeHold * 0.20), 0.0, 0.99);
     color.rgb = mix(color.rgb, prev, moshBlend);
+
+    // v1.2.74 — pronounced I-FRAME drop: when iframeHold > 0, periodically
+    // (every ~0.5 s) replace the current pixel with prev for a portion of
+    // each cycle, simulating a missing keyframe in an MPEG stream.
+    if (iframeHold > 0.001) {
+      float ifPeriod = 0.55;
+      float ifT = floor(uTime / ifPeriod);
+      float ifHash = hash(ifT * 0.137 + 1.7);
+      // hold-window length scales with knob; up to ~70%% of the cycle.
+      float ifWin = iframeHold * 0.70;
+      float ifPhase = fract(uTime / ifPeriod);
+      float ifFire = step(1.0 - iframeHold, ifHash) * step(ifPhase, ifWin);
+      // hard freeze toward prev with a slight chromatic ghost so it reads
+      // as a glitch rather than a still image.
+      vec3 ifPrev = texture2D(uPrevFrame, uv).rgb;
+      color.rgb = mix(color.rgb, ifPrev, ifFire * 0.92);
+    }
 
     float jump = floor(uTime * (4.0 + dm * (14.0 + uMoshDistort * 18.0)));
     vec2 jumpOff = vec2(
@@ -4703,6 +4762,10 @@ export default function SpectraAfter() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream|null>(null);
   const startCameraInFlightRef = useRef(false);
+  // v1.2.74 — explicit user intent for the camera being on. Set true at
+  // the top of startCamera(), set false in stopCamera(). Replaces the old
+  // sourceMode === "camera" intent check which broke GEN+CAM.
+  const cameraIntentRef = useRef(false);
 
   // ── Upload source (image / gif / short video) — feeds the same texture path
   type SourceMode = "camera" | "upload" | "generator";
@@ -5469,6 +5532,8 @@ export default function SpectraAfter() {
   const [disruptCount, setDisruptCount] = useState(0.4);
   const [disruptSize, setDisruptSize] = useState(0.4);
   const [disruptContrary, setDisruptContrary] = useState(1.0);
+  // v1.2.74 — 0 BLOB, 1 RING, 2 HEX, 3 CROSS, 4 STRIPE, 5 SPIRAL
+  const [disruptShape, setDisruptShape] = useState(0);
   const [sortKey, setSortKey] = useState(0);
   const [sortLow, setSortLow] = useState(0.35);
   const [sortHigh, setSortHigh] = useState(0.92);
@@ -6074,11 +6139,11 @@ export default function SpectraAfter() {
     programRef.current = prog;
 
     const names = ["uCamera","uPrevFrame","uMode","uTime","uResolution","uVideoSize",
-      "uGain","uMirror","uTouch","uTouchActive","uAudio",
+      "uGain","uMirror","uTouch","uTouchActive","uAudio","uABass","uATreb","uABeat",
       "uBrightness","uContrast","uSaturation","uHueShift","uScanlines","uZoom",
       "uSortAmt","uScanTear","uBlockGlitch","uDatamosh","uChrash","uMask",
       "uLiquid","uFeedback","uContour","uAscii","uVenetian",
-      "uKaleido","uDisrupt","uDisruptCount","uDisruptSize","uDisruptContrary",
+      "uKaleido","uDisrupt","uDisruptCount","uDisruptSize","uDisruptContrary","uDisruptShape",
       "uTile","uInvert","uDroste","uSpiral","uYantra","uMandala","uRosette","uStarfold","uHexfold",
       "uSortKey","uSortLow","uSortHigh","uSortSegment","uSortRandom","uSortWobble","uSortMode",
       "uSortInterval","uSortAngle",
@@ -6312,6 +6377,7 @@ export default function SpectraAfter() {
   const disruptCountRef = useRef(disruptCount);
   const disruptSizeRef = useRef(disruptSize);
   const disruptContraryRef = useRef(disruptContrary);
+  const disruptShapeRef = useRef(disruptShape);
   const sortKeyRef = useRef(sortKey);
   const sortLowRef = useRef(sortLow);
   const sortHighRef = useRef(sortHigh);
@@ -6499,6 +6565,7 @@ export default function SpectraAfter() {
   useEffect(()=>{ disruptCountRef.current=disruptCount; },[disruptCount]);
   useEffect(()=>{ disruptSizeRef.current=disruptSize; },[disruptSize]);
   useEffect(()=>{ disruptContraryRef.current=disruptContrary; },[disruptContrary]);
+  useEffect(()=>{ disruptShapeRef.current=disruptShape; },[disruptShape]);
   useEffect(()=>{ sortKeyRef.current=sortKey; },[sortKey]);
   useEffect(()=>{ sortLowRef.current=sortLow; },[sortLow]);
   useEffect(()=>{ sortHighRef.current=sortHigh; },[sortHigh]);
@@ -7615,6 +7682,12 @@ export default function SpectraAfter() {
     setF2(u.uTouch, touchRef.current.x, touchRef.current.y);
     setF1(u.uTouchActive, touchRef.current.active ? 1.0 : 0.0);
     setF1(u.uAudio, audioLevelRef.current || 0.0);
+    // v1.2.74 — band-split audio uniforms so the shader can react to
+    // BASS / TREB / BEAT independently (datamosh kicks on beat, sort
+    // pulses on bass, chrash sparks on treble).
+    setF1(u.uABass, audioBassRef.current || 0.0);
+    setF1(u.uATreb, audioTrebleRef.current || 0.0);
+    setF1(u.uABeat, audioBeatRef.current || 0.0);
     setF1(u.uBrightness, brightnessRef.current);
     setF1(u.uContrast, contrastRef.current);
     setF1(u.uSaturation, saturationRef.current);
@@ -7684,6 +7757,7 @@ export default function SpectraAfter() {
     setF1(u.uDisruptCount, disruptCountRef.current);
     setF1(u.uDisruptSize, disruptSizeRef.current);
     setF1(u.uDisruptContrary, disruptContraryRef.current);
+    setF1(u.uDisruptShape, disruptShapeRef.current);
     setF1(u.uSortKey, sortKeyRef.current);
     setF1(u.uSortLow, sortLowRef.current);
     setF1(u.uSortHigh, sortHighRef.current);
@@ -8155,6 +8229,12 @@ export default function SpectraAfter() {
   const startCamera = useCallback(async (forceRestart = false, facingOverride?: "environment" | "user") => {
     if (startCameraInFlightRef.current) return;
     startCameraInFlightRef.current = true;
+    // v1.2.74 — explicit intent latch. The old intent re-check looked at
+    // sourceMode === "camera", which BROKE GEN+CAM (which keeps sourceMode
+    // = "generator" but turns the camera on) — startCamera bailed out
+    // immediately and the camera never opened. We now set an intent flag
+    // here and only honour cancellation if stopCamera() clears it.
+    cameraIntentRef.current = true;
     setCameraRequesting(true);
     try {
       if (!navigator.mediaDevices?.getUserMedia) {
@@ -8182,7 +8262,7 @@ export default function SpectraAfter() {
       // \"camera won't come back\" stuck state when toggling fast \u2014 a
       // late-arriving stream would set cameraActive=true but no render
       // path was actually consuming it).
-      if (sourceModeRef.current !== "camera" && faceFxModeRef.current === "OFF") {
+      if (!cameraIntentRef.current) {
         return;
       }
       const stream = await Promise.race([
@@ -8194,7 +8274,7 @@ export default function SpectraAfter() {
       // v1.2.53 \u2014 second intent check after stream resolves. If user
       // toggled away while getUserMedia was pending, stop the stream we
       // just got so we don't hold the device hostage.
-      if (sourceModeRef.current !== "camera" && faceFxModeRef.current === "OFF") {
+      if (!cameraIntentRef.current) {
         try { stream.getTracks().forEach(t => t.stop()); } catch {}
         return;
       }
@@ -8239,6 +8319,7 @@ export default function SpectraAfter() {
   }, [cameraFacing, getCameraStream, releaseCameraBinding, requestCameraPermission]);
 
   const stopCamera = useCallback(() => {
+    cameraIntentRef.current = false;
     void releaseCameraBinding();
     setCameraActive(false);
   }, [releaseCameraBinding]);
@@ -11163,8 +11244,11 @@ export default function SpectraAfter() {
                 <Knob label="SIZE"     value={disruptSize}     min={0} max={1} step={0.01} defaultValue={0.4} onChange={setDisruptSize}/>
                 <Knob label="CONTRARY" value={disruptContrary} min={0} max={1} step={0.01} defaultValue={1.0} onChange={setDisruptContrary}/>
               </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
+                <SynthSelector label="SHAPE" options={["BLOB","RING","HEX","CROSS","STRIPE","SPIRAL"]} value={Math.round(disruptShape)} onChange={(v) => setDisruptShape(v)}/>
+              </div>
               <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(231,174,255,0.55)", textAlign: "center" }}>
-                roving pixel-groups disrupt with contrary motion
+                roving pixel-groups disrupt with contrary motion · 6 shapes
               </div>
             </SynthPanel>
 
