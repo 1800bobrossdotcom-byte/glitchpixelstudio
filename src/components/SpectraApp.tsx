@@ -5563,6 +5563,9 @@ export default function SpectraAfter() {
   const [colorCycleSpeed, setColorCycleSpeed] = useState(0.8);
   const currentStrokeRef = useRef<DrawStroke|null>(null);
   const drawCanvasRef = useRef<HTMLCanvasElement>(null);
+  // v1.2.77 — scratch canvas for compositing the user's brush strokes
+  // into the source frame so glitch FX corrupt them. See render loop.
+  const drawComposeCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const colorCycleHueRef = useRef(300);
   const [brushType, setBrushType] = useState<"round"|"spray"|"neon"|"wide">("round");
   const brushColorRef = useRef("#ff00ff");
@@ -5754,7 +5757,11 @@ export default function SpectraAfter() {
   }, []);
   // DRAW is currently only safe over static image uploads (live camera + generator
   // share the live render path with the FX mask, which the draw overlay corrupts).
-  const drawAvailable = sourceMode === "upload" && uploadKind === "image";
+  // v1.2.77 — DRAW now also works over video/gif uploads. Strokes
+  // get composited INTO the source frame (see render loop) so the
+  // shader glitch FX warp/corrupt the painted lines, not just sit
+  // as a faint blend overlay.
+  const drawAvailable = sourceMode === "upload" && (uploadKind === "image" || uploadKind === "video");
   // Auto-bail out of DRAW the moment the source stops being an image upload.
   useEffect(() => {
     if (!drawAvailable && drawActive) {
@@ -6805,6 +6812,31 @@ export default function SpectraAfter() {
       } else if (upI && upI.complete && upI.naturalWidth > 0) {
         texSource = upI; srcW = upI.naturalWidth; srcH = upI.naturalHeight;
       }
+      // v1.2.77 — BAKE DRAW STROKES INTO THE SOURCE so the shader
+      // glitch / pixel-sort / datamosh FX warp the strokes too.
+      // Previously the draw canvas was a screen-blend overlay sitting
+      // above the WebGL output (opacity 0.32) so paintwork looked
+      // washed out and never picked up the corruption FX. Now we
+      // composite onto a scratch canvas and feed THAT to the shader.
+      const dc = drawCanvasRef.current;
+      if (texSource && drawActive && drawAvailable && dc && dc.width > 0 && dc.height > 0 && srcW > 0 && srcH > 0) {
+        let dcc = drawComposeCanvasRef.current;
+        if (!dcc) { dcc = document.createElement("canvas"); drawComposeCanvasRef.current = dcc; }
+        if (dcc.width !== srcW || dcc.height !== srcH) { dcc.width = srcW; dcc.height = srcH; }
+        const dctx = dcc.getContext("2d");
+        if (dctx) {
+          dctx.globalCompositeOperation = "source-over";
+          dctx.globalAlpha = 1;
+          dctx.clearRect(0, 0, srcW, srcH);
+          dctx.drawImage(texSource as CanvasImageSource, 0, 0, srcW, srcH);
+          // Strokes burned in at ~85% so the underlying photo still
+          // reads through; the shader's downstream FX then mutate them.
+          dctx.globalAlpha = 0.85;
+          dctx.drawImage(dc, 0, 0, srcW, srcH);
+          dctx.globalAlpha = 1;
+          texSource = dcc;
+        }
+      }
     } else if (srcMode === "generator") {
       // Lazily allocate generator canvas at output resolution.
       const targetW = canvasRef.current?.width || 720;
@@ -7418,39 +7450,41 @@ export default function SpectraAfter() {
           texSource = gc; srcW = gc.width; srcH = gc.height;
         }
       } else if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0) {
-        // v1.2.71/72 — GEN+CAM with no FX armed. Earlier attempts used
-        // hard-light at 0.85α, but the generator is often near-grey when
-        // no params are dialed, so hard-light produced a near-identity
-        // composite and the user reported "GEN+CAM is not working" (it
-        // looked like camera-only). Now do a guaranteed-visible double
-        // composite: camera base, then generator at 50% alpha (normal
-        // blend) so both layers are unambiguously present, then a small
-        // screen pass on top so generator brights pop into the camera.
-        let cc = genCompositeCanvasRef.current;
-        if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
-        if (cc.width !== targetW || cc.height !== targetH) {
-          cc.width = targetW; cc.height = targetH;
-        }
-        const cctx = cc.getContext("2d");
-        if (cctx) {
-          cctx.globalCompositeOperation = "source-over";
-          cctx.globalAlpha = 1;
-          cctx.clearRect(0, 0, cc.width, cc.height);
-          cctx.drawImage(video, 0, 0, cc.width, cc.height);
-          // 50% straight-alpha generator overlay — always visible.
-          cctx.globalCompositeOperation = "source-over";
-          cctx.globalAlpha = 0.55;
-          cctx.drawImage(gc, 0, 0, cc.width, cc.height);
-          // Screen pass: generator brights add into the camera so neon
-          // edges punch through without washing dark areas.
-          cctx.globalCompositeOperation = "screen";
-          cctx.globalAlpha = 0.45;
-          cctx.drawImage(gc, 0, 0, cc.width, cc.height);
-          cctx.globalCompositeOperation = "source-over";
-          cctx.globalAlpha = 1;
-          texSource = cc; srcW = cc.width; srcH = cc.height;
+        // v1.2.71/72 — GEN+CAM with no FX armed.
+        // v1.2.77 — ROTOSCOPE FIX. When face/person FX is engaged in
+        // GEN+CAM mode, the BG must be PURE GENERATOR — not the
+        // camera-blended composite — because the cut-out person from
+        // the camera will be stamped on top a few lines below as the
+        // foreground. Otherwise the camera leaks into the BG and the
+        // FG/BG split (uFaceInvert) becomes a no-op (camera shows on
+        // both sides). When face FX is OFF, keep the existing 50/50
+        // composite so GEN+CAM-without-roto still looks alive.
+        if (faceFxRef.current.active && faceFxRef.current.texValid) {
+          texSource = gc; srcW = gc.width; srcH = gc.height;
         } else {
-          texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
+          let cc = genCompositeCanvasRef.current;
+          if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
+          if (cc.width !== targetW || cc.height !== targetH) {
+            cc.width = targetW; cc.height = targetH;
+          }
+          const cctx = cc.getContext("2d");
+          if (cctx) {
+            cctx.globalCompositeOperation = "source-over";
+            cctx.globalAlpha = 1;
+            cctx.clearRect(0, 0, cc.width, cc.height);
+            cctx.drawImage(video, 0, 0, cc.width, cc.height);
+            cctx.globalCompositeOperation = "source-over";
+            cctx.globalAlpha = 0.55;
+            cctx.drawImage(gc, 0, 0, cc.width, cc.height);
+            cctx.globalCompositeOperation = "screen";
+            cctx.globalAlpha = 0.45;
+            cctx.drawImage(gc, 0, 0, cc.width, cc.height);
+            cctx.globalCompositeOperation = "source-over";
+            cctx.globalAlpha = 1;
+            texSource = cc; srcW = cc.width; srcH = cc.height;
+          } else {
+            texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
+          }
         }
       } else {
         texSource = gc; srcW = gc.width; srcH = gc.height;
@@ -9582,11 +9616,21 @@ export default function SpectraAfter() {
         .ui-hidden .sp-panel-glass { display: none !important; }
         .ui-hidden .sp-canvas-pane { height: 100dvh !important; flex: 1 1 auto !important; }
 
-        /* v1.2.76 — PHONE LANDSCAPE reflow (Tailwind lg: is desktop-only). */
-        @media (orientation: landscape) and (max-height: 600px) {
+        /* v1.2.76 — PHONE LANDSCAPE reflow (Tailwind lg: is desktop-only).
+           v1.2.77 — widened: drop the 600px height clamp so taller phones
+           (Pixel 8 Pro, foldables, etc.) also reflow on rotate. We still
+           guard with max-width:1023px so we never fight the desktop lg: layout. */
+        @media (orientation: landscape) and (max-width: 1023px) {
           .landscape-row { flex-direction: row !important; }
-          .sp-canvas-pane { height: 100% !important; flex: 1 1 auto !important; }
-          .sp-panel-glass { width: 22rem !important; flex: none !important; }
+          .sp-canvas-pane {
+            height: 100% !important;
+            flex: 1 1 auto !important;
+            min-height: 0 !important;
+          }
+          .sp-panel-glass {
+            width: 20rem !important;
+            flex: none !important;
+          }
         }
 
         /* ── 2.5D SLOT-MACHINE WHEEL FOR SYNTHPANELS ──
@@ -10309,45 +10353,49 @@ export default function SpectraAfter() {
         onChange={e => { const f = e.target.files?.[0]; if (f) { loadProject(f); } e.target.value = ""; }}/>
 
       {/* ── Top bar (GPS — slim, navy gradient, electric-blue accent)
-           TWO-LINE LAYOUT: row 1 = logo + wordmark (centered, no buttons
-           crowding it). Row 2 = all the action buttons.
+           v1.2.77 — SINGLE-ROW layout: brand pill on the left, action
+           icons on the right. All buttons are now icon-first (square
+           hit targets) with the wordmark collapsing on narrow phones
+           so everything fits without wrapping to a second line.
            v1.2.76 — hidden when uiHidden is true (immersive view). */}
       {!uiHidden && (
       <div style={{
-        paddingTop: 4, paddingBottom: 4,
         background: "linear-gradient(180deg, #3A0852 0%, #1A0224 100%)",
         borderBottom: "1px solid rgba(231,174,255,0.45)",
-        display: "flex", flexDirection: "column",
-        alignItems: "stretch", padding: "4px 10px", gap: 4,
+        display: "flex", flexDirection: "row",
+        alignItems: "center", justifyContent: "space-between",
+        padding: "4px 8px", gap: 6,
         flexShrink: 0, zIndex: 20,
         boxShadow: "0 2px 12px rgba(0,0,0,0.85), 0 0 18px rgba(176,20,240,0.22)",
       }}>
-        {/* Row 1 — wordmark only, centered, nothing else on this line */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, minWidth: 0 }}>
+        {/* Left — brand pill (icon + tight wordmark; truncates on tight phones) */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: "0 1 auto" }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={GPS_APP_ICON} alt="GPS" width={36} height={36} style={{
-            width: 36, height: 36, borderRadius: 8, objectFit: "cover",
-            boxShadow: "0 0 14px rgba(26,28,242,0.55), 0 0 4px rgba(111,125,255,0.6) inset",
+          <img src={GPS_APP_ICON} alt="GPS" width={32} height={32} style={{
+            width: 32, height: 32, borderRadius: 7, objectFit: "cover",
+            boxShadow: "0 0 12px rgba(26,28,242,0.55), 0 0 4px rgba(111,125,255,0.6) inset",
             flexShrink: 0,
           }}/>
           <div style={{
-            display: "flex", flexDirection: "row", alignItems: "baseline", gap: 6,
-            lineHeight: 1.0,
+            display: "flex", flexDirection: "row", alignItems: "baseline", gap: 5,
+            lineHeight: 1.0, minWidth: 0,
             fontFamily: "var(--font-nunito,'Nunito',sans-serif)",
             fontWeight: 800,
-            fontSize: "clamp(13px,3.8vw,18px)",
-            letterSpacing: "1.4px",
+            fontSize: "clamp(11px, 2.6vw, 16px)",
+            letterSpacing: "1.2px",
             textTransform: "uppercase",
             color: "#F4F6FF",
             textShadow: "0 0 10px rgba(111,125,255,0.45)",
             whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
           }}>
             <span style={{ color: "#E7AEFF" }}>Glitch Pixel</span>
-            <span style={{ color: "#FF8500", letterSpacing: "1.4px" }}>Studio 42069+</span>
+            <span style={{ color: "#FF8500", letterSpacing: "1.2px" }}>Studio</span>
           </div>
         </div>
-        {/* Row 2 — action buttons (centered, wraps if narrow) */}
-        <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "center", flexWrap: "wrap" }}>
+        {/* Right — action icons, evenly spaced, never wrap */}
+        <div style={{ display: "flex", gap: 4, alignItems: "center", justifyContent: "flex-end", flex: "0 0 auto" }}>
           <button
             className="sp-btn"
             onClick={() => {
@@ -10356,19 +10404,20 @@ export default function SpectraAfter() {
             }}
             style={{
               ...topBtnStyle,
-              width: 54, height: 40, fontSize: 10, borderRadius: 10, letterSpacing: "0.8px",
+              width: 36, height: 36, padding: 0, fontSize: 14, borderRadius: 9, letterSpacing: 0,
               opacity: cameraActive ? 1 : 0.7,
               color: cameraFacing === "user" ? T.ochre : undefined,
               borderColor: cameraFacing === "user" ? T.amber : undefined,
             }}
             title={cameraActive ? "Flip camera" : `Camera will start as ${cameraFacing === "environment" ? "REAR" : "FRONT"}`}
-          >{cameraFacing === "user" ? "FRONT" : "FLIP"}</button>
+          >{cameraFacing === "user" ? "🤳" : "🔄"}</button>
           <button
             className="sp-btn"
             onClick={() => { if (drawAvailable) setDrawActive(a => !a); }}
             disabled={!drawAvailable}
             style={{
-              ...topBtnStyle, fontSize: 10, letterSpacing: "1px",
+              ...topBtnStyle,
+              width: 36, height: 36, padding: 0, fontSize: 14, borderRadius: 9, letterSpacing: 0,
               color: drawActive ? T.ochre : (drawAvailable ? undefined : "rgba(244,246,255,0.32)"),
               borderColor: drawActive ? T.amber : (drawAvailable ? undefined : "rgba(244,246,255,0.18)"),
               boxShadow: drawActive ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
@@ -10376,39 +10425,51 @@ export default function SpectraAfter() {
               cursor: drawAvailable ? "pointer" : "not-allowed",
             }}
             title={drawAvailable
-              ? "DRAW: paint where the glitch FX should appear (rest stays clean)"
-              : "DRAW is available when an IMAGE UPLOAD is the source. Load an image from the SOURCE panel."}
-          >{drawActive ? "✎ DRAW" : "✎"}</button>
+              ? "DRAW: paint glitch strokes onto the upload (FX corrupt them)"
+              : "DRAW unlocks when an IMAGE or VIDEO upload is the source"}
+          >✎</button>
           <button
             className="sp-btn"
             onClick={() => setAudioActive(a => !a)}
-            style={{ ...topBtnStyle, color: audioActive ? T.ochre : undefined, borderColor: audioActive ? T.amber : undefined, boxShadow: audioActive ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow }}
+            style={{
+              ...topBtnStyle,
+              width: 36, height: 36, padding: 0, fontSize: 14, borderRadius: 9, letterSpacing: 0,
+              color: audioActive ? T.ochre : undefined,
+              borderColor: audioActive ? T.amber : undefined,
+              boxShadow: audioActive ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
+            }}
             title="Audio-Reactive FX"
           >{audioActive ? "🔊" : "🔈"}</button>
           <button
             className="sp-btn"
             onClick={cycleFaceFx}
             style={{
-              ...topBtnStyle, fontSize: 12, letterSpacing: "1px",
+              ...topBtnStyle,
+              width: 36, height: 36, padding: 0, fontSize: 14, borderRadius: 9, letterSpacing: 0,
               color: faceFxMode === "OFF" ? undefined : T.ochre,
               borderColor: faceFxMode === "OFF" ? undefined : T.amber,
               boxShadow: faceFxMode === "OFF" ? topBtnStyle.boxShadow : `${T.glow}, ${T.bevel}`,
             }}
             title={`FACE FX — ${faceFxMode} (cycle OFF / FACE-ONLY / BG-ONLY)`}
-          >{faceFxMode === "OFF" ? "👤" : faceFxMode === "FACE" ? "👤▣" : "▣👤"}</button>
+          >{faceFxMode === "OFF" ? "👤" : faceFxMode === "FACE" ? "👤" : "▣"}</button>
           <button
             className="sp-btn"
             onClick={() => setBugOpen(true)}
-            style={{ ...topBtnStyle, fontSize: 12 }}
+            style={{
+              ...topBtnStyle,
+              width: 36, height: 36, padding: 0, fontSize: 14, borderRadius: 9, letterSpacing: 0,
+            }}
             title="Report a bug"
           >🐛</button>
           {/* v1.2.73 — HANDS-FREE always-visible top-bar tile so it
-              works regardless of whether EXPORT panel is open. */}
+              works regardless of whether EXPORT panel is open.
+              v1.2.77 — tightened to icon + tiny number so it fits in one row. */}
           <button
             className="sp-btn"
             onClick={startHandsFree}
             style={{
-              ...topBtnStyle, fontSize: 10, letterSpacing: "1px",
+              ...topBtnStyle,
+              width: 46, height: 36, padding: 0, fontSize: 10, borderRadius: 9, letterSpacing: "0.4px",
               color: handsFreeCountdown != null ? T.ochre : undefined,
               borderColor: handsFreeCountdown != null ? T.amber : undefined,
               boxShadow: handsFreeCountdown != null ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
@@ -10416,15 +10477,13 @@ export default function SpectraAfter() {
             }}
             title="HANDS-FREE: 3-2-1 then auto-record 60s, then auto-stop"
           >{handsFreeCountdown == null
-              ? `⏱ ${HANDS_FREE_SEC}s`
+              ? `⏱${HANDS_FREE_SEC}`
               : handsFreeCountdown.phase === "in"
-                ? `✕ ${handsFreeCountdown.n}…`
-                : `✕ ${handsFreeCountdown.n}s`}</button>
+                ? `${handsFreeCountdown.n}…`
+                : `●${handsFreeCountdown.n}`}</button>
           {/* v1.2.73 — FULLSCREEN toggle. v1.2.76 — also hides the top
               bar + controls pane (immersive viewing) and uses Capacitor
-              StatusBar to actually hide the Android system chrome. The
-              standard Fullscreen API alone does not affect system bars
-              inside a WebView. The floating eye on the canvas restores. */}
+              StatusBar to actually hide the Android system chrome. */}
           <button
             className="sp-btn"
             onClick={() => {
@@ -10452,7 +10511,10 @@ export default function SpectraAfter() {
                 return next;
               });
             }}
-            style={{ ...topBtnStyle, fontSize: 14 }}
+            style={{
+              ...topBtnStyle,
+              width: 36, height: 36, padding: 0, fontSize: 16, borderRadius: 9, letterSpacing: 0,
+            }}
             title="Fullscreen / hide UI to view work"
           >⛶</button>
         </div>
@@ -10564,13 +10626,16 @@ export default function SpectraAfter() {
                 });
               }}
               style={{
-                position: "absolute", left: 10, top: 10, zIndex: 7,
-                width: 36, height: 36, borderRadius: 8,
-                background: uiHidden ? "rgba(231,174,255,0.18)" : "rgba(10,2,36,0.65)",
+                /* v1.2.77 — moved from top-left to bottom-left so it sits
+                   in the natural thumb arc (small-handed / one-handed /
+                   gamer-grip). Slightly larger hit target too. */
+                position: "absolute", left: 12, bottom: 12, zIndex: 7,
+                width: 44, height: 44, borderRadius: 10,
+                background: uiHidden ? "rgba(231,174,255,0.22)" : "rgba(10,2,36,0.7)",
                 border: "1px solid rgba(231,174,255,0.55)",
-                color: "#F4F6FF", fontSize: 16,
+                color: "#F4F6FF", fontSize: 18,
                 cursor: "pointer",
-                boxShadow: "0 0 8px rgba(0,0,0,0.6)",
+                boxShadow: "0 0 10px rgba(0,0,0,0.7)",
               }}
               title={uiHidden ? "Show UI" : "Hide UI · view canvas only"}
             >{uiHidden ? "▲" : "▽"}</button>
