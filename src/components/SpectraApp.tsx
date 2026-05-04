@@ -10310,6 +10310,48 @@ export default function SpectraAfter() {
             style={{ ...topBtnStyle, fontSize: 12 }}
             title="Report a bug"
           >🐛</button>
+          {/* v1.2.73 — HANDS-FREE always-visible top-bar tile so it
+              works regardless of whether EXPORT panel is open. */}
+          <button
+            className="sp-btn"
+            onClick={startHandsFree}
+            style={{
+              ...topBtnStyle, fontSize: 10, letterSpacing: "1px",
+              color: handsFreeCountdown != null ? T.ochre : undefined,
+              borderColor: handsFreeCountdown != null ? T.amber : undefined,
+              boxShadow: handsFreeCountdown != null ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
+              ...(handsFreeCountdown != null ? { animation: "activeGlow 1s ease-in-out infinite" } : {}),
+            }}
+            title="HANDS-FREE: 3-2-1 then auto-record 60s, then auto-stop"
+          >{handsFreeCountdown == null
+              ? `⏱ ${HANDS_FREE_SEC}s`
+              : handsFreeCountdown.phase === "in"
+                ? `✕ ${handsFreeCountdown.n}…`
+                : `✕ ${handsFreeCountdown.n}s`}</button>
+          {/* v1.2.73 — FULLSCREEN toggle. Uses the standard
+              Fullscreen API on the document element so the entire app
+              chrome goes edge-to-edge. Tapping again returns to the
+              normal work view. */}
+          <button
+            className="sp-btn"
+            onClick={() => {
+              const doc = document as Document & {
+                webkitFullscreenElement?: Element | null;
+                webkitExitFullscreen?: () => Promise<void>;
+              };
+              const el = document.documentElement as HTMLElement & {
+                webkitRequestFullscreen?: () => Promise<void>;
+              };
+              const isFs = !!(document.fullscreenElement || doc.webkitFullscreenElement);
+              if (isFs) {
+                (document.exitFullscreen?.() || doc.webkitExitFullscreen?.())?.catch(() => {});
+              } else {
+                (el.requestFullscreen?.() || el.webkitRequestFullscreen?.())?.catch(() => {});
+              }
+            }}
+            style={{ ...topBtnStyle, fontSize: 14 }}
+            title="Fullscreen / return to work view"
+          >⛶</button>
         </div>
       </div>
 
@@ -10378,50 +10420,11 @@ export default function SpectraAfter() {
             {/* Hidden mask canvas for FX mask */}
             <canvas ref={maskCanvasRef} style={{ display: "none" }} width={256} height={256} />
 
-            {/* ── PIXEL DRAWER overlay (living/glitching pixel cells) ── */}
-            <canvas
-              ref={pxCanvasRef}
-              style={{
-                position: "absolute", inset: 0, width: "100%", height: "100%",
-                zIndex: 4,
-                pointerEvents: pixelDrawerActive ? "auto" : "none",
-                cursor: pixelDrawerActive ? "crosshair" : "default",
-                touchAction: "none",
-                mixBlendMode: "screen",
-                opacity: 1,
-              }}
-              onPointerDown={(e) => {
-                if (!pxActiveRef.current) return;
-                (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-                const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-                const nx = (e.clientX - rect.left) / rect.width;
-                const ny = (e.clientY - rect.top)  / rect.height;
-                pxLastSpawnRef.current = { x: nx, y: ny, t: performance.now() };
-                pxSpawnAt(nx, ny);
-              }}
-              onPointerMove={(e) => {
-                if (!pxActiveRef.current) return;
-                if (e.pressure === 0 && e.buttons === 0) return;
-                const rect = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-                const nx = (e.clientX - rect.left) / rect.width;
-                const ny = (e.clientY - rect.top)  / rect.height;
-                const last = pxLastSpawnRef.current;
-                if (last) {
-                  // Interpolate so fast strokes paint a continuous line.
-                  const dx = nx - last.x, dy = ny - last.y;
-                  const dist = Math.sqrt(dx*dx + dy*dy);
-                  const steps = Math.max(1, Math.min(12, Math.floor(dist * 80)));
-                  for (let i = 1; i <= steps; i++) {
-                    pxSpawnAt(last.x + dx * (i/steps), last.y + dy * (i/steps));
-                  }
-                } else {
-                  pxSpawnAt(nx, ny);
-                }
-                pxLastSpawnRef.current = { x: nx, y: ny, t: performance.now() };
-              }}
-              onPointerUp={() => { pxLastSpawnRef.current = null; }}
-              onPointerLeave={() => { pxLastSpawnRef.current = null; }}
-            />
+            {/* v1.2.73 — PIXEL DRAWER overlay removed (the rack itself
+                was also removed from the synth view). The pxCanvasRef is
+                still allocated below as a hidden 1x1 stub so any code
+                paths that touch it are no-ops. */}
+            <canvas ref={pxCanvasRef} style={{ display: "none" }} width={1} height={1} />
 
             {/* ── Floating DRAW toolbar (Glitch! style) — only over static image uploads */}
             {drawActive && drawAvailable && (
@@ -10826,67 +10829,12 @@ export default function SpectraAfter() {
               </div>
             </SynthPanel>
 
-            {/* ── RGBNDR RACK (analog VGA channel-bender) ──────────── */}
-            <SynthPanel title="RGBNDR" subtitle="VIDEO SYNTH · 5 CTRL" accent="rgba(231,174,255,0.95)">
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
-                <Knob label="R OSC"  value={rgbR}    min={0} max={1} step={0.01} defaultValue={0.0} onChange={setRgbR}/>
-                <Knob label="G OSC"  value={rgbG}    min={0} max={1} step={0.01} defaultValue={0.0} onChange={setRgbG}/>
-                <Knob label="B OSC"  value={rgbB}    min={0} max={1} step={0.01} defaultValue={0.0} onChange={setRgbB}/>
-                <Knob label="BARS"   value={rgbBars} min={0} max={1} step={0.01} defaultValue={0.0} onChange={setRgbBars}/>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
-                <SynthSelector label="SWAP" options={["RGB","GBR","BRG","BGR","RBG","GRB"]} value={Math.round(rgbSwap)} onChange={(v) => setRgbSwap(v)}/>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 8, marginTop: 8, justifyItems: "center" }}>
-                <Knob label="RUPTURE" value={rupture} min={0} max={1} step={0.01} defaultValue={0.0} onChange={setRupture}/>
-                <Knob label="H-SYNC"  value={hsync}   min={0} max={1} step={0.01} defaultValue={0.0} onChange={setHsync}/>
-              </div>
-              <div style={{ display: "flex", justifyContent: "center", marginTop: 10 }}>
-                <button
-                  className="sp-btn"
-                  onClick={() => {
-                    setRgbR(0.0); setRgbG(0.0); setRgbB(0.0); setRgbBars(0.0);
-                    setRgbSwap(0); setRupture(0.0); setHsync(0.0);
-                  }}
-                  style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
-                  title="Reset every RGBNDR control to default"
-                >HARD RESET</button>
-              </div>
-              <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(231,174,255,0.55)", textAlign: "center" }}>
-                per-channel oscillator channel-bend · SMPTE bar overlay · channel rewiring · _rupture_ destroy combo
-              </div>
-            </SynthPanel>
+            {/* v1.2.73 — RGBNDR + PIXEL DRAWER racks removed per user
+                request: cluttered the synth view, rarely yielded
+                meaningful results in field testing. Underlying state +
+                shader uniforms remain so saved presets still load. */}
 
-            {/* ── PIXEL DRAWER RACK (living glitching pixel collage) ── */}
-            <SynthPanel title="PIXEL DRAWER" subtitle={pixelDrawerActive ? `LIVE · ${pxCellsRef.current.length} cells` : "OFF"} accent="rgba(255,210,140,0.95)">
-              <div style={{ display: "flex", justifyContent: "center", gap: 8, marginBottom: 10 }}>
-                <SynthSwitch label="DRAWER" on={pixelDrawerActive} onChange={setPixelDrawerActive} onLabel="LIVE" offLabel="OFF"/>
-                <button
-                  className="sp-btn"
-                  onClick={pxClearCells}
-                  style={{ fontSize: 9, padding: "6px 10px", letterSpacing: "1.4px", color: "rgba(255,210,140,0.95)" }}
-                  title="Wipe pixels but keep settings"
-                >WIPE</button>
-                <button
-                  className="sp-btn"
-                  onClick={pxResetAll}
-                  style={{ fontSize: 9, padding: "6px 10px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
-                  title="Hard reset: wipe pixels + reset all knobs to default"
-                >HARD RESET</button>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
-                <Knob label="SIZE"   value={pxSize}   min={0} max={1} step={0.01} defaultValue={0.4}  onChange={setPxSize}/>
-                <Knob label="GLITCH" value={pxGlitch} min={0} max={1} step={0.01} defaultValue={0.55} onChange={setPxGlitch}/>
-                <Knob label="GROW"   value={pxGrow}   min={0} max={1} step={0.01} defaultValue={0.35} onChange={setPxGrow}/>
-                <Knob label="DECAY"  value={pxDecay}  min={0} max={1} step={0.01} defaultValue={0.35} onChange={setPxDecay}/>
-                <Knob label="SPEED"  value={pxSpeed}  min={0} max={1} step={0.01} defaultValue={0.45} onChange={setPxSpeed}/>
-              </div>
-              <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(231,174,255,0.55)", textAlign: "center" }}>
-                draw on the canvas → cells drift, mutate hue, multiply, decay · uses BRUSH color from COLOR panel
-              </div>
-            </SynthPanel>
-
-            {/* ── DATAMOSH RACK ─────────────────────────────────────── */}
+            {/* ── DATAMOSH RACK ─────────────────────────────────────────── */}
             <SynthPanel title="DATAMOSH" subtitle="MOSH · 12 CTRL" accent="rgba(231,174,255,0.95)">
               <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
                 <Knob label="INTENS"   value={datamosh}     min={0} max={2}  step={0.01} defaultValue={0.0}  onChange={setDatamosh}/>
