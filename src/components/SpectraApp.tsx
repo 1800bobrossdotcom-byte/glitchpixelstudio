@@ -9207,6 +9207,11 @@ export default function SpectraAfter() {
           scroll-snap-type: y proximity;
           scroll-padding-top: 25%;
           scroll-padding-bottom: 25%;
+          /* v1.2.62 — reserve room for the Android gesture-nav bar at the
+             bottom of the device. Without this, the last controls in an
+             open section (RECORD button, CAM HARD RESET, etc.) sit
+             underneath the system gesture area and can't be tapped. */
+          padding-bottom: max(env(safe-area-inset-bottom, 0px), 16px);
         }
         .sp-rack {
           scroll-snap-align: center;
@@ -9277,7 +9282,12 @@ export default function SpectraAfter() {
         .neon-mode .sp-panel-glass {
           margin-top: 0 !important;
           position: absolute !important;
-          left: 0; right: 0; bottom: 0;
+          left: 0; right: 0;
+          /* v1.2.62 — anchor above the Android gesture-nav bar so the
+             EXPORT panel's RECORD button isn't swallowed by the system
+             gesture area. Falls back to 0 on iOS/desktop where the env
+             var is 0. */
+          bottom: env(safe-area-inset-bottom, 0px);
           /* Carousel is capped to 1/4 of the viewport so the camera/FX
              always reads at ≥ 75% full. The wheel uses heavy z-depth
              (see .sp-rack transform in JS) so off-center racks recede
