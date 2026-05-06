@@ -8294,25 +8294,15 @@ export default function SpectraAfter() {
 
   // ── Camera ────────────────────────────────────────────────
   // Request camera permissions on mobile (Capacitor)
+  // v1.3.2 — STOPPED probing Capacitor.Plugins.Permissions before calling
+  // getUserMedia. The probe was returning a stale "denied" state on some
+  // devices (the Permissions plugin contract changed in Capacitor 7 and
+  // the v1.2.98 "prompt → request" path could lock users out once they
+  // tapped Deny on any prior build). Native WebView's getUserMedia
+  // already raises its own runtime camera prompt, so just let it through
+  // and surface real errors via the catch in startCamera.
   const requestCameraPermission = useCallback(async (): Promise<boolean> => {
-    try {
-      if (typeof window !== "undefined" && "Capacitor" in window) {
-        const { Permissions } = (window as unknown as { Capacitor: { Plugins: { Permissions?: { query: (o: { name: string }) => Promise<{ state: string }>; requestPermissions: (o: { permissions: string[] }) => Promise<{ camera: string }> } } } }).Capacitor.Plugins;
-        if (Permissions) {
-          const result = await Permissions.query({ name: "Camera" });
-          // v1.2.98 — handle "prompt" the same as "denied": actually
-          // request the permission instead of silently returning false.
-          if (result.state === "denied" || result.state === "prompt") {
-            const req = await Permissions.requestPermissions({ permissions: ["Camera"] });
-            return req.camera === "granted";
-          }
-          return result.state === "granted";
-        }
-      }
-      return true; // Web: will prompt on getUserMedia
-    } catch {
-      return true; // Fallback: try anyway
-    }
+    return true;
   }, []);
 
   const getCameraStream = useCallback(async (facing: "environment" | "user") => {
