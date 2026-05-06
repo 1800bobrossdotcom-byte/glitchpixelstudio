@@ -9415,6 +9415,58 @@ export default function SpectraAfter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bootDone, sourceMode, faceFxMode]);
 
+  // v1.2.96 — Resume handler. When the user backgrounds the app and
+  // returns (without a hard kill), Android may have torn down the camera
+  // tracks even though our React state still says cameraActive=true. The
+  // result was a frozen black/glitched preview until the user toggled CAM.
+  // We now listen for both the WebView visibilitychange AND the Capacitor
+  // App appStateChange event — on resume, if a camera is wanted but the
+  // underlying MediaStream is no longer live, force-restart it.
+  useEffect(() => {
+    if (!bootDone) return;
+    const wantsCamera = () =>
+      sourceModeRef.current === "camera" || faceFxModeRef.current !== "OFF";
+    const streamDead = () => {
+      const s = streamRef.current;
+      if (!s) return true;
+      if (!s.active) return true;
+      const tracks = s.getVideoTracks?.() ?? [];
+      if (tracks.length === 0) return true;
+      return tracks.every(t => t.readyState === "ended" || !t.enabled);
+    };
+    const recover = () => {
+      if (!wantsCamera()) return;
+      if (!streamDead()) return;
+      // Force a clean re-acquire. startCamera handles in-flight gating.
+      void startCamera(true);
+    };
+    const onVis = () => {
+      if (typeof document === "undefined") return;
+      if (document.visibilityState !== "visible") return;
+      // Small delay so the WebView has a chance to settle on resume.
+      setTimeout(recover, 120);
+    };
+    document.addEventListener("visibilitychange", onVis);
+    let removeAppListener: (() => void) | null = null;
+    (async () => {
+      try {
+        if (!Capacitor.isNativePlatform?.()) return;
+        const { App } = await import("@capacitor/app");
+        const handle = await App.addListener("appStateChange", (state: { isActive: boolean }) => {
+          if (state?.isActive) setTimeout(recover, 120);
+        });
+        removeAppListener = () => { try { handle.remove(); } catch {} };
+      } catch {
+        // @capacitor/app not available — visibilitychange path still covers it.
+      }
+    })();
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      if (removeAppListener) removeAppListener();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bootDone]);
+
   useEffect(() => {
     const raw = localStorage.getItem(PRESETS_KEY);
     if (!raw) return;
@@ -11048,6 +11100,14 @@ export default function SpectraAfter() {
                           clearUploadSource();
                           setSourceMode("generator");
                           if (!cameraActive) void startCamera();
+                          // v1.2.96 — GEN+CAM hotkey: if Face FX is OFF the
+                          // composite is invisible (camera frames have nothing
+                          // to overlay onto the generator). Auto-arm FACE so
+                          // the button always produces the expected result
+                          // — person rotoscoped on top of the generator.
+                          if (faceFxModeRef.current === "OFF") {
+                            setFaceFxMode("FACE");
+                          }
                         } else if (sm === "upload") {
                           // Don't switch mode until a file is actually picked —
                           // setting it preemptively leaves the renderer in an
