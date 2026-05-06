@@ -6501,12 +6501,16 @@ export default function SpectraAfter() {
   // (genStyle, genDensity, ...) from that layer so the knobs/style grid
   // display its values. When the user then changes any knob, the edit
   // pushes back into that layer (or broadcasts to ALL layers if MASTER).
-  // hydrationLayerRef gates the writeback so the hydration itself doesn't
-  // immediately bounce back as a write.
-  // Counter (not boolean) so concurrent re-renders don't race. Each
-  // hydration bumps it; the writeback effect skips while the counter
-  // is non-zero and decrements once per fire until it drains.
-  const hydrationLayerRef = useRef<number>(0);
+  //
+  // v1.3.3 — REMOVED the hydration gate (timing-based counter). Bug: when
+  // hydration set values that already matched the edit-buffer (e.g. layer
+  // L1 scale=1.0, default scale=1.0 → no state change → writeback never
+  // fires → counter stays >0 → next real edit gets swallowed). SCALE was
+  // most affected because L1 default == global default.
+  //
+  // The new approach: writeback effect does a value-equality check
+  // against the current layer. If no field differs, it no-ops. This
+  // breaks the ping-pong without any timing dependency.
   useEffect(() => {
     const idx = selectedLayer;
     if (idx >= 0 && idx <= 3) {
@@ -6514,15 +6518,9 @@ export default function SpectraAfter() {
       // `genLayers` (the dep-less render snapshot) caused the classic
       // ping-pong bug: edits made on MASTER would broadcast, then tapping
       // a layer tab restored stale pre-broadcast values, which writeback
-      // then patched back into the layer — visibly flipping the style /
-      // knobs between two settings.
+      // then patched back into the layer.
       const L = genLayersRef.current[idx];
       if (!L) return;
-      // One bump per state setter we are about to fire (16). The
-      // writeback effect coalesces into a single fire per render, but
-      // under concurrent rendering React may split this into multiple
-      // commits, so we count generously and just drain.
-      hydrationLayerRef.current += 1;
       setGenStyle(L.style);
       setGenDensity(L.density);
       setGenScale(L.scale);
@@ -6541,20 +6539,26 @@ export default function SpectraAfter() {
       setGenScatterMode(L.scatterMode);
     }
     // MASTER (idx === 4): keep edit-buffer as-is; edits broadcast to all.
-    // No hydration → no gate bump needed.
-    // Intentionally only runs on selectedLayer change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedLayer]);
 
   // Writeback effect: any global edit-buffer change → patch into layer(s).
+  // Value-equality short-circuit prevents hydration from bouncing back as
+  // a write (replaces the old timing-counter gate).
   useEffect(() => {
-    if (hydrationLayerRef.current > 0) {
-      // Drain the gate: hydration just fired the setters; this effect run
-      // is the bounce. Skip it and clear so the NEXT real user edit lands.
-      hydrationLayerRef.current = 0;
-      return;
-    }
     const idx = selectedLayerRef.current;
+    if (idx >= 0 && idx <= 3) {
+      const L = genLayersRef.current[idx];
+      if (L
+        && L.style === genStyle && L.density === genDensity && L.scale === genScale
+        && L.speed === genSpeed && L.hue === genHue && L.hueSpread === genHueSpread
+        && L.sat === genSat && L.contrast === genContrastG && L.warp === genWarp
+        && L.jitter === genJitter && L.seed === genSeed && L.invert === genInvert
+        && L.moshX === genMoshX && L.moshY === genMoshY
+        && L.scatter === genScatter && L.scatterMode === genScatterMode) {
+        return; // no diff — likely the hydration bounce. Skip.
+      }
+    }
     setGenLayers(prev => {
       const patch = (L: GenLayer): GenLayer => ({
         ...L,
@@ -10688,6 +10692,35 @@ export default function SpectraAfter() {
             }}
             title="Fullscreen / hide UI to view work"
           >⛶</button>
+          {/* v1.3.3 — CLOSE: hard-shutdown for Android. Stops camera/audio,
+              clears the WebView, then asks Capacitor App to exit so the
+              process is fully torn down (next launch is a cold start). */}
+          <button
+            className="sp-btn"
+            onClick={() => {
+              try { void stopCamera?.(); } catch {}
+              try { setAudioActive(false); } catch {}
+              try {
+                if (streamRef.current) {
+                  streamRef.current.getTracks().forEach(t => { try { t.stop(); } catch {} });
+                  streamRef.current = null;
+                }
+              } catch {}
+              if (Capacitor.isNativePlatform?.()) {
+                import("@capacitor/app").then(({ App }) => {
+                  App.exitApp().catch(() => {});
+                }).catch(() => {});
+              } else {
+                try { window.close(); } catch {}
+              }
+            }}
+            style={{
+              ...topBtnStyle,
+              width: 36, height: 36, padding: 0, fontSize: 14, borderRadius: 9, letterSpacing: 0,
+              color: TE.red, borderColor: TE.red,
+            }}
+            title="CLOSE — hard-shutdown the app (releases camera; cold start next launch)"
+          >✕</button>
         </div>
       </div>
       )}
