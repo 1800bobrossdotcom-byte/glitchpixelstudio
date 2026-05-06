@@ -4800,7 +4800,10 @@ export default function SpectraAfter() {
   const [sourceMode, setSourceMode] = useState<SourceMode>("generator");
   const [uploadName, setUploadName] = useState<string | null>(null);
   const [uploadKind, setUploadKind] = useState<"image" | "video" | null>(null);
-  const sourceModeRef = useRef<SourceMode>("camera");
+  // v1.2.98 — ref default must match state default. Was "camera", which
+  // caused the very first render() to take the camera branch (and skip
+  // the GEN+CAM composite) before the sync useEffect could catch up.
+  const sourceModeRef = useRef<SourceMode>("generator");
   const uploadImgRef = useRef<HTMLImageElement | null>(null);
   const uploadVideoRef = useRef<HTMLVideoElement | null>(null);
   const uploadObjectUrlRef = useRef<string | null>(null);
@@ -7546,6 +7549,42 @@ export default function SpectraAfter() {
     // shader — here we only handle the source layering. If the segmenter
     // mask isn't ready yet (texValid=false) we skip the composite this
     // frame and fall back to the un-composited source.
+    // v1.2.98 — split the gate. If face FX is armed and the camera is
+    // live but the segmenter mask isn't ready yet (texValid=false, e.g.
+    // first seconds while MediaPipe wasm loads, or init failed), draw a
+    // visible camera fallback under the generator so the user always
+    // sees that GEN+CAM is doing something. Without this, a slow / failed
+    // segmenter init silently leaves you on pure generator.
+    if (
+      texSource &&
+      srcMode !== "camera" &&
+      faceFxRef.current.active &&
+      !faceFxRef.current.texValid &&
+      cameraActiveRef.current &&
+      video && video.readyState >= 2 && video.videoWidth > 0
+    ) {
+      const W = (texSource as { width?: number }).width ?? srcW;
+      const H = (texSource as { height?: number }).height ?? srcH;
+      if (W > 0 && H > 0) {
+        let out = faceComposeCanvasRef.current;
+        if (!out) { out = document.createElement("canvas"); faceComposeCanvasRef.current = out; }
+        if (out.width !== W || out.height !== H) { out.width = W; out.height = H; }
+        const octx = out.getContext("2d");
+        if (octx) {
+          octx.globalCompositeOperation = "source-over";
+          octx.globalAlpha = 1;
+          octx.clearRect(0, 0, W, H);
+          octx.drawImage(video, 0, 0, W, H);
+          octx.globalCompositeOperation = "hard-light";
+          octx.globalAlpha = 0.55;
+          octx.drawImage(texSource as CanvasImageSource, 0, 0, W, H);
+          octx.globalCompositeOperation = "source-over";
+          octx.globalAlpha = 1;
+          texSource = out; srcW = W; srcH = H;
+        }
+      }
+    }
+
     if (
       texSource &&
       srcMode !== "camera" &&
@@ -8261,7 +8300,9 @@ export default function SpectraAfter() {
         const { Permissions } = (window as unknown as { Capacitor: { Plugins: { Permissions?: { query: (o: { name: string }) => Promise<{ state: string }>; requestPermissions: (o: { permissions: string[] }) => Promise<{ camera: string }> } } } }).Capacitor.Plugins;
         if (Permissions) {
           const result = await Permissions.query({ name: "Camera" });
-          if (result.state === "denied") {
+          // v1.2.98 — handle "prompt" the same as "denied": actually
+          // request the permission instead of silently returning false.
+          if (result.state === "denied" || result.state === "prompt") {
             const req = await Permissions.requestPermissions({ permissions: ["Camera"] });
             return req.camera === "granted";
           }
