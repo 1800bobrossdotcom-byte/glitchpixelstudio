@@ -11241,8 +11241,10 @@ export default function SpectraAfter() {
                       onClick={() => {
                         if (g === "off") {
                           // Drop back to plain BASE (camera or upload).
-                          // Don't kill the camera unless face FX was also
-                          // off — preserves the FACE-FX-on-camera path.
+                          // Leave faceFxMode alone — that's the top-nav
+                          // 👤 button's job. The renderer's GEN-masking
+                          // composites only fire when sourceMode==="generator"
+                          // so this is enough to remove the generator.
                           if (uploadName && sourceMode === "upload") {
                             setSourceMode("upload");
                           } else {
@@ -11250,12 +11252,16 @@ export default function SpectraAfter() {
                             if (!cameraActive) void startCamera();
                           }
                         } else if (g === "full") {
-                          // Pure generator — stop camera if face FX is OFF
-                          // (the segmenter doesn't need it). If FX is armed
-                          // we keep the camera so the mask still has frames.
+                          // Pure full-frame generator. CRITICAL: turn
+                          // face FX OFF so the renderer doesn't keep
+                          // masking the generator to just the person
+                          // (was the v1.3.4 bug — FULL silently behaved
+                          // like SUBJ when face FX was already armed).
+                          // Camera released since the segmenter is off.
                           clearUploadSource();
+                          setFaceFxMode("OFF");
                           setSourceMode("generator");
-                          if (cameraActive && faceFxModeRef.current === "OFF") stopCamera();
+                          if (cameraActive) stopCamera();
                         } else if (g === "subject") {
                           // GEN painted on the person; real-world BG behind.
                           clearUploadSource();
