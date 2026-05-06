@@ -11137,57 +11137,76 @@ export default function SpectraAfter() {
 
           <Section title="VISION MODE LAB" id="modes" open={openSections.has("modes")} onToggle={toggleSection}>
 
-            {/* ── SOURCE ────────────────────────────────────────────── */}
-            <SynthPanel title="SOURCE" subtitle={(sourceMode === "generator" && cameraActive) ? "GEN+CAM" : sourceMode.toUpperCase()} accent="rgba(255,210,140,0.85)">
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6, marginBottom: 8 }}>
-                {(["generator","camera","blend","upload"] as const).map((sm) => {
-                  const lbl = sm === "generator" ? "GEN" : sm === "camera" ? "CAM" : sm === "blend" ? "GEN+CAM" : "UPLD";
-                  const active =
-                    sm === "generator" ? (sourceMode === "generator" && !cameraActive) :
-                    sm === "camera"    ? (sourceMode === "camera") :
-                    sm === "blend"     ? (sourceMode === "generator" && cameraActive) :
-                                         (sourceMode === "upload");
+            {/* ── INPUT ───────────────────────────────────────────────
+                v1.3.4 — split the old 4-way SOURCE picker into two
+                INDEPENDENT rows so each button does ONE thing:
+                  BASE: CAM | UPLD  → which feed underlies everything
+                  GEN OVERLAY: OFF | FULL | SUBJECT | BG → where the
+                    procedural generator paints (off = base only,
+                    full = generator only, subject = on the person,
+                    bg = on the background behind the person).
+                The internal sourceMode/faceFxMode plumbing is
+                unchanged; this UI just stops partitioning GEN as a
+                separate "source" (which was the source of all the
+                wonky button interactions). */}
+            <SynthPanel
+              title="INPUT"
+              subtitle={(() => {
+                const baseLbl = sourceMode === "upload" ? "UPLD" : "CAM";
+                const genLbl =
+                  sourceMode === "generator"
+                    ? (cameraActive
+                        ? (faceFxMode === "FACE" ? "GEN/SUBJECT" : faceFxMode === "BG" ? "GEN/BG" : "GEN+CAM")
+                        : "GEN/FULL")
+                    : "GEN OFF";
+                return `${baseLbl} · ${genLbl}`;
+              })()}
+              accent="rgba(255,210,140,0.85)"
+            >
+              {/* Row 1 — BASE FEED */}
+              <div style={{ fontSize: 8, letterSpacing: "1.4px", color: "rgba(255,210,140,0.7)", marginBottom: 4 }}>BASE</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 6, marginBottom: 8 }}>
+                {(["camera","upload"] as const).map((sm) => {
+                  const lbl = sm === "camera" ? "CAM" : "UPLD";
+                  // Active = the renderer is actually consuming this feed.
+                  // CAM is "active" whenever the camera is live (covers
+                  // both pure CAM and any GEN-overlay-on-camera combo).
+                  const active = sm === "camera" ? cameraActive : sourceMode === "upload";
                   return (
                     <button
                       key={sm}
                       onClick={() => {
-                        if (sm === "generator") {
+                        if (sm === "camera") {
+                          // Tap CAM:
+                          //  - If currently UPLD: switch to plain CAM.
+                          //  - If currently CAM (no GEN): toggle camera off.
+                          //  - If GEN+CAM combo: turn the camera off but
+                          //    leave generator running (GEN→FULL).
                           clearUploadSource();
-                          // v1.2.93 — only stop the camera when face FX is
-                          // OFF. Cold boot lands on GEN+CAM (sourceMode=
-                          // generator + camera auto-started by the faceFx
-                          // boot effect). If the user clicks GEN here we
-                          // preserve that working composite — the segmenter
-                          // needs camera frames anyway. If they truly want
-                          // camera off they can hit CAM ON/OFF directly.
-                          if (cameraActive && faceFxModeRef.current === "OFF") stopCamera();
-                          setSourceMode("generator");
-                        } else if (sm === "camera") {
-                          clearUploadSource();
-                          setSourceMode("camera");
-                          if (!cameraActive) void startCamera();
-                        } else if (sm === "blend") {
-                          clearUploadSource();
-                          setSourceMode("generator");
-                          if (!cameraActive) void startCamera();
-                          // v1.2.96 — GEN+CAM hotkey: if Face FX is OFF the
-                          // composite is invisible (camera frames have nothing
-                          // to overlay onto the generator). Auto-arm FACE so
-                          // the button always produces the expected result
-                          // — person rotoscoped on top of the generator.
-                          if (faceFxModeRef.current === "OFF") {
-                            setFaceFxMode("FACE");
+                          if (sourceMode === "upload") {
+                            setSourceMode("camera");
+                            if (!cameraActive) void startCamera();
+                          } else if (sourceMode === "camera") {
+                            if (cameraActive) { stopCamera(); }
+                            else { void startCamera(); }
+                          } else {
+                            // sourceMode === "generator"
+                            if (cameraActive) {
+                              stopCamera();
+                            } else {
+                              void startCamera();
+                            }
                           }
-                        } else if (sm === "upload") {
-                          // Don't switch mode until a file is actually picked —
-                          // setting it preemptively leaves the renderer in an
-                          // empty "upload" state if the user cancels the picker.
+                        } else {
+                          // UPLD: open file picker; on pick, the file
+                          // handler sets sourceMode="upload" and clears
+                          // GEN. Don't pre-flip state in case user cancels.
                           sourceFileInputRef.current?.click();
                         }
                       }}
                       style={{
                         padding: "11px 4px",
-                        fontSize: 10, letterSpacing: "1.2px", fontWeight: 700,
+                        fontSize: 11, letterSpacing: "1.4px", fontWeight: 700,
                         fontFamily: "'Trebuchet MS',sans-serif",
                         cursor: "pointer",
                         borderRadius: 5,
@@ -11199,6 +11218,72 @@ export default function SpectraAfter() {
                           : "linear-gradient(180deg, #3A3A3E 0%, #1A1A1E 48%, #101014 100%)",
                         boxShadow: active
                           ? "inset 0 1px 1px rgba(255,220,220,0.18), inset 0 -2px 4px rgba(0,0,0,0.74), 0 0 10px rgba(255,62,62,0.45)"
+                          : "inset 0 1px 1px rgba(255,255,255,0.08), inset 0 -2px 4px rgba(0,0,0,0.72)",
+                      }}
+                    >{lbl}</button>
+                  );
+                })}
+              </div>
+
+              {/* Row 2 — GEN OVERLAY (where the generator paints) */}
+              <div style={{ fontSize: 8, letterSpacing: "1.4px", color: "rgba(255,210,140,0.7)", marginBottom: 4 }}>GEN OVERLAY</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6, marginBottom: 8 }}>
+                {(["off","full","subject","bg"] as const).map((g) => {
+                  const lbl = g === "off" ? "OFF" : g === "full" ? "FULL" : g === "subject" ? "SUBJ" : "BG";
+                  const active =
+                    g === "off"     ? sourceMode !== "generator" :
+                    g === "full"    ? (sourceMode === "generator" && !cameraActive) :
+                    g === "subject" ? (sourceMode === "generator" && cameraActive && faceFxMode === "FACE") :
+                                      (sourceMode === "generator" && cameraActive && faceFxMode === "BG");
+                  return (
+                    <button
+                      key={g}
+                      onClick={() => {
+                        if (g === "off") {
+                          // Drop back to plain BASE (camera or upload).
+                          // Don't kill the camera unless face FX was also
+                          // off — preserves the FACE-FX-on-camera path.
+                          if (uploadName && sourceMode === "upload") {
+                            setSourceMode("upload");
+                          } else {
+                            setSourceMode("camera");
+                            if (!cameraActive) void startCamera();
+                          }
+                        } else if (g === "full") {
+                          // Pure generator — stop camera if face FX is OFF
+                          // (the segmenter doesn't need it). If FX is armed
+                          // we keep the camera so the mask still has frames.
+                          clearUploadSource();
+                          setSourceMode("generator");
+                          if (cameraActive && faceFxModeRef.current === "OFF") stopCamera();
+                        } else if (g === "subject") {
+                          // GEN painted on the person; real-world BG behind.
+                          clearUploadSource();
+                          setSourceMode("generator");
+                          setFaceFxMode("FACE");
+                          if (!cameraActive) void startCamera();
+                        } else {
+                          // GEN as the background; clean person on top.
+                          clearUploadSource();
+                          setSourceMode("generator");
+                          setFaceFxMode("BG");
+                          if (!cameraActive) void startCamera();
+                        }
+                      }}
+                      style={{
+                        padding: "11px 4px",
+                        fontSize: 10, letterSpacing: "1.2px", fontWeight: 700,
+                        fontFamily: "'Trebuchet MS',sans-serif",
+                        cursor: "pointer",
+                        borderRadius: 5,
+                        border: active ? "1px solid rgba(199,101,255,0.9)" : "1px solid rgba(0,0,0,0.72)",
+                        color: active ? "rgba(245,210,255,1)" : "rgba(195,190,200,0.72)",
+                        textShadow: active ? "0 0 8px rgba(199,101,255,0.7)" : "none",
+                        background: active
+                          ? "linear-gradient(180deg, #3A0852 0%, #1A0224 100%)"
+                          : "linear-gradient(180deg, #3A3A3E 0%, #1A1A1E 48%, #101014 100%)",
+                        boxShadow: active
+                          ? "inset 0 1px 1px rgba(255,220,255,0.18), inset 0 -2px 4px rgba(0,0,0,0.74), 0 0 10px rgba(199,101,255,0.4)"
                           : "inset 0 1px 1px rgba(255,255,255,0.08), inset 0 -2px 4px rgba(0,0,0,0.72)",
                       }}
                     >{lbl}</button>
