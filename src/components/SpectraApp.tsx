@@ -6503,10 +6503,18 @@ export default function SpectraAfter() {
   // pushes back into that layer (or broadcasts to ALL layers if MASTER).
   // hydrationLayerRef gates the writeback so the hydration itself doesn't
   // immediately bounce back as a write.
-  // Counter (not boolean) so concurrent re-renders don't race. Each
-  // hydration bumps it; the writeback effect skips while the counter
-  // is non-zero and decrements once per fire until it drains.
-  const hydrationLayerRef = useRef<number>(0);
+  //
+  // v1.3.0 — gate is a boolean cleared via setTimeout(0) AFTER the
+  // current React commit's effects have all fired. The previous counter
+  // approach left the gate stuck at 1 whenever hydration set values that
+  // matched the existing edit-buffer (no deps changed → writeback effect
+  // never ran → gate never decremented), which silently swallowed the
+  // user's NEXT real knob edit. SCALE was the most-affected knob because
+  // L1's default scale (1.0) matches the global default (1.0), so the
+  // gate stayed armed from boot until the user changed something else
+  // first. Now hydration sets the gate and queues a clear that runs
+  // after every useEffect of this commit cycle has resolved.
+  const hydrationLayerRef = useRef<boolean>(false);
   useEffect(() => {
     const idx = selectedLayer;
     if (idx >= 0 && idx <= 3) {
@@ -6518,11 +6526,7 @@ export default function SpectraAfter() {
       // knobs between two settings.
       const L = genLayersRef.current[idx];
       if (!L) return;
-      // One bump per state setter we are about to fire (16). The
-      // writeback effect coalesces into a single fire per render, but
-      // under concurrent rendering React may split this into multiple
-      // commits, so we count generously and just drain.
-      hydrationLayerRef.current += 1;
+      hydrationLayerRef.current = true;
       setGenStyle(L.style);
       setGenDensity(L.density);
       setGenScale(L.scale);
@@ -6539,6 +6543,11 @@ export default function SpectraAfter() {
       setGenMoshY(L.moshY);
       setGenScatter(L.scatter);
       setGenScatterMode(L.scatterMode);
+      // Macrotask: runs AFTER the current commit's useEffect tick, so
+      // the writeback effect (a useEffect on the same commit) has had
+      // its chance to see the gate. If it didn't fire because no deps
+      // changed, this still clears the gate so the next real edit lands.
+      setTimeout(() => { hydrationLayerRef.current = false; }, 0);
     }
     // MASTER (idx === 4): keep edit-buffer as-is; edits broadcast to all.
     // No hydration → no gate bump needed.
@@ -6548,10 +6557,10 @@ export default function SpectraAfter() {
 
   // Writeback effect: any global edit-buffer change → patch into layer(s).
   useEffect(() => {
-    if (hydrationLayerRef.current > 0) {
+    if (hydrationLayerRef.current) {
       // Drain the gate: hydration just fired the setters; this effect run
       // is the bounce. Skip it and clear so the NEXT real user edit lands.
-      hydrationLayerRef.current = 0;
+      hydrationLayerRef.current = false;
       return;
     }
     const idx = selectedLayerRef.current;
