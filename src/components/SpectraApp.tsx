@@ -9494,12 +9494,18 @@ export default function SpectraAfter() {
     try {
       const s = JSON.parse(raw) as SessionStateV1;
       if (!s || typeof s !== "object") return;
-      // Spectra startup policy: boot into the live camera so PXL/MOSH and the
-      // FX rack always have a real image to chew on by default.
+      // Spectra startup policy: boot into GEN + CAM with Face FX (FACE) every
+      // time so PXL/MOSH and the FX rack always have a real composite to
+      // chew on by default. v1.2.97 — previously this restore path forced
+      // sourceMode="camera" with no faceFxMode reset, so a warm relaunch
+      // dropped users into camera-only with no person rotoscope, even
+      // though the cold-launch defaults were GEN+CAM+FACE. Now matches
+      // the cold default exactly.
       setMode(0);
       setComboMode(true);
       setComboLayers([{mode:7,gain:1},{mode:9,gain:1}]);
-      setSourceMode("camera");
+      setSourceMode("generator");
+      setFaceFxMode("FACE");
       setGenPalette("MONO");
       setGenAutoCycle(false);
       // v1.2.46: boot user-facing for the same reason as the state default.
