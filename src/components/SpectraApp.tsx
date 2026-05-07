@@ -11152,14 +11152,13 @@ export default function SpectraAfter() {
             <SynthPanel
               title="INPUT"
               subtitle={(() => {
-                const baseLbl = sourceMode === "upload" ? "UPLD" : "CAM";
-                const genLbl =
-                  sourceMode === "generator"
-                    ? (cameraActive
-                        ? (faceFxMode === "FACE" ? "GEN/SUBJECT" : faceFxMode === "BG" ? "GEN/BG" : "GEN+CAM")
-                        : "GEN/FULL")
-                    : "GEN OFF";
-                return `${baseLbl} · ${genLbl}`;
+                // v1.3.6 — diagnostic subtitle: show literal state vars so
+                // we can see WHY a button doesn't appear to react. If the
+                // user reports "tap does nothing" we now have evidence.
+                const sm = sourceMode === "generator" ? "GEN" : sourceMode === "upload" ? "UPLD" : "CAM";
+                const fx = faceFxMode;
+                const cam = cameraActive ? "Y" : "n";
+                return `src:${sm} fx:${fx} cam:${cam}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
@@ -11210,14 +11209,16 @@ export default function SpectraAfter() {
                         fontFamily: "'Trebuchet MS',sans-serif",
                         cursor: "pointer",
                         borderRadius: 5,
-                        border: active ? "1px solid rgba(208,58,58,0.85)" : "1px solid rgba(0,0,0,0.72)",
-                        color: active ? "rgba(255,168,150,1)" : "rgba(195,190,200,0.72)",
-                        textShadow: active ? "0 0 8px rgba(255,84,84,0.7)" : "none",
+                        // v1.3.6 — match GEN OVERLAY: bright white border for
+                        // active so the lit button is unmistakable.
+                        border: active ? "2px solid rgba(255,255,255,0.95)" : "1px solid rgba(0,0,0,0.72)",
+                        color: active ? "rgba(255,255,255,1)" : "rgba(195,190,200,0.72)",
+                        textShadow: active ? "0 0 8px rgba(255,255,255,0.85)" : "none",
                         background: active
                           ? "linear-gradient(180deg, #5A0E16 0%, #2A060A 100%)"
                           : "linear-gradient(180deg, #3A3A3E 0%, #1A1A1E 48%, #101014 100%)",
                         boxShadow: active
-                          ? "inset 0 1px 1px rgba(255,220,220,0.18), inset 0 -2px 4px rgba(0,0,0,0.74), 0 0 10px rgba(255,62,62,0.45)"
+                          ? "inset 0 1px 1px rgba(255,255,255,0.3), inset 0 -2px 4px rgba(0,0,0,0.74), 0 0 12px rgba(255,255,255,0.55)"
                           : "inset 0 1px 1px rgba(255,255,255,0.08), inset 0 -2px 4px rgba(0,0,0,0.72)",
                       }}
                     >{lbl}</button>
@@ -11282,14 +11283,17 @@ export default function SpectraAfter() {
                         fontFamily: "'Trebuchet MS',sans-serif",
                         cursor: "pointer",
                         borderRadius: 5,
-                        border: active ? "1px solid rgba(199,101,255,0.9)" : "1px solid rgba(0,0,0,0.72)",
-                        color: active ? "rgba(245,210,255,1)" : "rgba(195,190,200,0.72)",
-                        textShadow: active ? "0 0 8px rgba(199,101,255,0.7)" : "none",
+                        // v1.3.6 — color-blind-safe active highlight: bright
+                        // WHITE border + thicker (2px) so the lit button is
+                        // unmistakable regardless of hue perception.
+                        border: active ? "2px solid rgba(255,255,255,0.95)" : "1px solid rgba(0,0,0,0.72)",
+                        color: active ? "rgba(255,255,255,1)" : "rgba(195,190,200,0.72)",
+                        textShadow: active ? "0 0 8px rgba(255,255,255,0.85)" : "none",
                         background: active
-                          ? "linear-gradient(180deg, #3A0852 0%, #1A0224 100%)"
+                          ? "linear-gradient(180deg, #5A1880 0%, #2A0838 100%)"
                           : "linear-gradient(180deg, #3A3A3E 0%, #1A1A1E 48%, #101014 100%)",
                         boxShadow: active
-                          ? "inset 0 1px 1px rgba(255,220,255,0.18), inset 0 -2px 4px rgba(0,0,0,0.74), 0 0 10px rgba(199,101,255,0.4)"
+                          ? "inset 0 1px 1px rgba(255,255,255,0.3), inset 0 -2px 4px rgba(0,0,0,0.74), 0 0 12px rgba(255,255,255,0.55)"
                           : "inset 0 1px 1px rgba(255,255,255,0.08), inset 0 -2px 4px rgba(0,0,0,0.72)",
                       }}
                     >{lbl}</button>
