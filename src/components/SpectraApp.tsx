@@ -9466,6 +9466,31 @@ export default function SpectraAfter() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bootDone, sourceMode, faceFxMode]);
 
+  // v1.3.14 — CAMERA WATCHDOG. The default boot state is GEN+CAM+FACE
+  // (gen on subject, camera as background). If the very first
+  // startCamera() call after boot loses a race (permission prompt
+  // dismissed late, getUserMedia stalled, WebView not ready) the user
+  // sees "just gen" full-screen forever because nothing re-arms the
+  // camera. Ditto after a resume where the recover() path silently
+  // failed. This watchdog runs every 2.5s: if we *want* a camera
+  // (sourceMode==camera OR faceFx armed) but cameraActive is false and
+  // no startCamera is currently in-flight, kick startCamera again.
+  useEffect(() => {
+    if (!bootDone) return;
+    const iv = window.setInterval(() => {
+      const wantsCam = sourceModeRef.current === "camera" || faceFxModeRef.current !== "OFF";
+      if (!wantsCam) return;
+      if (startCameraInFlightRef.current) return;
+      const stream = streamRef.current;
+      const live = !!stream && stream.active && (stream.getVideoTracks?.() ?? []).some(t => t.readyState === "live");
+      if (live && cameraActive) return;
+      try { console.warn("[GPS] camera watchdog: re-arming startCamera (wantsCam=true, active=", cameraActive, ", live=", live, ")"); } catch {}
+      void startCamera(true);
+    }, 2500);
+    return () => window.clearInterval(iv);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bootDone, cameraActive]);
+
   // v1.2.96 — Resume handler. When the user backgrounds the app and
   // returns (without a hard kill), Android may have torn down the camera
   // tracks even though our React state still says cameraActive=true. The
@@ -11183,7 +11208,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.13 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.14 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
