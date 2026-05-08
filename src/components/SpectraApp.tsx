@@ -5343,33 +5343,39 @@ export default function SpectraAfter() {
       // 0.82 multiplies destination alpha by 0.18, so BG alpha decays
       // to 0 (no false matte) and FG alpha decays to 18% of prior
       // before the new ring dilation re-saturates it back to 1.0.
+      const _dW = maskCanvas.width, _dH = maskCanvas.height;
+      // Per-tick decay of prior mask (destination-out so BG alpha
+      // actually decays toward 0 — see v1.3.15 fix notes above).
       maskCtx.globalCompositeOperation = "destination-out";
       maskCtx.fillStyle = "rgba(0,0,0,0.82)";
-      maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
-      const _dW = maskCanvas.width, _dH = maskCanvas.height;
-      // v1.3.21 — TRUE MORPHOLOGICAL DILATION via Canvas2D filter chain.
-      // The old ring-of-stamps approach only deposited 8 samples per
-      // radius (axes + diagonals), so at small radii (≤5 px) the gaps
-      // were sub-pixel and the halo read smooth — but at 28..50 px the
-      // wedges between the 8 angular stamps became huge empty pies and
-      // the mask collapsed to a sparse 8-point star, exposing the raw
-      // tiny silhouette. The user (correctly) saw this as "bigger
-      // slider value = visually smaller mask".
-      // The fix: `blur(Rpx) contrast(20)` is a single-draw hard-edge
-      // dilation. Blur spreads alpha radially and uniformly; contrast
-      // 20 pushes any alpha above ~5% back to 1.0 and below to 0,
-      // yielding a solid filled disk of dilation in EVERY direction.
-      // Slider 0..1 → blur radius ~6..36 px → effective dilation
-      // ~6..36 px (1:1 since contrast threshold sits near the blur's
-      // half-coverage isoline). Default 0 already wraps the head.
+      maskCtx.fillRect(0, 0, _dW, _dH);
+      // v1.3.22 — SCALE-UP dilation. The blur+contrast trick from
+      // v1.3.21 only expanded by where blur reached ≥0.5 alpha, which
+      // is roughly constant regardless of blur radius (alpha just
+      // spreads thinner as R grows, then contrast clamps it back to a
+      // similar-size disk). User saw this as "slider just makes
+      // opacity go down a bit" — correct observation.
+      // Real expansion: SCALE the source mask up from center. A 1.0
+      // → 1.5x scale on a 256x144 canvas pushes the silhouette edge
+      // outward by ~25..50 px in image space, which is the dilation
+      // we actually want. Slider 0..1 maps to scale 1.10..1.55.
+      // After the scale-stamp we add a small blur+contrast for clean
+      // edges and a 2 px feather pass.
       const _expand = Math.max(0, Math.min(1, maskExpandRef.current));
-      const _blurPx = 6 + _expand * 30;
+      const _scale = 1.10 + _expand * 0.45;
+      const _scaledW = _dW * _scale;
+      const _scaledH = _dH * _scale;
+      const _offX = (_dW - _scaledW) * 0.5;
+      const _offY = (_dH - _scaledH) * 0.5;
       maskCtx.globalCompositeOperation = "lighter";
-      try { (maskCtx as unknown as { filter?: string }).filter = `blur(${_blurPx.toFixed(2)}px) contrast(20)`; } catch { /* noop */ }
+      try { (maskCtx as unknown as { filter?: string }).filter = "blur(0.6px) contrast(15)"; } catch { /* noop */ }
+      maskCtx.drawImage(scratchCanvas, _offX, _offY, _scaledW, _scaledH);
+      // Re-stamp at original scale so a small subject doesn't drift
+      // off-axis when the scaled draw misses (centered scaling on the
+      // CANVAS isn't quite centered on the SUBJECT). Both stamps add
+      // via `lighter` so the result is the union of both shapes.
       maskCtx.drawImage(scratchCanvas, 0, 0, _dW, _dH);
-      // Second pass with a smaller blur and no contrast to soften the
-      // now-hard edge by ~2 px (constant feather, doesn't shrink the
-      // matte since `lighter` only ADDS alpha).
+      // Feather pass.
       try { (maskCtx as unknown as { filter?: string }).filter = "blur(2px)"; } catch { /* noop */ }
       maskCtx.drawImage(scratchCanvas, 0, 0, _dW, _dH);
       try { (maskCtx as unknown as { filter?: string }).filter = "none"; } catch { /* noop */ }
@@ -11238,7 +11244,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.21 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.22 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
