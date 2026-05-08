@@ -5018,6 +5018,15 @@ export default function SpectraAfter() {
   // fresh segmenter init even when faceFxMode is already at the target
   // value (which would otherwise short-circuit React's useState dedupe).
   const [faceFxKick, setFaceFxKick] = useState(0);
+  // v1.3.17 — user-controllable mask EXPAND knob (0..1). Drives the
+  // ring-dilation radius applied to the segmenter mask each tick. The
+  // segmenter often under-cuts shoulders/hair; this knob lets the user
+  // dial in how aggressively the matte spills outward to fully cover
+  // the subject. 0 = no dilation (raw matte), 0.5 ≈ ~3 px (default,
+  // matches the prior v1.3.16 hard-coded behaviour), 1.0 = ~7 px max.
+  const [maskExpand, setMaskExpand] = useState(0.5);
+  const maskExpandRef = useRef(0.5);
+  useEffect(() => { maskExpandRef.current = maskExpand; }, [maskExpand]);
   const faceFxRef = useRef<{ active: boolean; invert: boolean; texValid: boolean; cx: number; cy: number; r: number; }>({
     active: false, invert: false, texValid: false, cx: 0.5, cy: 0.42, r: 0.28,
   });
@@ -5336,26 +5345,27 @@ export default function SpectraAfter() {
       maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
       maskCtx.globalCompositeOperation = "lighter";
       const _dW = maskCanvas.width, _dH = maskCanvas.height;
-      // v1.3.16 — WIDER dilation (adds 4 px ring → 4 concentric
-      // rings, 32 offsets) for fuller subject coverage at the
-      // shoulders/hair, plus a slight blur feather pass on the final
-      // stamp so the matte edge reads smooth instead of stair-stepped.
-      const _ringOff: Array<[number, number]> = [
-        [-1, 0], [1, 0], [0, -1], [0, 1],
-        [-1, -1], [1, -1], [-1, 1], [1, 1],
-        [-2, 0], [2, 0], [0, -2], [0, 2],
-        [-2, -2], [2, -2], [-2, 2], [2, 2],
-        [-3, 0], [3, 0], [0, -3], [0, 3],
-        [-3, -1], [3, -1], [-3, 1], [3, 1],
-        [-4, 0], [4, 0], [0, -4], [0, 4],
-        [-4, -2], [4, -2], [-4, 2], [4, 2],
-      ];
+      // v1.3.17 — DYNAMIC ring dilation driven by the user-facing
+      // MASK EXPAND knob (maskExpandRef, 0..1). Builds concentric
+      // rings out to a radius of round(0.5 + expand*7) px each tick.
+      // 0.0 → 1 px (essentially none), 0.5 → 4 px (matches the prior
+      // v1.3.16 default), 1.0 → 7 px (max, generous coverage). 8
+      // offsets per ring (axis + diagonals), so total stamps stay in
+      // the same ballpark as the old fixed list. After all rings, a
+      // slightly stronger blur feather (1.2 px) softens the edge.
+      const _expand = Math.max(0, Math.min(1, maskExpandRef.current));
+      const _radius = Math.max(1, Math.round(0.5 + _expand * 7));
+      const _ringOff: Array<[number, number]> = [];
+      for (let _r = 1; _r <= _radius; _r++) {
+        _ringOff.push([-_r, 0], [_r, 0], [0, -_r], [0, _r]);
+        _ringOff.push([-_r, -_r], [_r, -_r], [-_r, _r], [_r, _r]);
+      }
       for (const [ox, oy] of _ringOff) {
         maskCtx.drawImage(scratchCanvas, ox, oy, _dW, _dH);
       }
       // Final centered draw with slight blur so the matte edge feathers
-      // ~1 px instead of being a hard binary cut. Reset filter after.
-      try { (maskCtx as unknown as { filter?: string }).filter = "blur(1px)"; } catch { /* noop */ }
+      // smoothly instead of being a hard binary cut. Reset filter after.
+      try { (maskCtx as unknown as { filter?: string }).filter = "blur(1.2px)"; } catch { /* noop */ }
       maskCtx.drawImage(scratchCanvas, 0, 0, _dW, _dH);
       try { (maskCtx as unknown as { filter?: string }).filter = "none"; } catch { /* noop */ }
       maskCtx.globalCompositeOperation = "source-over";
@@ -11223,7 +11233,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.16 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.17 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
@@ -11395,6 +11405,21 @@ export default function SpectraAfter() {
                       boxShadow: "inset 0 1px 1px rgba(255,255,255,0.12), inset 0 -2px 3px rgba(0,0,0,0.7)",
                     }}
                   >SWAP FG ⇄ BG</button>
+                </div>
+              )}
+              {/* v1.3.17 — MASK EXPAND knob. Only shown when the
+                  segmenter is actually driving a matte (FACE or BG).
+                  Lets the user dial how far the mask spills outward
+                  to fully cover the subject (the segmenter often
+                  under-cuts shoulders/hair). 0 = raw matte, 1 = max. */}
+              {(faceFxMode === "FACE" || faceFxMode === "BG") && (
+                <div style={{ marginBottom: 8 }}>
+                  <SliderRow
+                    label="MASK EXPAND"
+                    value={maskExpand}
+                    min={0} max={1} step={0.01}
+                    onChange={setMaskExpand}
+                  />
                 </div>
               )}
               <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, alignItems: "center" }}>
