@@ -8102,7 +8102,8 @@ export default function SpectraAfter() {
     setF2(u.uFaceCenter, faceFxRef.current.cx, faceFxRef.current.cy);
     setF1(u.uFaceRadius, faceFxRef.current.r);
     setF1(u.uFaceInvert, faceFxRef.current.invert ? 1.0 : 0.0);
-    setF1(u.uFaceFeather, 0.06);
+    // v1.3.28 — minimal feather; user wants a near-hard mask edge
+    setF1(u.uFaceFeather, 0.008);
     if (faceTextureRef.current) {
       gl.activeTexture(gl.TEXTURE4);
       gl.bindTexture(gl.TEXTURE_2D, faceTextureRef.current);
@@ -11381,7 +11382,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.27 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.28 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
