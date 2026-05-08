@@ -214,7 +214,13 @@ function drawPixelGenerator(canvas: HTMLCanvasElement, p: GenParams): void {
   // Pure-pixel renderer. Every style is rasterised into a tiny ImageData
   // then scaled up with imageSmoothingEnabled = false. No paths, no arcs,
   // no rectangles drawn over the field — only colored pixels in a grid.
-  const cells = Math.max(8, Math.min(220, Math.round(p.resolution)));
+  // v1.3.24 — SCALE knob now drives cell size (bigger SCALE = chunkier
+  // pixels). Earlier the knob only modulated per-family noise zoom by
+  // ~25 % and the user reported "nothing visible". Routing it through
+  // the cell count makes the change instantly readable.
+  const baseCells = Math.max(8, Math.min(220, Math.round(p.resolution)));
+  const _scaleK = Math.max(0.25, Math.min(4, p.scale || 1));
+  const cells = Math.max(8, Math.min(220, Math.round(baseCells / _scaleK)));
   const short = Math.min(W, H);
   const cell = Math.max(2, Math.floor(short / cells));
   const gw = Math.max(8, Math.ceil(W / cell));
@@ -11264,7 +11270,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.23 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.24 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
