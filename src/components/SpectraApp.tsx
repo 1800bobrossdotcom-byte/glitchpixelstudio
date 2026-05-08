@@ -6664,14 +6664,20 @@ export default function SpectraAfter() {
   // (we want sortMix to stay at 0 so first paint shows pure GEN+CAM, not
   // the sort distortion). User toggling away from PXL and back will reset
   // this ref via the cleanup branch below.
+  // v1.3.12 — DISABLED. User explicitly requested all settings stay
+  // null until they touch them. The auto-bump was setting REALSORT to
+  // 0.65 and AMOUNT to 0.5 the first time the user opened the PIXEL
+  // SORT rack, which made it look like pixel-sort was "on by default"
+  // and contaminated every downstream FX visual. Now: every knob ships
+  // at exactly its useState default (0.0) and only moves when the user
+  // moves it.
   const pxlEntryDoneRef = useRef(true);
   useEffect(() => {
     if (mode !== 7) { pxlEntryDoneRef.current = false; return; }
     if (pxlEntryDoneRef.current) return;
     pxlEntryDoneRef.current = true;
-    if (sortMix < 0.05) setSortMix(0.65);
-    if (sortAmt < 0.05) setSortAmt(0.5);
-  }, [mode, sortMix, sortAmt]);
+    // (no-op — auto-bump removed v1.3.12)
+  }, [mode]);
   // \u2500\u2500 AUTOMATE: drift generator knobs on an LFO interval. Generator-only.
   useEffect(() => {
     if (!automateOn) return;
@@ -7561,29 +7567,14 @@ export default function SpectraAfter() {
             texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
           }
         } else {
-          let cc = genCompositeCanvasRef.current;
-          if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
-          if (cc.width !== targetW || cc.height !== targetH) {
-            cc.width = targetW; cc.height = targetH;
-          }
-          const cctx = cc.getContext("2d");
-          if (cctx) {
-            cctx.globalCompositeOperation = "source-over";
-            cctx.globalAlpha = 1;
-            cctx.clearRect(0, 0, cc.width, cc.height);
-            cctx.drawImage(video, 0, 0, cc.width, cc.height);
-            cctx.globalCompositeOperation = "source-over";
-            cctx.globalAlpha = 0.55;
-            cctx.drawImage(gc, 0, 0, cc.width, cc.height);
-            cctx.globalCompositeOperation = "screen";
-            cctx.globalAlpha = 0.45;
-            cctx.drawImage(gc, 0, 0, cc.width, cc.height);
-            cctx.globalCompositeOperation = "source-over";
-            cctx.globalAlpha = 1;
-            texSource = cc; srcW = cc.width; srcH = cc.height;
-          } else {
-            texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
-          }
+          // v1.3.12 — face FX OFF on GEN+CAM. Previously this branch
+          // composited a 55%-source-over + 45%-screen blend of gen
+          // over video, which (a) read visually as pixel-sort/glitch
+          // even with all knobs at 0 and (b) had no real intent now
+          // that the GEN OVERLAY tiles explicitly route via face FX.
+          // With face FX OFF the user picked the OFF or GEN tile, so
+          // just show pure generator. No surprise blends.
+          texSource = gc; srcW = gc.width; srcH = gc.height;
         }
       } else {
         texSource = gc; srcW = gc.width; srcH = gc.height;
@@ -11192,7 +11183,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.12 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
