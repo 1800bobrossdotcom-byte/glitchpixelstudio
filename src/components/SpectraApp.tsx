@@ -5014,6 +5014,10 @@ export default function SpectraAfter() {
   const faceFxModeRef = useRef<FaceFxMode>("FACE");
   useEffect(() => { faceFxModeRef.current = faceFxMode; }, [faceFxMode]);
   const [faceFxToast, setFaceFxToast] = useState<string | null>(null);
+  // v1.3.7 — explicit re-arm counter. Lets GEN OVERLAY tiles force a
+  // fresh segmenter init even when faceFxMode is already at the target
+  // value (which would otherwise short-circuit React's useState dedupe).
+  const [faceFxKick, setFaceFxKick] = useState(0);
   const faceFxRef = useRef<{ active: boolean; invert: boolean; texValid: boolean; cx: number; cy: number; r: number; }>({
     active: false, invert: false, texValid: false, cx: 0.5, cy: 0.42, r: 0.28,
   });
@@ -5214,20 +5218,36 @@ export default function SpectraAfter() {
     };
 
     const initAndRun = async () => {
-      try {
-        const mp = await import("@mediapipe/tasks-vision");
-        if (cancelled) return;
-        const fileset = await mp.FilesetResolver.forVisionTasks("/mediapipe");
-        if (cancelled) return;
-        segmenter = await mp.ImageSegmenter.createFromOptions(fileset, {
-          baseOptions: { modelAssetPath: "/mediapipe/selfie_segmenter.tflite", delegate: "GPU" },
-          runningMode: "VIDEO",
-          outputCategoryMask: true,
-          outputConfidenceMasks: false,
-        }) as unknown as Segmenter;
-      } catch (err) {
-        try { console.warn("[GPS] FaceFx: segmenter init failed, using oval fallback", err); } catch { /* noop */ }
-        segmenter = null;
+      // v1.3.7 — RETRYING segmenter init. Previously a single try/catch
+      // permanently set segmenter=null on first-boot failures (mediapipe
+      // wasm not yet cached, race with Capacitor file:// resolution),
+      // which left the tick() loop stuck in the "no segmenter" fallback
+      // branch FOREVER. The user's fix path (cycle face FX off→on) only
+      // worked because the cleanup tore down + recalled this whole
+      // function. We now retry init up to 5 times with backoff so
+      // GEN/SUBJECT and GEN/BG resolve on cold boot without manual cycling.
+      let attempt = 0;
+      while (!cancelled && attempt < 5) {
+        try {
+          const mp = await import("@mediapipe/tasks-vision");
+          if (cancelled) return;
+          const fileset = await mp.FilesetResolver.forVisionTasks("/mediapipe");
+          if (cancelled) return;
+          segmenter = await mp.ImageSegmenter.createFromOptions(fileset, {
+            baseOptions: { modelAssetPath: "/mediapipe/selfie_segmenter.tflite", delegate: "GPU" },
+            runningMode: "VIDEO",
+            outputCategoryMask: true,
+            outputConfidenceMasks: false,
+          }) as unknown as Segmenter;
+          break; // success
+        } catch (err) {
+          attempt++;
+          try { console.warn(`[GPS] FaceFx: segmenter init attempt ${attempt}/5 failed`, err); } catch { /* noop */ }
+          segmenter = null;
+          if (attempt < 5) {
+            await new Promise<void>((r) => { window.setTimeout(r, 500 * attempt); });
+          }
+        }
       }
 
       const tick = () => {
@@ -5355,7 +5375,7 @@ export default function SpectraAfter() {
       if (timer != null) window.clearTimeout(timer);
       try { segmenter?.close?.(); } catch { /* noop */ }
     };
-  }, [faceFxMode]);
+  }, [faceFxMode, faceFxKick]);
 
   // Apply unlock code (dev path; replaced by Play Billing in next release).
   const applyUnlockCode = useCallback((code: string) => {
@@ -11152,13 +11172,14 @@ export default function SpectraAfter() {
             <SynthPanel
               title="INPUT"
               subtitle={(() => {
-                // v1.3.6 — diagnostic subtitle: show literal state vars so
-                // we can see WHY a button doesn't appear to react. If the
-                // user reports "tap does nothing" we now have evidence.
+                // v1.3.7 — diagnostic subtitle: literal state vars +
+                // segmenter health (texValid). Any "looks like nothing
+                // happened" report can now be triaged at a glance.
                 const sm = sourceMode === "generator" ? "GEN" : sourceMode === "upload" ? "UPLD" : "CAM";
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
-                return `src:${sm} fx:${fx} cam:${cam}`;
+                const seg = faceFxRef.current.texValid ? "Y" : "n";
+                return `src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
@@ -11176,26 +11197,18 @@ export default function SpectraAfter() {
                       key={sm}
                       onClick={() => {
                         if (sm === "camera") {
-                          // Tap CAM:
-                          //  - If currently UPLD: switch to plain CAM.
-                          //  - If currently CAM (no GEN): toggle camera off.
-                          //  - If GEN+CAM combo: turn the camera off but
-                          //    leave generator running (GEN→FULL).
+                          // v1.3.7 — UNAMBIGUOUS CAM TAP: always switch
+                          // to plain camera mode + ensure camera is on.
+                          // Old behavior of "toggle camera while staying
+                          // in generator mode" was indistinguishable from
+                          // "no response" since the canvas kept showing
+                          // generator. If you want pure GEN, use the
+                          // GEN OVERLAY · FULL tile.
                           clearUploadSource();
-                          if (sourceMode === "upload") {
-                            setSourceMode("camera");
-                            if (!cameraActive) void startCamera();
-                          } else if (sourceMode === "camera") {
-                            if (cameraActive) { stopCamera(); }
-                            else { void startCamera(); }
-                          } else {
-                            // sourceMode === "generator"
-                            if (cameraActive) {
-                              stopCamera();
-                            } else {
-                              void startCamera();
-                            }
-                          }
+                          setSourceMode("camera");
+                          // Drop face FX so plain CAM = plain CAM.
+                          setFaceFxMode("OFF");
+                          if (!cameraActive) void startCamera();
                         } else {
                           // UPLD: open file picker; on pick, the file
                           // handler sets sourceMode="upload" and clears
@@ -11241,11 +11254,9 @@ export default function SpectraAfter() {
                       key={g}
                       onClick={() => {
                         if (g === "off") {
-                          // Drop back to plain BASE (camera or upload).
-                          // Leave faceFxMode alone — that's the top-nav
-                          // 👤 button's job. The renderer's GEN-masking
-                          // composites only fire when sourceMode==="generator"
-                          // so this is enough to remove the generator.
+                          // Drop back to plain BASE camera. Force face
+                          // FX off so the result is unambiguous.
+                          setFaceFxMode("OFF");
                           if (uploadName && sourceMode === "upload") {
                             setSourceMode("upload");
                           } else {
@@ -11253,11 +11264,8 @@ export default function SpectraAfter() {
                             if (!cameraActive) void startCamera();
                           }
                         } else if (g === "full") {
-                          // Pure full-frame generator. CRITICAL: turn
-                          // face FX OFF so the renderer doesn't keep
-                          // masking the generator to just the person
-                          // (was the v1.3.4 bug — FULL silently behaved
-                          // like SUBJ when face FX was already armed).
+                          // Pure full-frame generator. Face FX OFF so the
+                          // renderer doesn't keep masking the generator.
                           // Camera released since the segmenter is off.
                           clearUploadSource();
                           setFaceFxMode("OFF");
@@ -11265,15 +11273,21 @@ export default function SpectraAfter() {
                           if (cameraActive) stopCamera();
                         } else if (g === "subject") {
                           // GEN painted on the person; real-world BG behind.
+                          // v1.3.7 — kick the segmenter useEffect even if
+                          // faceFxMode is already FACE, so a failed cold-
+                          // boot init gets retried.
                           clearUploadSource();
                           setSourceMode("generator");
                           setFaceFxMode("FACE");
+                          setFaceFxKick((k) => k + 1);
                           if (!cameraActive) void startCamera();
                         } else {
                           // GEN as the background; clean person on top.
+                          // Same kick rationale as SUBJ.
                           clearUploadSource();
                           setSourceMode("generator");
                           setFaceFxMode("BG");
+                          setFaceFxKick((k) => k + 1);
                           if (!cameraActive) void startCamera();
                         }
                       }}
