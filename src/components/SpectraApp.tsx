@@ -11243,7 +11243,15 @@ export default function SpectraAfter() {
               <div style={{ fontSize: 8, letterSpacing: "1.4px", color: "rgba(255,210,140,0.7)", marginBottom: 4 }}>GEN OVERLAY</div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6, marginBottom: 8 }}>
                 {(["off","full","subject","bg"] as const).map((g) => {
-                  const lbl = g === "off" ? "OFF" : g === "full" ? "FULL" : g === "subject" ? "SUBJ" : "BG";
+                  // v1.3.8 — explicit FG/BG labels so the routing intent
+                  // is unambiguous. SUBJ → "GEN▸FG" (generator paints
+                  // the subject, camera is the background); BG → "GEN▸BG"
+                  // (generator IS the background, real person on top).
+                  const lbl =
+                    g === "off"     ? "OFF" :
+                    g === "full"    ? "GEN" :
+                    g === "subject" ? "GEN▸FG" :
+                                      "GEN▸BG";
                   const active =
                     g === "off"     ? sourceMode !== "generator" :
                     g === "full"    ? (sourceMode === "generator" && !cameraActive) :
@@ -11314,6 +11322,32 @@ export default function SpectraAfter() {
                   );
                 })}
               </div>
+              {/* v1.3.8 — SWAP FG/BG. One-tap inversion of the
+                  generator routing. If GEN▸FG looks backwards on your
+                  device, tap SWAP to flip it without re-picking the tile.
+                  Hidden when GEN routing is irrelevant (OFF/FULL or no cam). */}
+              {(sourceMode === "generator" && cameraActive && (faceFxMode === "FACE" || faceFxMode === "BG")) && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 6, marginBottom: 8 }}>
+                  <button
+                    onClick={() => {
+                      setFaceFxMode(faceFxMode === "FACE" ? "BG" : "FACE");
+                      setFaceFxKick((k) => k + 1);
+                    }}
+                    style={{
+                      padding: "8px 4px",
+                      fontSize: 9, letterSpacing: "1.6px", fontWeight: 700,
+                      fontFamily: "'Trebuchet MS',sans-serif",
+                      cursor: "pointer",
+                      borderRadius: 5,
+                      border: "1px solid rgba(255,210,140,0.7)",
+                      color: "rgba(255,235,200,0.95)",
+                      textShadow: "0 0 6px rgba(255,210,140,0.55)",
+                      background: "linear-gradient(180deg, #2A1808 0%, #120A02 100%)",
+                      boxShadow: "inset 0 1px 1px rgba(255,255,255,0.12), inset 0 -2px 3px rgba(0,0,0,0.7)",
+                    }}
+                  >SWAP FG ⇄ BG</button>
+                </div>
+              )}
               <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, alignItems: "center" }}>
                 <div style={{
                   fontSize: 9, fontFamily: "'Courier New',monospace",
