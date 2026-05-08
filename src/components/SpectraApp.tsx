@@ -117,7 +117,22 @@ type GenParams = {
   scatter?: number;       // 0..1 sustained scatter intensity (knob)
   scatterMode?: number;   // 0=SHIFT row-shift, 1=BURST radial, 2=SHRED column tear, 3=FREEZE hold
   scatterPulse?: number;  // 0..1 transient pulse amount (decays per frame, on top of scatter)
+  // ── v1.3.25 — TYPOGRAPHIC FINISHER (Gysin / Asendorf inspired) ──
+  // 0 OFF, 1 CHARS (.:-=+*#%@ Gysin ramp), 2 BLOCKS (░▒▓█),
+  // 3 BRAILLE (⠁⠃⠇⠧⠿⣿), 4 SHADES (▁▂▃▄▅▆▇█), 5 EDGES (─│╱╲ on edges only).
+  glyphMode?: number;
 };
+
+// v1.3.25 — typographic finisher glyph ramps (light → dark).
+const _GLYPH_RAMPS: ReadonlyArray<readonly string[]> = [
+  [], // 0 OFF
+  [" ", ".", ":", "-", "=", "+", "*", "#", "%", "@"],          // 1 CHARS
+  [" ", "░", "▒", "▓", "█"],                                    // 2 BLOCKS
+  [" ", "⠁", "⠃", "⠇", "⠧", "⠷", "⠿", "⣿"],                    // 3 BRAILLE
+  [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"],                // 4 SHADES
+  ["─", "│", "╱", "╲"],                                          // 5 EDGES (4 directions)
+];
+const _GLYPH_LABELS = ["OFF","CHARS","BLOCKS","BRAILLE","SHADES","EDGES"] as const;
 
 // fast deterministic hash → [0,1)
 function _h2(x: number, y: number, s: number): number {
@@ -2052,6 +2067,57 @@ function drawPixelGenerator(canvas: HTMLCanvasElement, p: GenParams): void {
   (ctx as any).imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, W, H);
   ctx.drawImage(off, 0, 0, W, H);
+  // v1.3.25 — TYPOGRAPHIC FINISHER. When glyphMode > 0, overdraw the
+  // upscaled output as monospaced glyphs sampled per cell from the
+  // tiny grid. Inspired by Andreas Gysin (ertdfgcvb.xyz) and Kim
+  // Asendorf typographic generative work. Glyph color = cell color,
+  // background black so the typography reads.
+  const _gm = (p.glyphMode || 0) | 0;
+  if (_gm > 0 && _gm < _GLYPH_RAMPS.length) {
+    const ramp = _GLYPH_RAMPS[_gm];
+    if (ramp && ramp.length > 0) {
+      const gridImg = offCtx.getImageData(0, 0, gw, gh);
+      const gd = gridImg.data;
+      const cellPx = Math.max(2, cell);
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, W, H);
+      ctx.font = `bold ${Math.max(6, Math.floor(cellPx * 1.05))}px "Courier New", monospace`;
+      ctx.textBaseline = "top";
+      ctx.textAlign = "left";
+      for (let y = 0; y < gh; y++) {
+        for (let x = 0; x < gw; x++) {
+          const k = (y * gw + x) * 4;
+          const r = gd[k], gC = gd[k+1], b = gd[k+2];
+          // Perceptual luma 0..1
+          const lum = (0.2126 * r + 0.7152 * gC + 0.0722 * b) / 255;
+          let glyph: string;
+          if (_gm === 5) {
+            // EDGES: sobel-ish gradient direction; only draw where strong edge.
+            const kr = ((y) * gw + Math.min(gw-1, x+1)) * 4;
+            const kl = ((y) * gw + Math.max(0, x-1)) * 4;
+            const kd = (Math.min(gh-1, y+1) * gw + x) * 4;
+            const ku = (Math.max(0, y-1) * gw + x) * 4;
+            const lumAt = (kk: number) => (0.2126 * gd[kk] + 0.7152 * gd[kk+1] + 0.0722 * gd[kk+2]) / 255;
+            const dx = lumAt(kr) - lumAt(kl);
+            const dy = lumAt(kd) - lumAt(ku);
+            const mag = Math.hypot(dx, dy);
+            if (mag < 0.18) continue;
+            const ang = Math.atan2(dy, dx);
+            // Map angle to one of 4 glyphs.
+            const a = ((ang + Math.PI) / Math.PI) * 2; // 0..4
+            const aIdx = (Math.round(a) | 0) & 3;
+            glyph = ramp[aIdx];
+          } else {
+            const idx = Math.min(ramp.length - 1, Math.max(0, Math.floor(lum * ramp.length)));
+            glyph = ramp[idx];
+          }
+          if (glyph === " " || !glyph) continue;
+          ctx.fillStyle = `rgb(${r},${gC},${b})`;
+          ctx.fillText(glyph, x * cellPx, y * cellPx);
+        }
+      }
+    }
+  }
   ctx.restore();
 }
 
@@ -4906,6 +4972,7 @@ export default function SpectraAfter() {
   const [genMoshY, setGenMoshY] = useState(0);                // -1..1
   const [genScatter, setGenScatter] = useState(0);            // 0..1 sustained
   const [genScatterMode, setGenScatterMode] = useState(0);    // 0..3 SHIFT/BURST/SHRED/FREEZE
+  const [genGlyphMode, setGenGlyphMode] = useState(0);        // v1.3.25 — 0..5 OFF/CHARS/BLOCKS/BRAILLE/SHADES/EDGES
   // ── AUTOMATE (generator only): drifts the gen knobs over time toward
   //    fresh random targets, like an LFO on every dial.
   const [automateOn, setAutomateOn] = useState(false);
@@ -5033,8 +5100,8 @@ export default function SpectraAfter() {
   // v1.3.19 — default 0.0 now maps to ~5 px dilation (the new floor),
   // which already covers the face. Slider only goes UP from there; the
   // useless under-default radii were dropped.
-  const [maskExpand, setMaskExpand] = useState(0.0);
-  const maskExpandRef = useRef(0.0);
+  const [maskExpand, setMaskExpand] = useState(0.4);
+  const maskExpandRef = useRef(0.4);
   useEffect(() => { maskExpandRef.current = maskExpand; }, [maskExpand]);
   const faceFxRef = useRef<{ active: boolean; invert: boolean; texValid: boolean; cx: number; cy: number; r: number; }>({
     active: false, invert: false, texValid: false, cx: 0.5, cy: 0.42, r: 0.28,
@@ -5480,6 +5547,7 @@ export default function SpectraAfter() {
   const genMoshYRef = useRef(0);
   const genScatterRef = useRef(0);
   const genScatterModeRef = useRef(0);
+  const genGlyphModeRef = useRef(0);
   // Transient per-layer scatter pulses (decay each frame, layered on top
   // of the sustained `scatter` knob). Index 0..3 = layer; pulses fired by
   // the SHIFT/BURST/SHRED/FREEZE buttons (or all 4 if MASTER selected).
@@ -5535,6 +5603,7 @@ export default function SpectraAfter() {
     moshY: number;     // -1..1 sustained Y-axis displacement bias
     scatter: number;   // 0..1  sustained scatter intensity (knob)
     scatterMode: number; // 0 SHIFT | 1 BURST | 2 SHRED | 3 FREEZE
+    glyphMode: number;   // v1.3.25 — typographic finisher 0..5
   };
   const makeLayerDefaults = (style: GenStyle, seed: number): GenLayer => ({
     style, enabled: false,
@@ -5543,6 +5612,7 @@ export default function SpectraAfter() {
     contrast: 0.7, warp: 0.25, jitter: 0.15,
     seed, invert: false,
     moshX: 0, moshY: 0, scatter: 0, scatterMode: 0,
+    glyphMode: 0,
   });
   const [genLayers, setGenLayers] = useState<GenLayer[]>([
     { ...makeLayerDefaults("BAYER", 7),  enabled: true  },
@@ -6581,6 +6651,7 @@ export default function SpectraAfter() {
   useEffect(()=>{ genMoshYRef.current=genMoshY; },[genMoshY]);
   useEffect(()=>{ genScatterRef.current=genScatter; },[genScatter]);
   useEffect(()=>{ genScatterModeRef.current=genScatterMode; },[genScatterMode]);
+  useEffect(()=>{ genGlyphModeRef.current=genGlyphMode; },[genGlyphMode]);
   useEffect(()=>{ genLayersRef.current=genLayers; },[genLayers]);
 
   // ── Layer ↔ edit-buffer sync ──────────────────────────────────────
@@ -6624,6 +6695,7 @@ export default function SpectraAfter() {
       setGenMoshY(L.moshY);
       setGenScatter(L.scatter);
       setGenScatterMode(L.scatterMode);
+      setGenGlyphMode(L.glyphMode ?? 0);
     }
     // MASTER (idx === 4): keep edit-buffer as-is; edits broadcast to all.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -6642,7 +6714,8 @@ export default function SpectraAfter() {
         && L.sat === genSat && L.contrast === genContrastG && L.warp === genWarp
         && L.jitter === genJitter && L.seed === genSeed && L.invert === genInvert
         && L.moshX === genMoshX && L.moshY === genMoshY
-        && L.scatter === genScatter && L.scatterMode === genScatterMode) {
+        && L.scatter === genScatter && L.scatterMode === genScatterMode
+        && L.glyphMode === genGlyphMode) {
         return; // no diff — likely the hydration bounce. Skip.
       }
     }
@@ -6655,6 +6728,7 @@ export default function SpectraAfter() {
         seed: genSeed, invert: genInvert,
         moshX: genMoshX, moshY: genMoshY,
         scatter: genScatter, scatterMode: genScatterMode,
+        glyphMode: genGlyphMode,
       });
       if (idx === 4) return prev.map(patch);
       if (idx >= 0 && idx <= 3) return prev.map((L, i) => i === idx ? patch(L) : L);
@@ -6662,7 +6736,7 @@ export default function SpectraAfter() {
     });
   }, [genStyle, genDensity, genScale, genSpeed, genHue, genHueSpread,
       genSat, genContrastG, genWarp, genJitter, genSeed, genInvert,
-      genMoshX, genMoshY, genScatter, genScatterMode]);
+      genMoshX, genMoshY, genScatter, genScatterMode, genGlyphMode]);
   useEffect(()=>{ genBlendRef.current=genBlend; },[genBlend]);
   useEffect(()=>{ sortAmtRef.current=sortAmt; },[sortAmt]);
   useEffect(()=>{ scanTearRef.current=scanTear; },[scanTear]);
@@ -7100,6 +7174,7 @@ export default function SpectraAfter() {
           invert: genInvertRef.current,
           moshX: genMoshXRef.current, moshY: genMoshYRef.current,
           scatter: genScatterRef.current, scatterMode: genScatterModeRef.current,
+          glyphMode: genGlyphModeRef.current,
         }});
       }
 
@@ -7155,6 +7230,7 @@ export default function SpectraAfter() {
           scatter: L.scatter,
           scatterMode: useMode,
           scatterPulse: pulse,
+          glyphMode: L.glyphMode ?? 0,
         };
       };
 
@@ -11270,7 +11346,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.24 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.25 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
@@ -11720,7 +11796,7 @@ export default function SpectraAfter() {
                 <span>{FAMILY_NAMES[(FV_BY_STYLE[genStyle]?.[0] ?? 3)]} · {genStyle}</span>
                 <span style={{ opacity: 0.6 }}>BLEND {genBlend}</span>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 6, justifyItems: "center", marginBottom: 10 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(6,minmax(0,1fr))", gap: 6, justifyItems: "center", marginBottom: 10 }}>
                 <Knob label="FAMILY"
                   value={FV_BY_STYLE[genStyle]?.[0] ?? 3} min={0} max={9} step={1} defaultValue={3}
                   onChange={(f) => {
@@ -11736,6 +11812,10 @@ export default function SpectraAfter() {
                     const row = STYLE_BY_FV[f] ?? STYLE_BY_FV[3];
                     setGenStyle((row[v] ?? row[0]) as GenStyle);
                   }}
+                />
+                <Knob label="GLYPH"
+                  value={genGlyphMode} min={0} max={5} step={1} defaultValue={0}
+                  onChange={setGenGlyphMode}
                 />
                 <Knob label="BLEND"
                   value={GEN_BLEND_KEYS.indexOf(genBlend)} min={0} max={GEN_BLEND_KEYS.length - 1} step={1} defaultValue={0}
