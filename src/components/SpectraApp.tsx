@@ -4817,6 +4817,11 @@ export default function SpectraAfter() {
   }, []);
   // ── First-load intro + bug report modal
   const [introVisible, setIntroVisible] = useState(true);
+  // v1.3.27 — latch separating "intro animation finished" from "safe to
+  // hide intro". We hold the overlay up until the camera is actually live
+  // (when the user wants one) so we never flash a gen-only fullscreen frame
+  // before the FX pipeline has a real camera frame + segmenter mask to draw.
+  const [introWantsClose, setIntroWantsClose] = useState(false);
   const [bugOpen, setBugOpen] = useState(false);
   // ── Processing overlay (GIF/video encode + save). null = hidden.
   const [processingStatus, setProcessingStatus] = useState<{ label: string; pct?: number } | null>(null);
@@ -5390,11 +5395,13 @@ export default function SpectraAfter() {
               // alpha channel: pass 1 expands horizontally by R px,
               // pass 2 expands vertically by R px. Result is a true
               // square-disk dilation by R px.
-              // v1.3.26 — slider LEFT (0) already gives ~11px (the v1.3.25 baseline that
-              // covered the body), and slides up to ~45px for full body bloom.
-              //   R = (0.4 + slider * 1.2) * 28  →  R 11..45 px
+              // v1.3.27 — slider LEFT (0) = R=11 px (body baseline body coverage from
+              // v1.3.25). Slider RIGHT (1) = R=22 px (extra bloom). Capped low to avoid
+              // the v1.3.26 bug where R=45 on a 256×144 mask saturated the max-filter
+              // (any background false-positive grew across the whole frame, giving a
+              // "full white" mask which read as "mask covers nothing" in the BG matte).
               const _slider = Math.max(0, Math.min(1, maskExpandRef.current));
-              const _R = Math.round((0.4 + _slider * 1.2) * 28);
+              const _R = Math.round(11 + _slider * 11);
               if (_R > 0) {
                 const _w = mw, _h = mh;
                 // Single-channel scratch for the alpha so the max
@@ -6289,6 +6296,25 @@ export default function SpectraAfter() {
     }, 1200);
     return () => { clearInterval(iv); window.clearTimeout(watchdog); };
   }, []);
+
+  // v1.3.27 — Hold the intro overlay until the camera is actually live
+  // (when one is wanted). Without this, the intro fades at its scripted
+  // 3.3s and reveals a gen-only fullscreen frame for ~500-2000 ms while
+  // the camera + segmenter are still warming up. We only hide the intro
+  // once both: (a) the intro animation has signalled it wants to close,
+  // and (b) either no camera is wanted, or the camera is live. Hard cap
+  // at 3.5s after the intro signals to avoid a stuck overlay if the
+  // camera permission dialog is dismissed/denied.
+  useEffect(() => {
+    if (!introWantsClose) return;
+    const wantsCam = sourceMode === "camera" || faceFxMode !== "OFF";
+    if (!wantsCam || cameraActive) {
+      setIntroVisible(false);
+      return;
+    }
+    const t = window.setTimeout(() => setIntroVisible(false), 3500);
+    return () => window.clearTimeout(t);
+  }, [introWantsClose, sourceMode, faceFxMode, cameraActive]);
 
   // Surface JS exceptions / unhandled promise rejections to a small
   // on-screen overlay so silent crashes don't leave users staring at a
@@ -10389,7 +10415,7 @@ export default function SpectraAfter() {
           text-shadow: 0 0 8px rgba(255,80,255,0.95);
         }
       `}</style>
-      {introVisible && <SpectraIntro onDone={() => setIntroVisible(false)} />}
+      {introVisible && <SpectraIntro onDone={() => setIntroWantsClose(true)} />}
       <BugReportModal open={bugOpen} onClose={() => setBugOpen(false)} />
       <BootScreen progress={bootProgress} done={bootDone} onSkip={() => { setBootProgress(100); setBootDone(true); }} />
 
@@ -11355,7 +11381,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.26 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.27 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
