@@ -5100,8 +5100,8 @@ export default function SpectraAfter() {
   // v1.3.19 — default 0.0 now maps to ~5 px dilation (the new floor),
   // which already covers the face. Slider only goes UP from there; the
   // useless under-default radii were dropped.
-  const [maskExpand, setMaskExpand] = useState(0.4);
-  const maskExpandRef = useRef(0.4);
+  const [maskExpand, setMaskExpand] = useState(0.0);
+  const maskExpandRef = useRef(0.0);
   useEffect(() => { maskExpandRef.current = maskExpand; }, [maskExpand]);
   const faceFxRef = useRef<{ active: boolean; invert: boolean; texValid: boolean; cx: number; cy: number; r: number; }>({
     active: false, invert: false, texValid: false, cx: 0.5, cy: 0.42, r: 0.28,
@@ -5389,8 +5389,12 @@ export default function SpectraAfter() {
               // space. Here we run a separable max filter on the
               // alpha channel: pass 1 expands horizontally by R px,
               // pass 2 expands vertically by R px. Result is a true
-              // square-disk dilation by R px. Slider 0..1 → R 0..28.
-              const _R = Math.round(Math.max(0, Math.min(1, maskExpandRef.current)) * 28);
+              // square-disk dilation by R px.
+              // v1.3.26 — slider LEFT (0) already gives ~11px (the v1.3.25 baseline that
+              // covered the body), and slides up to ~45px for full body bloom.
+              //   R = (0.4 + slider * 1.2) * 28  →  R 11..45 px
+              const _slider = Math.max(0, Math.min(1, maskExpandRef.current));
+              const _R = Math.round((0.4 + _slider * 1.2) * 28);
               if (_R > 0) {
                 const _w = mw, _h = mh;
                 // Single-channel scratch for the alpha so the max
@@ -6263,21 +6267,26 @@ export default function SpectraAfter() {
   }, [getExportMaxDim, getGifProfile]);
 
   // ── Boot animation ────────────────────────────────────────
+  // v1.3.26 — drastically shortened. Boot used to run ~1s of progress
+  // bar before flipping bootDone, which gated initGL + startCamera. The
+  // intro overlay covers the screen for 3.3s, so we want bootDone to
+  // fire ASAP under the overlay so camera + segmenter init happens
+  // during the intro, not after — no dead pause before fx.
   useEffect(() => {
     let p = 0;
     const iv = setInterval(() => {
-      p += Math.random() * 18 + 5;
-      if (p >= 100) { p = 100; clearInterval(iv); setTimeout(() => setBootDone(true), 400); }
+      p += Math.random() * 35 + 25;
+      if (p >= 100) { p = 100; clearInterval(iv); setTimeout(() => setBootDone(true), 60); }
       setBootProgress(Math.min(100, p));
-    }, 80);
-    // Watchdog: force-complete after 4s no matter what so the splash
+    }, 30);
+    // Watchdog: force-complete after 1.2s no matter what so the splash
     // can never hang indefinitely on a stalled state update.
     const watchdog = window.setTimeout(() => {
       clearInterval(iv);
       setBootProgress(100);
       setBootDone(true);
       try { console.warn("[GPS] boot watchdog fired — force-completing splash"); } catch { /* noop */ }
-    }, 4000);
+    }, 1200);
     return () => { clearInterval(iv); window.clearTimeout(watchdog); };
   }, []);
 
@@ -11346,7 +11355,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.25 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.26 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
