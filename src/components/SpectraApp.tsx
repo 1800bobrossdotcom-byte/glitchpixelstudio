@@ -5024,8 +5024,12 @@ export default function SpectraAfter() {
   // dial in how aggressively the matte spills outward to fully cover
   // the subject. 0 = no dilation (raw matte), 0.5 ≈ ~3 px (default,
   // matches the prior v1.3.16 hard-coded behaviour), 1.0 = ~7 px max.
-  const [maskExpand, setMaskExpand] = useState(0.5);
-  const maskExpandRef = useRef(0.5);
+  // v1.3.18 — default raised slightly so head edges/ears are covered
+  // out of the box. 0.3 ≈ 5 px dilation, was 0.5 ≈ 9 px under the new
+  // 1..16 px range — keep at 0.3 (≈5 px) which matches the prior
+  // v1.3.17 default magnitude, but the slider can now go much higher.
+  const [maskExpand, setMaskExpand] = useState(0.3);
+  const maskExpandRef = useRef(0.3);
   useEffect(() => { maskExpandRef.current = maskExpand; }, [maskExpand]);
   const faceFxRef = useRef<{ active: boolean; invert: boolean; texValid: boolean; cx: number; cy: number; r: number; }>({
     active: false, invert: false, texValid: false, cx: 0.5, cy: 0.42, r: 0.28,
@@ -5345,16 +5349,12 @@ export default function SpectraAfter() {
       maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
       maskCtx.globalCompositeOperation = "lighter";
       const _dW = maskCanvas.width, _dH = maskCanvas.height;
-      // v1.3.17 — DYNAMIC ring dilation driven by the user-facing
-      // MASK EXPAND knob (maskExpandRef, 0..1). Builds concentric
-      // rings out to a radius of round(0.5 + expand*7) px each tick.
-      // 0.0 → 1 px (essentially none), 0.5 → 4 px (matches the prior
-      // v1.3.16 default), 1.0 → 7 px (max, generous coverage). 8
-      // offsets per ring (axis + diagonals), so total stamps stay in
-      // the same ballpark as the old fixed list. After all rings, a
-      // slightly stronger blur feather (1.2 px) softens the edge.
+      // v1.3.18 — extended range. 0 → 1 px, 0.3 ≈ 5 px (matches old
+      // 0.5 default), 0.5 ≈ 9 px, 1.0 → 16 px (very generous, covers
+      // ears/hair halo on tight head crops). Same 8-offsets-per-ring
+      // dilation pattern; total stamps scale linearly with radius.
       const _expand = Math.max(0, Math.min(1, maskExpandRef.current));
-      const _radius = Math.max(1, Math.round(0.5 + _expand * 7));
+      const _radius = Math.max(1, Math.round(0.5 + _expand * 16));
       const _ringOff: Array<[number, number]> = [];
       for (let _r = 1; _r <= _radius; _r++) {
         _ringOff.push([-_r, 0], [_r, 0], [0, -_r], [0, _r]);
@@ -11233,7 +11233,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.17 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.18 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
