@@ -5310,6 +5310,50 @@ export default function SpectraAfter() {
                 }
               }
               try { cat.close?.(); } catch { /* noop */ }
+              // v1.3.23 — REAL per-pixel dilation. Earlier versions
+              // (blur+contrast in v1.3.21, scale-from-center in
+              // v1.3.22) did not actually grow the mask in image
+              // space. Here we run a separable max filter on the
+              // alpha channel: pass 1 expands horizontally by R px,
+              // pass 2 expands vertically by R px. Result is a true
+              // square-disk dilation by R px. Slider 0..1 → R 0..28.
+              const _R = Math.round(Math.max(0, Math.min(1, maskExpandRef.current)) * 28);
+              if (_R > 0) {
+                const _w = mw, _h = mh;
+                // Single-channel scratch for the alpha so the max
+                // filter is O(N*R) on a small array (mw*mh bytes).
+                const _src = new Uint8Array(_w * _h);
+                for (let i = 0, j = 3; i < _src.length; i++, j += 4) _src[i] = rgba[j];
+                const _tmp = new Uint8Array(_w * _h);
+                // Horizontal pass: _tmp[x,y] = max(_src[x-R..x+R, y])
+                for (let y = 0; y < _h; y++) {
+                  const row = y * _w;
+                  for (let x = 0; x < _w; x++) {
+                    let m = 0;
+                    const x0 = x - _R < 0 ? 0 : x - _R;
+                    const x1 = x + _R >= _w ? _w - 1 : x + _R;
+                    for (let xi = x0; xi <= x1; xi++) {
+                      const v2 = _src[row + xi];
+                      if (v2 > m) { m = v2; if (m === 255) break; }
+                    }
+                    _tmp[row + x] = m;
+                  }
+                }
+                // Vertical pass writing back into rgba alpha+rgb.
+                for (let x = 0; x < _w; x++) {
+                  for (let y = 0; y < _h; y++) {
+                    let m = 0;
+                    const y0 = y - _R < 0 ? 0 : y - _R;
+                    const y1 = y + _R >= _h ? _h - 1 : y + _R;
+                    for (let yi = y0; yi <= y1; yi++) {
+                      const v2 = _tmp[yi * _w + x];
+                      if (v2 > m) { m = v2; if (m === 255) break; }
+                    }
+                    const j = (y * _w + x) * 4;
+                    rgba[j] = m; rgba[j+1] = m; rgba[j+2] = m; rgba[j+3] = m;
+                  }
+                }
+              }
               scratchCtx.putImageData(scratchImg, 0, 0);
 
               // v1.2.52 — CRITICAL: clear the mask canvas before each draw.
@@ -5349,37 +5393,13 @@ export default function SpectraAfter() {
       maskCtx.globalCompositeOperation = "destination-out";
       maskCtx.fillStyle = "rgba(0,0,0,0.82)";
       maskCtx.fillRect(0, 0, _dW, _dH);
-      // v1.3.22 — SCALE-UP dilation. The blur+contrast trick from
-      // v1.3.21 only expanded by where blur reached ≥0.5 alpha, which
-      // is roughly constant regardless of blur radius (alpha just
-      // spreads thinner as R grows, then contrast clamps it back to a
-      // similar-size disk). User saw this as "slider just makes
-      // opacity go down a bit" — correct observation.
-      // Real expansion: SCALE the source mask up from center. A 1.0
-      // → 1.5x scale on a 256x144 canvas pushes the silhouette edge
-      // outward by ~25..50 px in image space, which is the dilation
-      // we actually want. Slider 0..1 maps to scale 1.10..1.55.
-      // After the scale-stamp we add a small blur+contrast for clean
-      // edges and a 2 px feather pass.
-      const _expand = Math.max(0, Math.min(1, maskExpandRef.current));
-      const _scale = 1.10 + _expand * 0.45;
-      const _scaledW = _dW * _scale;
-      const _scaledH = _dH * _scale;
-      const _offX = (_dW - _scaledW) * 0.5;
-      const _offY = (_dH - _scaledH) * 0.5;
-      maskCtx.globalCompositeOperation = "lighter";
-      try { (maskCtx as unknown as { filter?: string }).filter = "blur(0.6px) contrast(15)"; } catch { /* noop */ }
-      maskCtx.drawImage(scratchCanvas, _offX, _offY, _scaledW, _scaledH);
-      // Re-stamp at original scale so a small subject doesn't drift
-      // off-axis when the scaled draw misses (centered scaling on the
-      // CANVAS isn't quite centered on the SUBJECT). Both stamps add
-      // via `lighter` so the result is the union of both shapes.
-      maskCtx.drawImage(scratchCanvas, 0, 0, _dW, _dH);
-      // Feather pass.
-      try { (maskCtx as unknown as { filter?: string }).filter = "blur(2px)"; } catch { /* noop */ }
+      // v1.3.23 — dilation already applied per-pixel on scratchImg
+      // before putImageData (see _R block above), so a single
+      // source-over stamp + light feather is all we need.
+      maskCtx.globalCompositeOperation = "source-over";
+      try { (maskCtx as unknown as { filter?: string }).filter = "blur(1.5px)"; } catch { /* noop */ }
       maskCtx.drawImage(scratchCanvas, 0, 0, _dW, _dH);
       try { (maskCtx as unknown as { filter?: string }).filter = "none"; } catch { /* noop */ }
-      maskCtx.globalCompositeOperation = "source-over";
               // Upload to WebGL face texture.
               const gl = glRef.current;
               const tex = faceTextureRef.current;
@@ -11244,7 +11264,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.22 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.23 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
