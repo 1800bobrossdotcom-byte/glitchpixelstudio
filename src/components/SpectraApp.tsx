@@ -5324,14 +5324,19 @@ export default function SpectraAfter() {
       maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
       maskCtx.globalCompositeOperation = "lighter";
       const _dW = maskCanvas.width, _dH = maskCanvas.height;
-      // 1.2.71 — Two-pixel-radius ring dilation (12 offsets, 1px and
-      // 2px) for a few more pixels of border expansion. Combined with
-      // the wider shader-side feather, this guarantees full coverage
-      // around the face/body during motion.
+      // v1.3.10 — WIDER ring dilation so the mask fully covers the
+      // subject and edges read smooth instead of scattered. Three
+      // concentric rings at 1, 2, and 3 px (24 offsets total) instead
+      // of the prior 1+2 px (12 offsets). The extra coverage hides
+      // the model's tendency to under-cut shoulders/hair and gives
+      // the smoothstep below a wider gradient to feather across.
       const _ringOff: Array<[number, number]> = [
         [-1, 0], [1, 0], [0, -1], [0, 1],
         [-1, -1], [1, -1], [-1, 1], [1, 1],
         [-2, 0], [2, 0], [0, -2], [0, 2],
+        [-2, -2], [2, -2], [-2, 2], [2, 2],
+        [-3, 0], [3, 0], [0, -3], [0, 3],
+        [-3, -1], [3, -1], [-3, 1], [3, 1],
       ];
       for (const [ox, oy] of _ringOff) {
         maskCtx.drawImage(scratchCanvas, ox, oy, _dW, _dH);
@@ -7417,7 +7422,14 @@ export default function SpectraAfter() {
       // Skip the heavy displacement + generator-overlay pass entirely when the
       // user hasn't dialed in any blend FX — otherwise the default BLEND view
       // shows a permanent rainbow + inverted ghost over the camera.
-      const blendEngaged = pxlArmed || moshArmed;
+      // v1.3.10 — ALSO skip this branch whenever face FX is armed. The
+      // displacement+blend pass produces a gen-dominant composite that
+      // blew right past GEN▸FG / GEN▸BG intent (user's BG kept reading
+      // as gen even with FACE selected). When face FX is on, the
+      // person-aware branch below owns the source layering and the
+      // shader's per-pixel mask handles where FX paint.
+      const faceFxArmed = faceFxRef.current.active;
+      const blendEngaged = (pxlArmed || moshArmed) && !faceFxArmed;
       if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0 && blendEngaged) {
         let cc = genCompositeCanvasRef.current;
         if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
@@ -9508,16 +9520,16 @@ export default function SpectraAfter() {
     };
     const recover = () => {
       if (!wantsCamera()) return;
-      // v1.3.9 — re-kick the segmenter unconditionally on resume, even
-      // if the camera stream is still alive. The MediaPipe loop is the
-      // first thing to silently stall when the WebView pauses (its GPU
-      // delegate context is decoupled from the camera stream), and a
-      // single bump is cheap. Then handle a dead stream below.
+      // v1.3.10 — UNCONDITIONAL re-init on resume. The streamDead probe
+      // gave false negatives on Android (tracks reported readyState=
+      // "live" but were actually frozen, so we never restarted and the
+      // preview stayed broken until the user toggled CAM manually).
+      // Always tear down + restart and re-kick the segmenter; both ops
+      // are cheap and the user's "closing app breaks it" report
+      // correlates 1:1 with that false-negative path.
       if (faceFxModeRef.current !== "OFF") {
         setFaceFxKick((k) => k + 1);
       }
-      if (!streamDead()) return;
-      // Force a clean re-acquire. startCamera handles in-flight gating.
       void startCamera(true);
     };
     const onVis = () => {
@@ -11306,22 +11318,27 @@ export default function SpectraAfter() {
                           if (cameraActive) stopCamera();
                         } else if (g === "subject") {
                           // GEN painted on the person; real-world BG behind.
-                          // v1.3.7 — kick the segmenter useEffect even if
-                          // faceFxMode is already FACE, so a failed cold-
-                          // boot init gets retried.
+                          // v1.3.10 — HARD-RESET every press so re-tapping
+                          // an already-active tile still forces a fresh
+                          // camera + segmenter re-init. Previously when
+                          // GEN▸FG was already the state, pressing it
+                          // again was a no-op (React state-dedupe even
+                          // with the kick) and bugs persisted.
                           clearUploadSource();
                           setSourceMode("generator");
                           setFaceFxMode("FACE");
                           setFaceFxKick((k) => k + 1);
-                          if (!cameraActive) void startCamera();
+                          if (cameraActive) stopCamera();
+                          setTimeout(() => { void startCamera(true); }, 80);
                         } else {
                           // GEN as the background; clean person on top.
-                          // Same kick rationale as SUBJ.
+                          // Same hard-reset rationale as SUBJ.
                           clearUploadSource();
                           setSourceMode("generator");
                           setFaceFxMode("BG");
                           setFaceFxKick((k) => k + 1);
-                          if (!cameraActive) void startCamera();
+                          if (cameraActive) stopCamera();
+                          setTimeout(() => { void startCamera(true); }, 80);
                         }
                       }}
                       style={{
