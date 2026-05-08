@@ -7602,41 +7602,17 @@ export default function SpectraAfter() {
     // shader — here we only handle the source layering. If the segmenter
     // mask isn't ready yet (texValid=false) we skip the composite this
     // frame and fall back to the un-composited source.
-    // v1.2.98 — split the gate. If face FX is armed and the camera is
-    // live but the segmenter mask isn't ready yet (texValid=false, e.g.
-    // first seconds while MediaPipe wasm loads, or init failed), draw a
-    // visible camera fallback under the generator so the user always
-    // sees that GEN+CAM is doing something. Without this, a slow / failed
-    // segmenter init silently leaves you on pure generator.
-    if (
-      texSource &&
-      srcMode !== "camera" &&
-      faceFxRef.current.active &&
-      !faceFxRef.current.texValid &&
-      cameraActiveRef.current &&
-      video && video.readyState >= 2 && video.videoWidth > 0
-    ) {
-      const W = (texSource as { width?: number }).width ?? srcW;
-      const H = (texSource as { height?: number }).height ?? srcH;
-      if (W > 0 && H > 0) {
-        let out = faceComposeCanvasRef.current;
-        if (!out) { out = document.createElement("canvas"); faceComposeCanvasRef.current = out; }
-        if (out.width !== W || out.height !== H) { out.width = W; out.height = H; }
-        const octx = out.getContext("2d");
-        if (octx) {
-          octx.globalCompositeOperation = "source-over";
-          octx.globalAlpha = 1;
-          octx.clearRect(0, 0, W, H);
-          octx.drawImage(video, 0, 0, W, H);
-          octx.globalCompositeOperation = "hard-light";
-          octx.globalAlpha = 0.55;
-          octx.drawImage(texSource as CanvasImageSource, 0, 0, W, H);
-          octx.globalCompositeOperation = "source-over";
-          octx.globalAlpha = 1;
-          texSource = out; srcW = W; srcH = H;
-        }
-      }
-    }
+    // v1.3.11 — REMOVED the v1.2.98 "transitional" hard-light(0.55)
+    // video+gen blend that ran whenever face FX was armed but the
+    // segmenter mask wasn't ready yet. That block was overwriting the
+    // v1.3.9 routing decision (texSource=video for FACE / texSource=gc
+    // for BG) with a 50/50 blend, producing the "bg is still
+    // generative" look the user reported on cold boot AND making
+    // GEN▸BG read backwards (video bg + gen overlay everywhere). The
+    // v1.3.9 branch above already picks the correct un-composited
+    // source per intent, so the user sees the right BG immediately
+    // while waiting for the seg mask to arrive (then the person stamp
+    // below kicks in once texValid flips true).
 
     if (
       texSource &&
