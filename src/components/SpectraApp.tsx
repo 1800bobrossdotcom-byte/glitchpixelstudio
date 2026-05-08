@@ -5538,11 +5538,11 @@ export default function SpectraAfter() {
 
 
   // ── Glitch FX settings (multi-layer)
-  // v1.2.46: seed pixel-sort at 0.5 so the boot screen instantly shows
-  // the signature glitch on whatever the camera sees (combined with
-  // user-facing camera + FACE FX = BG, the person stays clean and the
-  // background gets sorted).
-  const [sortAmt, setSortAmt] = useState(0.5);
+  // v1.3.13 — sortAmt defaults to 0 (was 0.5). The 0.5 default
+  // armed the shader pixel-sort path on cold boot regardless of
+  // sortMix, so users saw "pixel sorting on" the moment the app
+  // opened. ALL FX knobs now ship at 0; only user input arms.
+  const [sortAmt, setSortAmt] = useState(0.0);
   const [scanTear, setScanTear] = useState(0.0);
   const [blockGlitch, setBlockGlitch] = useState(0.0);
   const [datamosh, setDatamosh] = useState(0.0);
@@ -11183,7 +11183,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.12 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.13 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
