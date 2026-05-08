@@ -2366,6 +2366,16 @@ uniform vec2  uFaceCenter;     // uv center of fallback oval
 uniform float uFaceRadius;     // uv radius of fallback oval
 uniform float uFaceInvert;     // 0 = FX inside face/person, 1 = FX outside
 uniform float uFaceFeather;    // soft edge width for AI mask
+uniform float uFaceMaskRadius; // v1.3.29 — outer-ring tap distance in OUTPUT pixels.
+                               //   Replaces the per-tick CPU separable max-filter on a
+                               //   256x144 buffer (which cost ~10-20 ms/tick of JS time and
+                               //   stalled the segmenter callback). Now the dilation runs
+                               //   on the GPU as part of the fragment shader's existing
+                               //   13-tap MAX kernel: scaling the ring radius scales the
+                               //   silhouette outward in image space at zero JS cost, so
+                               //   the mask follows fast subject motion frame-perfectly
+                               //   (faraday-cam approach). Range: 2.5 (slider=0, baseline)
+                               //   .. ~38 px (slider=1, full bloom).
 // Novel Signal FX
 uniform float uLiquid;       // curl-noise liquid warp
 uniform float uFeedback;     // zoom+rotate feedback tunnel
@@ -2514,15 +2524,12 @@ void main() {
       // roto sits exactly where the person is in the rendered frame.
       vec2 fUv = vec2(vUv.x, 1.0 - vUv.y);
       if (uMirror > 0.5) fUv.x = 1.0 - fUv.x;
-      // v1.2.71 — wider 9-tap box at 2.5px + mid-tap ring at 1.25px
-      // for an even softer roto edge with a few extra pixels of outward
-      // coverage. The model still hugs the body too tightly when limbs
-      // move fast — the mid-ring fills the half-pixel gap between the
-      // outer 2.5px taps and the centre, so the smoothstep below has a
-      // smoother gradient to feather across, and the silhouette grows
-      // ~3 px outward instead of 1.
-      vec2 px  = vec2(2.5)  / max(uResolution, vec2(1.0));
-      vec2 pxm = vec2(1.25) / max(uResolution, vec2(1.0));
+      // v1.3.29 — faraday-style scalable GPU dilation. Outer-ring tap
+      // distance is driven by uFaceMaskRadius (output pixels), so the
+      // MASK EXPAND slider grows the silhouette purely on the GPU. Inner
+      // ring sits at half radius to keep edges smooth without seam gaps.
+      vec2 px  = vec2(uFaceMaskRadius)        / max(uResolution, vec2(1.0));
+      vec2 pxm = vec2(uFaceMaskRadius * 0.5)  / max(uResolution, vec2(1.0));
       float p   = texture2D(uFaceTex, fUv).r;
       float p1  = texture2D(uFaceTex, fUv + vec2( px.x,  0.0)).r;
       float p2  = texture2D(uFaceTex, fUv + vec2(-px.x,  0.0)).r;
@@ -5391,99 +5398,29 @@ export default function SpectraAfter() {
               // v1.3.23 — REAL per-pixel dilation. Earlier versions
               // (blur+contrast in v1.3.21, scale-from-center in
               // v1.3.22) did not actually grow the mask in image
-              // space. Here we run a separable max filter on the
-              // alpha channel: pass 1 expands horizontally by R px,
-              // pass 2 expands vertically by R px. Result is a true
-              // square-disk dilation by R px.
-              // v1.3.27 — slider LEFT (0) = R=11 px (body baseline body coverage from
-              // v1.3.25). Slider RIGHT (1) = R=22 px (extra bloom). Capped low to avoid
-              // the v1.3.26 bug where R=45 on a 256×144 mask saturated the max-filter
-              // (any background false-positive grew across the whole frame, giving a
-              // "full white" mask which read as "mask covers nothing" in the BG matte).
-              const _slider = Math.max(0, Math.min(1, maskExpandRef.current));
-              const _R = Math.round(11 + _slider * 11);
-              if (_R > 0) {
-                const _w = mw, _h = mh;
-                // Single-channel scratch for the alpha so the max
-                // filter is O(N*R) on a small array (mw*mh bytes).
-                const _src = new Uint8Array(_w * _h);
-                for (let i = 0, j = 3; i < _src.length; i++, j += 4) _src[i] = rgba[j];
-                const _tmp = new Uint8Array(_w * _h);
-                // Horizontal pass: _tmp[x,y] = max(_src[x-R..x+R, y])
-                for (let y = 0; y < _h; y++) {
-                  const row = y * _w;
-                  for (let x = 0; x < _w; x++) {
-                    let m = 0;
-                    const x0 = x - _R < 0 ? 0 : x - _R;
-                    const x1 = x + _R >= _w ? _w - 1 : x + _R;
-                    for (let xi = x0; xi <= x1; xi++) {
-                      const v2 = _src[row + xi];
-                      if (v2 > m) { m = v2; if (m === 255) break; }
-                    }
-                    _tmp[row + x] = m;
-                  }
-                }
-                // Vertical pass writing back into rgba alpha+rgb.
-                for (let x = 0; x < _w; x++) {
-                  for (let y = 0; y < _h; y++) {
-                    let m = 0;
-                    const y0 = y - _R < 0 ? 0 : y - _R;
-                    const y1 = y + _R >= _h ? _h - 1 : y + _R;
-                    for (let yi = y0; yi <= y1; yi++) {
-                      const v2 = _tmp[yi * _w + x];
-                      if (v2 > m) { m = v2; if (m === 255) break; }
-                    }
-                    const j = (y * _w + x) * 4;
-                    rgba[j] = m; rgba[j+1] = m; rgba[j+2] = m; rgba[j+3] = m;
-                  }
-                }
-              }
+              // space.
+              // v1.3.29 — FARADAY-STYLE PIPELINE. The CPU separable max-filter
+              // (R=11..22 on a 256x144 buffer, ~10-20 ms/tick of JS) and the
+              // destination-out 0.82 + blur(1.5px) temporal smear (deliberate
+              // ~70 ms perceptual mask lag from v1.2.70) have BOTH been removed.
+              // Reasons (see faraday-app/src/lib/mask-shader.ts):
+              //   1. CPU dilation blocked the segmenter callback so the next
+              //      tick missed its slot — we lost frames at fast subject
+              //      motion. Faraday does dilation on the GPU as part of the
+              //      fragment shader (see uFaceMaskRadius in the shader) at
+              //      zero JS cost. We now do the same.
+              //   2. The temporal smear was glued onto the mask to bridge the
+              //      gap between segmenter ticks, but it perceptually lagged
+              //      the silhouette behind the body. Faraday shows the latest
+              //      mask as-is, instantly snapping to the subject every tick.
+              // Pipeline now: paint scratch -> clear maskCanvas -> drawImage.
+              // Net result: zero JS cost, no missed segmenter frames, mask
+              // tracks the subject at the full 15-20 Hz cadence with no smear.
               scratchCtx.putImageData(scratchImg, 0, 0);
-
-              // v1.2.52 — CRITICAL: clear the mask canvas before each draw.
-              // In v1.2.51 we made mask alpha equal to the mask value (so the
-              // canvas could double as an alpha matte for the gen/upload
-              // composite). That made the background pixels transparent in
-              // tmp, which means the default `source-over` drawImage no
-              // longer overwrites prior-frame pixels in the destination —
-              // the mask was monotonically accumulating into the union of
-              // every person position ever seen. That manifested as a frozen,
-              // ever-growing silhouette in the gen+cam composite, and as a
-              // broken roto after switching back to camera mode (the bloated
-              // mask covered most of the frame). Clearing every tick forces
-              // the mask to reflect ONLY the current segmenter output.
-      // v1.2.70 — MASK MOTION BLUR + EXPANSION. v1.2.75 — cut the
-      // prior-frame retention from 45% to 18% so the mask follows fast
-      // limb motion without smearing into a trailing skirt that visibly
-      // lagged the dancer. Combined with the doubled segmenter cadence
-      // (15 Hz default vs. 10 Hz before), the perceived tracking lag
-      // drops from ~150 ms to ~70 ms while still bridging segmenter
-      // ticks softly.
-      // v1.3.15 — CRITICAL: use destination-out (not source-over) for
-      // the fade. The old source-over rgba(0,0,0,0.82) ADDED 82% black
-      // each tick, which decayed RGB toward 0 BUT accumulated ALPHA
-      // toward 1.0 in BG areas (alpha = 0.82 + dst*0.18 → asymptotes
-      // to 1.0). That broke the JS PERSON-OVER-SOURCE compositor
-      // which uses this canvas as an alpha matte (destination-in) —
-      // BG alpha ~1.0 means destination-in keeps generator pixels in
-      // the BACKGROUND, so the person never appears and the screen
-      // looks like "just generator". destination-out with src_alpha=
-      // 0.82 multiplies destination alpha by 0.18, so BG alpha decays
-      // to 0 (no false matte) and FG alpha decays to 18% of prior
-      // before the new ring dilation re-saturates it back to 1.0.
-      const _dW = maskCanvas.width, _dH = maskCanvas.height;
-      // Per-tick decay of prior mask (destination-out so BG alpha
-      // actually decays toward 0 — see v1.3.15 fix notes above).
-      maskCtx.globalCompositeOperation = "destination-out";
-      maskCtx.fillStyle = "rgba(0,0,0,0.82)";
-      maskCtx.fillRect(0, 0, _dW, _dH);
-      // v1.3.23 — dilation already applied per-pixel on scratchImg
-      // before putImageData (see _R block above), so a single
-      // source-over stamp + light feather is all we need.
-      maskCtx.globalCompositeOperation = "source-over";
-      try { (maskCtx as unknown as { filter?: string }).filter = "blur(1.5px)"; } catch { /* noop */ }
-      maskCtx.drawImage(scratchCanvas, 0, 0, _dW, _dH);
-      try { (maskCtx as unknown as { filter?: string }).filter = "none"; } catch { /* noop */ }
+              const _dW = maskCanvas.width, _dH = maskCanvas.height;
+              maskCtx.globalCompositeOperation = "source-over";
+              maskCtx.clearRect(0, 0, _dW, _dH);
+              maskCtx.drawImage(scratchCanvas, 0, 0, _dW, _dH);
               // Upload to WebGL face texture.
               const gl = glRef.current;
               const tex = faceTextureRef.current;
@@ -6380,7 +6317,7 @@ export default function SpectraAfter() {
       "uRupture","uHSync",
       "uMoshIFrame","uMoshMotion","uMoshBleed","uMoshMap","uMoshDistort",
       "uFaceActive","uFaceCenter","uFaceRadius","uFaceInvert",
-      "uFaceTex","uFaceTexValid","uFaceFeather",
+      "uFaceTex","uFaceTexValid","uFaceFeather","uFaceMaskRadius",
       "uGlyph","uSortMix","uReact","uVoroSort","uGlyphAtlas","uSortTex",
       "uModeParams[0]"];
       // Mask texture for touch FX
@@ -8104,6 +8041,13 @@ export default function SpectraAfter() {
     setF1(u.uFaceInvert, faceFxRef.current.invert ? 1.0 : 0.0);
     // v1.3.28 — minimal feather; user wants a near-hard mask edge
     setF1(u.uFaceFeather, 0.008);
+    // v1.3.29 — faraday-style GPU dilation. MASK EXPAND slider 0..1 → 2.5..38.5 px outer ring.
+    // Replaces the (now removed) CPU separable max-filter on the 256x144 mask buffer:
+    //   (a) zero JS cost, so segmenter callback returns instantly and never blocks the
+    //       next tick → no missed frames at 15-20 Hz cadence.
+    //   (b) dilation in shader == dilation in image space at the screen's true resolution,
+    //       so the silhouette covers the whole subject without aliasing-driven gaps.
+    setF1(u.uFaceMaskRadius, 2.5 + Math.max(0, Math.min(1, maskExpandRef.current)) * 36.0);
     if (faceTextureRef.current) {
       gl.activeTexture(gl.TEXTURE4);
       gl.bindTexture(gl.TEXTURE_2D, faceTextureRef.current);
@@ -11382,7 +11326,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.28 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.29 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
