@@ -5348,14 +5348,13 @@ export default function SpectraAfter() {
       maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
       maskCtx.globalCompositeOperation = "lighter";
       const _dW = maskCanvas.width, _dH = maskCanvas.height;
-      // v1.3.19 — FLOOR at default coverage, extend max much further.
-      // Slider 0..1 now maps to a ring radius of 5..28 px (was 1..16).
-      // 0.0 → 5 px (default coverage that already wraps the face),
-      // 0.5 → 16 px, 1.0 → 28 px (huge halo for full head + hair +
-      // ears + a generous spill). Below-default radii are no longer
-      // reachable since they were never useful (the raw matte under-cuts).
+      // v1.3.20 — BIGGER floor + bigger ceiling. Slider 0..1 now
+      // maps to ring radius 28..50 px (was 5..28). Even slider all
+      // the way LEFT now produces the previously-max coverage. Going
+      // RIGHT spills further out for full head + hair + a generous
+      // halo. Below-default radii are still unreachable.
       const _expand = Math.max(0, Math.min(1, maskExpandRef.current));
-      const _radius = Math.round(5 + _expand * 23);
+      const _radius = Math.round(28 + _expand * 22);
       const _ringOff: Array<[number, number]> = [];
       for (let _r = 1; _r <= _radius; _r++) {
         _ringOff.push([-_r, 0], [_r, 0], [0, -_r], [0, _r]);
@@ -5364,12 +5363,12 @@ export default function SpectraAfter() {
       for (const [ox, oy] of _ringOff) {
         maskCtx.drawImage(scratchCanvas, ox, oy, _dW, _dH);
       }
-      // v1.3.19 — stronger feather. Blur scales with the dilation
-      // radius so the soft edge stays proportional to the halo width
-      // (a tight 5 px matte gets ~1.4 px feather, a 28 px halo gets
-      // ~3 px feather). Keeps small mattes crisp and big mattes silky.
-      const _featherPx = Math.max(1.4, Math.min(3.0, _radius * 0.18));
-      try { (maskCtx as unknown as { filter?: string }).filter = `blur(${_featherPx.toFixed(2)}px)`; } catch { /* noop */ }
+      // v1.3.20 — FIXED 1.5 px feather. The prior radius-scaled blur
+      // (up to 3 px) made big halos read as visually SMALLER because
+      // the soft edge faded to ~0 alpha well before the geometric
+      // boundary, so the matte clipped the person there. Constant
+      // small feather keeps the boundary solid even at 50 px halo.
+      try { (maskCtx as unknown as { filter?: string }).filter = "blur(1.5px)"; } catch { /* noop */ }
       maskCtx.drawImage(scratchCanvas, 0, 0, _dW, _dH);
       try { (maskCtx as unknown as { filter?: string }).filter = "none"; } catch { /* noop */ }
       maskCtx.globalCompositeOperation = "source-over";
@@ -11237,7 +11236,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.19 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.20 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
