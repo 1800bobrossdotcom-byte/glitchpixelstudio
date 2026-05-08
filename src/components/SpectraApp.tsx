@@ -5024,12 +5024,11 @@ export default function SpectraAfter() {
   // dial in how aggressively the matte spills outward to fully cover
   // the subject. 0 = no dilation (raw matte), 0.5 ≈ ~3 px (default,
   // matches the prior v1.3.16 hard-coded behaviour), 1.0 = ~7 px max.
-  // v1.3.18 — default raised slightly so head edges/ears are covered
-  // out of the box. 0.3 ≈ 5 px dilation, was 0.5 ≈ 9 px under the new
-  // 1..16 px range — keep at 0.3 (≈5 px) which matches the prior
-  // v1.3.17 default magnitude, but the slider can now go much higher.
-  const [maskExpand, setMaskExpand] = useState(0.3);
-  const maskExpandRef = useRef(0.3);
+  // v1.3.19 — default 0.0 now maps to ~5 px dilation (the new floor),
+  // which already covers the face. Slider only goes UP from there; the
+  // useless under-default radii were dropped.
+  const [maskExpand, setMaskExpand] = useState(0.0);
+  const maskExpandRef = useRef(0.0);
   useEffect(() => { maskExpandRef.current = maskExpand; }, [maskExpand]);
   const faceFxRef = useRef<{ active: boolean; invert: boolean; texValid: boolean; cx: number; cy: number; r: number; }>({
     active: false, invert: false, texValid: false, cx: 0.5, cy: 0.42, r: 0.28,
@@ -5349,12 +5348,14 @@ export default function SpectraAfter() {
       maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
       maskCtx.globalCompositeOperation = "lighter";
       const _dW = maskCanvas.width, _dH = maskCanvas.height;
-      // v1.3.18 — extended range. 0 → 1 px, 0.3 ≈ 5 px (matches old
-      // 0.5 default), 0.5 ≈ 9 px, 1.0 → 16 px (very generous, covers
-      // ears/hair halo on tight head crops). Same 8-offsets-per-ring
-      // dilation pattern; total stamps scale linearly with radius.
+      // v1.3.19 — FLOOR at default coverage, extend max much further.
+      // Slider 0..1 now maps to a ring radius of 5..28 px (was 1..16).
+      // 0.0 → 5 px (default coverage that already wraps the face),
+      // 0.5 → 16 px, 1.0 → 28 px (huge halo for full head + hair +
+      // ears + a generous spill). Below-default radii are no longer
+      // reachable since they were never useful (the raw matte under-cuts).
       const _expand = Math.max(0, Math.min(1, maskExpandRef.current));
-      const _radius = Math.max(1, Math.round(0.5 + _expand * 16));
+      const _radius = Math.round(5 + _expand * 23);
       const _ringOff: Array<[number, number]> = [];
       for (let _r = 1; _r <= _radius; _r++) {
         _ringOff.push([-_r, 0], [_r, 0], [0, -_r], [0, _r]);
@@ -5363,9 +5364,12 @@ export default function SpectraAfter() {
       for (const [ox, oy] of _ringOff) {
         maskCtx.drawImage(scratchCanvas, ox, oy, _dW, _dH);
       }
-      // Final centered draw with slight blur so the matte edge feathers
-      // smoothly instead of being a hard binary cut. Reset filter after.
-      try { (maskCtx as unknown as { filter?: string }).filter = "blur(1.2px)"; } catch { /* noop */ }
+      // v1.3.19 — stronger feather. Blur scales with the dilation
+      // radius so the soft edge stays proportional to the halo width
+      // (a tight 5 px matte gets ~1.4 px feather, a 28 px halo gets
+      // ~3 px feather). Keeps small mattes crisp and big mattes silky.
+      const _featherPx = Math.max(1.4, Math.min(3.0, _radius * 0.18));
+      try { (maskCtx as unknown as { filter?: string }).filter = `blur(${_featherPx.toFixed(2)}px)`; } catch { /* noop */ }
       maskCtx.drawImage(scratchCanvas, 0, 0, _dW, _dH);
       try { (maskCtx as unknown as { filter?: string }).filter = "none"; } catch { /* noop */ }
       maskCtx.globalCompositeOperation = "source-over";
@@ -11233,7 +11237,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.18 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.19 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
