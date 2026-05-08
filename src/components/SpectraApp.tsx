@@ -5346,29 +5346,31 @@ export default function SpectraAfter() {
       maskCtx.globalCompositeOperation = "destination-out";
       maskCtx.fillStyle = "rgba(0,0,0,0.82)";
       maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
-      maskCtx.globalCompositeOperation = "lighter";
       const _dW = maskCanvas.width, _dH = maskCanvas.height;
-      // v1.3.20 — BIGGER floor + bigger ceiling. Slider 0..1 now
-      // maps to ring radius 28..50 px (was 5..28). Even slider all
-      // the way LEFT now produces the previously-max coverage. Going
-      // RIGHT spills further out for full head + hair + a generous
-      // halo. Below-default radii are still unreachable.
+      // v1.3.21 — TRUE MORPHOLOGICAL DILATION via Canvas2D filter chain.
+      // The old ring-of-stamps approach only deposited 8 samples per
+      // radius (axes + diagonals), so at small radii (≤5 px) the gaps
+      // were sub-pixel and the halo read smooth — but at 28..50 px the
+      // wedges between the 8 angular stamps became huge empty pies and
+      // the mask collapsed to a sparse 8-point star, exposing the raw
+      // tiny silhouette. The user (correctly) saw this as "bigger
+      // slider value = visually smaller mask".
+      // The fix: `blur(Rpx) contrast(20)` is a single-draw hard-edge
+      // dilation. Blur spreads alpha radially and uniformly; contrast
+      // 20 pushes any alpha above ~5% back to 1.0 and below to 0,
+      // yielding a solid filled disk of dilation in EVERY direction.
+      // Slider 0..1 → blur radius ~6..36 px → effective dilation
+      // ~6..36 px (1:1 since contrast threshold sits near the blur's
+      // half-coverage isoline). Default 0 already wraps the head.
       const _expand = Math.max(0, Math.min(1, maskExpandRef.current));
-      const _radius = Math.round(28 + _expand * 22);
-      const _ringOff: Array<[number, number]> = [];
-      for (let _r = 1; _r <= _radius; _r++) {
-        _ringOff.push([-_r, 0], [_r, 0], [0, -_r], [0, _r]);
-        _ringOff.push([-_r, -_r], [_r, -_r], [-_r, _r], [_r, _r]);
-      }
-      for (const [ox, oy] of _ringOff) {
-        maskCtx.drawImage(scratchCanvas, ox, oy, _dW, _dH);
-      }
-      // v1.3.20 — FIXED 1.5 px feather. The prior radius-scaled blur
-      // (up to 3 px) made big halos read as visually SMALLER because
-      // the soft edge faded to ~0 alpha well before the geometric
-      // boundary, so the matte clipped the person there. Constant
-      // small feather keeps the boundary solid even at 50 px halo.
-      try { (maskCtx as unknown as { filter?: string }).filter = "blur(1.5px)"; } catch { /* noop */ }
+      const _blurPx = 6 + _expand * 30;
+      maskCtx.globalCompositeOperation = "lighter";
+      try { (maskCtx as unknown as { filter?: string }).filter = `blur(${_blurPx.toFixed(2)}px) contrast(20)`; } catch { /* noop */ }
+      maskCtx.drawImage(scratchCanvas, 0, 0, _dW, _dH);
+      // Second pass with a smaller blur and no contrast to soften the
+      // now-hard edge by ~2 px (constant feather, doesn't shrink the
+      // matte since `lighter` only ADDS alpha).
+      try { (maskCtx as unknown as { filter?: string }).filter = "blur(2px)"; } catch { /* noop */ }
       maskCtx.drawImage(scratchCanvas, 0, 0, _dW, _dH);
       try { (maskCtx as unknown as { filter?: string }).filter = "none"; } catch { /* noop */ }
       maskCtx.globalCompositeOperation = "source-over";
@@ -11236,7 +11238,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.20 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.21 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
