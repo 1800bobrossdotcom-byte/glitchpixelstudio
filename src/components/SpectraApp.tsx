@@ -5319,7 +5319,19 @@ export default function SpectraAfter() {
       // (15 Hz default vs. 10 Hz before), the perceived tracking lag
       // drops from ~150 ms to ~70 ms while still bridging segmenter
       // ticks softly.
-      maskCtx.globalCompositeOperation = "source-over";
+      // v1.3.15 — CRITICAL: use destination-out (not source-over) for
+      // the fade. The old source-over rgba(0,0,0,0.82) ADDED 82% black
+      // each tick, which decayed RGB toward 0 BUT accumulated ALPHA
+      // toward 1.0 in BG areas (alpha = 0.82 + dst*0.18 → asymptotes
+      // to 1.0). That broke the JS PERSON-OVER-SOURCE compositor
+      // which uses this canvas as an alpha matte (destination-in) —
+      // BG alpha ~1.0 means destination-in keeps generator pixels in
+      // the BACKGROUND, so the person never appears and the screen
+      // looks like "just generator". destination-out with src_alpha=
+      // 0.82 multiplies destination alpha by 0.18, so BG alpha decays
+      // to 0 (no false matte) and FG alpha decays to 18% of prior
+      // before the new ring dilation re-saturates it back to 1.0.
+      maskCtx.globalCompositeOperation = "destination-out";
       maskCtx.fillStyle = "rgba(0,0,0,0.82)";
       maskCtx.fillRect(0, 0, maskCanvas.width, maskCanvas.height);
       maskCtx.globalCompositeOperation = "lighter";
@@ -11208,7 +11220,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.14 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.15 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
