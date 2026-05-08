@@ -7531,6 +7531,23 @@ export default function SpectraAfter() {
           } else {
             texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
           }
+        } else if (faceFxRef.current.active) {
+          // v1.3.9 — FX armed but segmenter mask not ready yet (cold
+          // boot, model still loading, or init failed). Honor the user's
+          // routing intent immediately so the BG matches the picked tile
+          // even before the person stamp arrives:
+          //   GEN▸FG (invert=false) → cam bg right away, gen will stamp
+          //                            on person once seg comes online.
+          //   GEN▸BG (invert=true)  → gen bg right away, clean person
+          //                            will stamp once seg comes online.
+          // The previous 55/45 gen-over-video blend made GEN▸FG look
+          // permanently "gen bg" because the generator at 55% +
+          // screen-blended 45% drowned out the camera underneath.
+          if (faceFxRef.current.invert) {
+            texSource = gc; srcW = gc.width; srcH = gc.height;
+          } else {
+            texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
+          }
         } else {
           let cc = genCompositeCanvasRef.current;
           if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
@@ -9491,6 +9508,14 @@ export default function SpectraAfter() {
     };
     const recover = () => {
       if (!wantsCamera()) return;
+      // v1.3.9 — re-kick the segmenter unconditionally on resume, even
+      // if the camera stream is still alive. The MediaPipe loop is the
+      // first thing to silently stall when the WebView pauses (its GPU
+      // delegate context is decoupled from the camera stream), and a
+      // single bump is cheap. Then handle a dead stream below.
+      if (faceFxModeRef.current !== "OFF") {
+        setFaceFxKick((k) => k + 1);
+      }
       if (!streamDead()) return;
       // Force a clean re-acquire. startCamera handles in-flight gating.
       void startCamera(true);
