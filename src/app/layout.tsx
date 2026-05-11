@@ -1,11 +1,23 @@
 import type { Metadata, Viewport } from "next";
-import { Nunito } from "next/font/google";
+import { Nunito, Space_Mono } from "next/font/google";
 import "./globals.css";
 
 const nunito = Nunito({
   subsets: ["latin"],
   weight: ["400", "600", "700", "800", "900"],
   variable: "--font-nunito",
+  display: "swap",
+});
+
+// v1.3.34 — Space Mono for the synth-panel chrome. Slab-serif terminals
+// + geometric proportions = legible at small sizes AND distinctive
+// (more personality than Courier New, which fragments into smudge on
+// dense Android UIs). Keeps the monospace contract so knob labels +
+// value LCDs still align in fixed columns.
+const spaceMono = Space_Mono({
+  subsets: ["latin"],
+  weight: ["400", "700"],
+  variable: "--font-space-mono",
   display: "swap",
 });
 
@@ -53,7 +65,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={nunito.variable}>
+    <html lang="en" className={`${nunito.variable} ${spaceMono.variable}`}>
       <body style={{ margin: 0, background: "#000", overflow: "hidden" }}>
         {children}
       </body>

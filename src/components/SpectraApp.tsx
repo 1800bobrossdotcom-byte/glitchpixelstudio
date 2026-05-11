@@ -4005,19 +4005,19 @@ function BootScreen({ progress, done, onSkip }: { progress: number; done: boolea
       }}/>
 
       {/* Corner TL */}
-      <div style={{position:"absolute",top:20,left:20,fontFamily:"'Courier New',monospace",fontSize:9,letterSpacing:"2px",color:"rgba(231,174,255,.35)",lineHeight:1.9,animation:"bootBlink 3.5s ease infinite"}}>
+      <div style={{position:"absolute",top:20,left:20,fontFamily:"var(--font-space-mono,'Space Mono','Courier New',monospace)",fontSize:9,letterSpacing:"2px",color:"rgba(231,174,255,.35)",lineHeight:1.9,animation:"bootBlink 3.5s ease infinite"}}>
         SPECTRA OS · BUILD {process.env.NEXT_PUBLIC_BUILD_SHA || "dev"}<br/>GL_ES 1.0 · WEBGL<br/>PROC: REALTIME
       </div>
       {/* Corner TR */}
-      <div style={{position:"absolute",top:20,right:20,fontFamily:"'Courier New',monospace",fontSize:9,letterSpacing:"2px",color:"rgba(231,174,255,.35)",lineHeight:1.9,textAlign:"right",animation:"bootBlink 3.5s ease infinite 1.4s"}}>
+      <div style={{position:"absolute",top:20,right:20,fontFamily:"var(--font-space-mono,'Space Mono','Courier New',monospace)",fontSize:9,letterSpacing:"2px",color:"rgba(231,174,255,.35)",lineHeight:1.9,textAlign:"right",animation:"bootBlink 3.5s ease infinite 1.4s"}}>
         PIPELINE: ACTIVE<br/>FX: MULTI-LAYER<br/>AUDIO: REACTIVE
       </div>
       {/* Corner BL */}
-      <div style={{position:"absolute",bottom:20,left:20,fontFamily:"'Courier New',monospace",fontSize:9,letterSpacing:"2px",color:"rgba(231,174,255,.24)"}}>
+      <div style={{position:"absolute",bottom:20,left:20,fontFamily:"var(--font-space-mono,'Space Mono','Courier New',monospace)",fontSize:9,letterSpacing:"2px",color:"rgba(231,174,255,.24)"}}>
         BOOT/{progress.toFixed(0).padStart(3,"0")}
       </div>
       {/* Corner BR */}
-      <div style={{position:"absolute",bottom:20,right:20,fontFamily:"'Courier New',monospace",fontSize:9,letterSpacing:"2px",color:"rgba(231,174,255,.24)",textAlign:"right"}}>
+      <div style={{position:"absolute",bottom:20,right:20,fontFamily:"var(--font-space-mono,'Space Mono','Courier New',monospace)",fontSize:9,letterSpacing:"2px",color:"rgba(231,174,255,.24)",textAlign:"right"}}>
         {new Date().getFullYear()} LOVEBEING
       </div>
 
@@ -4101,7 +4101,7 @@ function BootScreen({ progress, done, onSkip }: { progress: number; done: boolea
           Glitch Pixel Studio (GPS); the splash wordmark should match.
           Smaller font + tighter spacing because GPS is short. */}
       <div style={{
-        fontFamily:"'Courier New',monospace", fontSize:32, letterSpacing:"22px",
+        fontFamily:"var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize:32, letterSpacing:"22px",
         color:"#F0E6FF", textTransform:"uppercase", marginBottom:10,
         textShadow:"0 0 24px rgba(211,75,255,.55)",
         animation:"bootFadeIn .8s ease .15s both",
@@ -4112,7 +4112,7 @@ function BootScreen({ progress, done, onSkip }: { progress: number; done: boolea
 
       {/* Tagline */}
       <div style={{
-        fontFamily:"'Courier New',monospace", fontSize:9, letterSpacing:"5px",
+        fontFamily:"var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize:9, letterSpacing:"5px",
         color:"rgba(231,174,255,.5)", marginBottom:18, textTransform:"uppercase",
         animation:"bootFadeIn .8s ease .3s both",
       }}>
@@ -4121,7 +4121,7 @@ function BootScreen({ progress, done, onSkip }: { progress: number; done: boolea
 
       {/* Status label */}
       <div style={{
-        fontFamily:"'Courier New',monospace", fontSize:10, letterSpacing:"4px",
+        fontFamily:"var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize:10, letterSpacing:"4px",
         color:"rgba(231,174,255,.64)", animation:"bootPulse 1.5s ease infinite",
       }}>
         {status}
@@ -4143,7 +4143,7 @@ function BootScreen({ progress, done, onSkip }: { progress: number; done: boolea
         }}/>
       </div>
       <div style={{
-        marginTop: 8, fontFamily:"'Courier New',monospace", fontSize: 10,
+        marginTop: 8, fontFamily:"var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 10,
         letterSpacing: "3px", color: "rgba(231,174,255,0.7)",
       }}>
         {Math.floor(progress).toString().padStart(3,"0")} / 100
@@ -4158,7 +4158,7 @@ function BootScreen({ progress, done, onSkip }: { progress: number; done: boolea
             background: "transparent",
             border: "1px solid rgba(231,174,255,0.45)",
             color: "rgba(231,174,255,0.85)",
-            fontFamily: "'Courier New',monospace",
+            fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
             fontSize: 10, letterSpacing: "3px",
             padding: "6px 14px", borderRadius: 4,
             cursor: "pointer",
@@ -4524,7 +4524,7 @@ function BugReportModal({ open, onClose }: { open: boolean; onClose: () => void 
         background: "rgba(0,0,0,0.85)",
         backdropFilter: "blur(6px)",
         display: "flex", alignItems: "center", justifyContent: "center",
-        padding: 20, fontFamily: "'Courier New',monospace",
+        padding: 20, fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
       }}
     >
       <div
@@ -10102,7 +10102,7 @@ export default function SpectraAfter() {
     <div
       ref={tiltRootRef}
       className={"flex flex-col h-dvh overflow-hidden text-white" + (neonMode ? " neon-mode" : "") + (uiHidden ? " ui-hidden" : "") + " skin-" + uiSkin.toLowerCase()}
-      style={{ fontFamily: "'Courier New', monospace", background: "#000" }}
+      style={{ fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", background: "#000" }}
     >
       <style>{`
         /* v1.2.76 — IMMERSIVE / HIDE-UI mode. */
@@ -10714,7 +10714,7 @@ export default function SpectraAfter() {
             background: "rgba(40,0,8,0.96)",
             border: "1px solid rgba(255,80,120,0.7)",
             color: "rgba(255,210,210,0.98)",
-            fontFamily: "'Courier New',monospace", fontSize: 10,
+            fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 10,
             padding: 10, borderRadius: 4,
             maxHeight: "40vh", overflowY: "auto",
             boxShadow: "0 0 20px rgba(255,40,80,0.5)",
@@ -10758,7 +10758,7 @@ export default function SpectraAfter() {
             <div style={{
               position: "absolute", top: 96, left: "50%",
               transform: "translateX(-50%)",
-              fontFamily: "'Courier New',monospace",
+              fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
               fontSize: 16, letterSpacing: "3px",
               color: "rgba(255,210,210,0.95)",
               padding: "6px 14px",
@@ -10771,7 +10771,7 @@ export default function SpectraAfter() {
           ) : (
             <>
               <div style={{
-                fontFamily: "'Courier New',monospace",
+                fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                 fontSize: 220, lineHeight: 1, fontWeight: 900,
                 color: handsFreeCountdown.phase === "out"
                   ? "rgba(255,180,190,0.98)"
@@ -10785,7 +10785,7 @@ export default function SpectraAfter() {
               }}>{handsFreeCountdown.n}</div>
               <div style={{
                 marginTop: 24,
-                fontFamily: "'Courier New',monospace",
+                fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                 fontSize: 12, letterSpacing: "3px",
                 color: handsFreeCountdown.phase === "out"
                   ? "rgba(255,210,210,0.95)"
@@ -10808,7 +10808,7 @@ export default function SpectraAfter() {
             background: "rgba(15,5,28,0.92)",
             border: "1px solid rgba(255,210,140,0.65)",
             color: "rgba(255,235,205,0.98)",
-            fontFamily: "'Courier New',monospace", fontSize: 11, letterSpacing: "1.6px",
+            fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 11, letterSpacing: "1.6px",
             padding: "8px 14px", borderRadius: 4,
             boxShadow: "0 0 20px rgba(232,160,32,0.45)",
             pointerEvents: "none",
@@ -10824,7 +10824,7 @@ export default function SpectraAfter() {
             position: "fixed", inset: 0, zIndex: 9997,
             background: "rgba(3,5,16,0.85)", backdropFilter: "blur(6px)",
             display: "flex", alignItems: "center", justifyContent: "center",
-            padding: 16, fontFamily: "'Courier New',monospace",
+            padding: 16, fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
           }}
         >
           <div
@@ -10845,7 +10845,7 @@ export default function SpectraAfter() {
               <button
                 onClick={() => setTierInfoOpen(false)}
                 style={{
-                  fontFamily: "'Courier New',monospace", fontSize: 11,
+                  fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 11,
                   background: "transparent", border: "1px solid rgba(231,174,255,0.4)",
                   color: "rgba(231,174,255,0.85)", padding: "4px 10px", borderRadius: 4,
                   cursor: "pointer", letterSpacing: "1.5px",
@@ -10888,7 +10888,7 @@ export default function SpectraAfter() {
             position: "fixed", inset: 0, zIndex: 9999,
             background: "linear-gradient(180deg,#070213 0%,#1a0530 60%,#03000c 100%)",
             display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-            padding: 24, fontFamily: "'Courier New',monospace", color: "rgba(231,210,255,0.95)",
+            padding: 24, fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", color: "rgba(231,210,255,0.95)",
             overflowY: "auto",
           }}
         >
@@ -10905,7 +10905,7 @@ export default function SpectraAfter() {
                 alert("In-app purchase ships in the next update. For now, tap GPS v" + APP_VERSION + " 5 times to enter a dev unlock code.");
               }}
               style={{
-                fontFamily: "'Courier New',monospace", fontSize: 14, letterSpacing: "3px",
+                fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 14, letterSpacing: "3px",
                 padding: "16px 18px", borderRadius: 6, cursor: "pointer",
                 background: "linear-gradient(180deg,rgba(255,210,140,0.18),rgba(232,160,32,0.08))",
                 border: "1px solid rgba(255,210,140,0.7)",
@@ -10918,7 +10918,7 @@ export default function SpectraAfter() {
                 alert("Subscriptions ship in the next update. For now, tap GPS v" + APP_VERSION + " 5 times to enter a dev unlock code.");
               }}
               style={{
-                fontFamily: "'Courier New',monospace", fontSize: 12, letterSpacing: "2.5px",
+                fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 12, letterSpacing: "2.5px",
                 padding: "12px 16px", borderRadius: 6, cursor: "pointer",
                 background: "linear-gradient(180deg,rgba(120,255,200,0.14),rgba(40,200,140,0.06))",
                 border: "1px solid rgba(120,255,200,0.55)",
@@ -10928,7 +10928,7 @@ export default function SpectraAfter() {
             <button
               onClick={() => alert("Restore Purchases will check the Play Store for prior entitlements once billing is wired up.")}
               style={{
-                fontFamily: "'Courier New',monospace", fontSize: 11, letterSpacing: "2px",
+                fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 11, letterSpacing: "2px",
                 padding: "10px 14px", borderRadius: 6, cursor: "pointer",
                 background: "transparent",
                 border: "1px solid rgba(231,174,255,0.4)",
@@ -10938,7 +10938,7 @@ export default function SpectraAfter() {
             <button
               onClick={() => setTierInfoOpen(true)}
               style={{
-                fontFamily: "'Courier New',monospace", fontSize: 10, letterSpacing: "1.8px",
+                fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 10, letterSpacing: "1.8px",
                 padding: "8px 12px", borderRadius: 6, cursor: "pointer",
                 background: "transparent",
                 border: "1px dashed rgba(200,180,220,0.3)",
@@ -10957,7 +10957,7 @@ export default function SpectraAfter() {
                 inputMode="numeric"
                 autoFocus
                 style={{
-                  fontFamily: "'Courier New',monospace", fontSize: 16, letterSpacing: "4px",
+                  fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 16, letterSpacing: "4px",
                   padding: "10px 12px", borderRadius: 4,
                   background: "rgba(8,2,20,0.85)",
                   border: "1px solid rgba(231,174,255,0.5)",
@@ -10968,7 +10968,7 @@ export default function SpectraAfter() {
               <button
                 onClick={() => applyUnlockCode(unlockCode)}
                 style={{
-                  fontFamily: "'Courier New',monospace", fontSize: 11, letterSpacing: "2px",
+                  fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 11, letterSpacing: "2px",
                   padding: "8px 12px", borderRadius: 4, cursor: "pointer",
                   background: "rgba(231,174,255,0.12)",
                   border: "1px solid rgba(231,174,255,0.5)",
@@ -11332,7 +11332,7 @@ export default function SpectraAfter() {
             <div style={{
               position: "absolute", right: 10, bottom: 54, zIndex: 6,
               width: 66, textAlign: "center",
-              fontFamily: "'Courier New',monospace",
+              fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
               fontSize: 7.5, letterSpacing: "1px",
               color: "rgba(231,174,255,0.78)",
               textShadow: "0 0 4px rgba(0,0,0,0.85)",
@@ -11407,7 +11407,7 @@ export default function SpectraAfter() {
                   border: "1px solid rgba(255,133,0,0.55)",
                   borderRadius: 8,
                   boxShadow: "0 0 14px rgba(255,133,0,0.35), inset 0 0 6px rgba(0,0,0,0.6)",
-                  fontFamily: "'Courier New',monospace",
+                  fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                   color: "#F4F6FF",
                   minWidth: 138, maxWidth: 170,
                 }}
@@ -11489,7 +11489,7 @@ export default function SpectraAfter() {
                 position: "absolute", top: 12, right: 12, zIndex: 50, maxWidth: 320,
                 background: "rgba(36,8,8,0.94)", border: "1px solid #FF4D4D",
                 borderRadius: 8, padding: "8px 10px", color: "#FFD0D0",
-                fontFamily: "'Courier New',monospace", fontSize: 10, lineHeight: 1.4,
+                fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 10, lineHeight: 1.4,
                 boxShadow: "0 0 14px rgba(255,77,77,0.45)",
               }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
@@ -11868,7 +11868,7 @@ export default function SpectraAfter() {
               )}
               <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, alignItems: "center" }}>
                 <div style={{
-                  fontSize: 9, fontFamily: "'Courier New',monospace",
+                  fontSize: 9, fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                   letterSpacing: "0.8px",
                   color: "rgba(255,210,140,0.85)",
                   background: "linear-gradient(180deg, #0A0312 0%, #160726 100%)",
@@ -11889,7 +11889,7 @@ export default function SpectraAfter() {
                   onClick={() => sourceFileInputRef.current?.click()}
                   style={{
                     padding: "6px 10px", fontSize: 9, letterSpacing: "1.2px",
-                    fontFamily: "'Courier New',monospace", fontWeight: 700,
+                    fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontWeight: 700,
                     cursor: "pointer", borderRadius: 5,
                     border: "1px solid rgba(0,0,0,0.7)",
                     color: "rgba(255,210,140,0.95)",
@@ -11904,7 +11904,7 @@ export default function SpectraAfter() {
                     onClick={() => { void resetSettings(); }}
                     style={{
                       padding: "7px 12px", fontSize: 9, letterSpacing: "1.3px",
-                      fontFamily: "'Courier New',monospace", fontWeight: 700,
+                      fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontWeight: 700,
                       cursor: "pointer", borderRadius: 5,
                       border: "1px solid rgba(0,0,0,0.72)",
                       color: "rgba(255,210,140,0.98)",
@@ -12073,7 +12073,7 @@ export default function SpectraAfter() {
                         style={{
                           flex: 1, padding: "12px 4px 6px",
                           fontSize: isMaster ? 10 : 12, fontWeight: 900, letterSpacing: "1.4px",
-                          fontFamily: "'Courier New',monospace",
+                          fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                           color: selected ? "#f8f8f8" : `${accent}dd`,
                           background: "transparent",
                           border: "none",
@@ -12099,7 +12099,7 @@ export default function SpectraAfter() {
                             color: enabled ? "#f8f8f8" : `${accent}aa`,
                             background: enabled ? `${accent}55` : `${accent}11`,
                             borderRadius: 3, cursor: "pointer",
-                            fontFamily: "'Courier New',monospace",
+                            fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                           }}
                         >{enabled ? "● ON" : "○ OFF"}</button>
                       )}
@@ -12111,7 +12111,7 @@ export default function SpectraAfter() {
                           border: "1px dashed rgba(255,255,255,0.18)",
                           background: "transparent",
                           borderRadius: 3,
-                          fontFamily: "'Courier New',monospace",
+                          fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                         }}>BCAST</div>
                       )}
                     </div>
@@ -12168,7 +12168,7 @@ export default function SpectraAfter() {
                   onClick={() => setGenSeed(Math.floor(Math.random() * 999))}
                   style={{
                     padding: "6px 12px", fontSize: 10, letterSpacing: "1.4px",
-                    fontFamily: "'Courier New',monospace", fontWeight: 700,
+                    fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontWeight: 700,
                     cursor: "pointer", borderRadius: 5,
                     border: "1px solid rgba(0,0,0,0.7)",
                     color: "rgba(255,210,140,0.95)",
@@ -12202,7 +12202,7 @@ export default function SpectraAfter() {
                       style={{
                         padding: "6px 2px 4px",
                         fontSize: 8, letterSpacing: "0.6px", fontWeight: 700,
-                        fontFamily: "'Courier New',monospace",
+                        fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                         cursor: "pointer", borderRadius: 4,
                         border: active ? "1px solid rgba(255,180,255,0.95)" : "1px solid rgba(0,0,0,0.7)",
                         color: active ? "#fff" : "rgba(255,180,255,0.7)",
@@ -12275,7 +12275,7 @@ export default function SpectraAfter() {
                         fontSize: 9,
                         letterSpacing: "1px",
                         fontWeight: 700,
-                        fontFamily: "'Courier New',monospace",
+                        fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                         cursor: "pointer", borderRadius: 4,
                         border: on ? "1px solid rgba(231,174,255,0.85)" : "1px solid rgba(0,0,0,0.72)",
                         color: on ? "rgba(255,220,255,1)" : "rgba(200,180,220,0.72)",
@@ -12401,7 +12401,7 @@ export default function SpectraAfter() {
                           ? `linear-gradient(90deg, ${accentDim}, transparent 75%), linear-gradient(180deg,#0a0a12,#05050b)`
                           : "linear-gradient(180deg,#0a0a12,#05050b)",
                         color: filled ? "#f8f8f8" : "rgba(248,248,248,0.4)",
-                        fontFamily: "'Courier New',monospace",
+                        fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                         fontSize: 12, letterSpacing: "1.2px", fontWeight: 700,
                         textAlign: "left",
                         cursor: filled ? "pointer" : "default",
@@ -12730,7 +12730,7 @@ const modeBtnStyle: React.CSSProperties = {
   // as press-targets (>=32px tall) but stack 40% denser so 4- and 5-col
   // grids no longer dominate the carousel y-axis.
   padding: "6px 6px",
-  fontFamily: "'Courier New', monospace",
+  fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
   fontSize: 9,
   letterSpacing: "1.2px",
   textTransform: "uppercase",
@@ -12765,7 +12765,7 @@ function Section({ title, id, open, onToggle, children }: {
           : "rgba(9,0,16,0.75)",
         border: "none", borderTop: `1px solid rgba(${hexToRgb(pipColor)},0.22)`,
         padding: "11px 12px", cursor: "pointer",
-        fontFamily: "'Courier New',monospace",
+        fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
         fontSize: 11, letterSpacing: "1.5px",
         color: open ? T.cream : T.creamDim,
         textTransform: "uppercase", textAlign: "left",
@@ -12828,7 +12828,7 @@ function SliderRow({
       <div style={{
         padding: "0 8px 0 12px", touchAction: "pan-y",
         display: "flex", alignItems: "center",
-        fontSize: 10, letterSpacing: "0.8px", fontFamily: "'Courier New',monospace",
+        fontSize: 10, letterSpacing: "0.8px", fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
         color: isEven ? "rgba(243,238,255,0.94)" : "rgba(231,174,255,0.86)",
         userSelect: "none", cursor: "ns-resize",
         borderRight: "1px solid rgba(83,16,120,0.42)",
@@ -12854,7 +12854,7 @@ function SliderRow({
       </div>
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "flex-end",
-        padding: "0 10px", fontSize: 11, fontFamily: "'Courier New',monospace",
+        padding: "0 10px", fontSize: 11, fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
         color: "rgba(255,210,140,0.95)", userSelect: "none",
         borderLeft: "1px solid rgba(0,0,0,0.45)",
         background: "linear-gradient(180deg, #0A0312 0%, #160726 50%, #0A0312 100%)",
@@ -12882,7 +12882,7 @@ function SynthSwitch({
     }}>
       <div style={{
         fontSize: 8, letterSpacing: "1.4px", textTransform: "uppercase",
-        color: "rgba(243,238,255,0.78)", fontFamily: "'Courier New',monospace",
+        color: "rgba(243,238,255,0.78)", fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
         textShadow: "0 1px 0 rgba(0,0,0,0.7)",
         whiteSpace: "nowrap",
       }}>{label}</div>
@@ -12923,7 +12923,7 @@ function SynthSwitch({
         }}/>
       </div>
       <div style={{
-        fontSize: 9, fontFamily: "'Courier New',monospace",
+        fontSize: 9, fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
         letterSpacing: "0.5px",
         color: on ? "rgba(255,210,140,0.95)" : "rgba(180,140,90,0.55)",
         background: "linear-gradient(180deg, #0A0312 0%, #160726 100%)",
@@ -12955,7 +12955,7 @@ function SynthSelector({
     }}>
       <div style={{
         fontSize: 8, letterSpacing: "1.4px", textTransform: "uppercase",
-        color: "rgba(243,238,255,0.78)", fontFamily: "'Courier New',monospace",
+        color: "rgba(243,238,255,0.78)", fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
         textShadow: "0 1px 0 rgba(0,0,0,0.7)",
         whiteSpace: "nowrap",
       }}>{label}</div>
@@ -12978,7 +12978,7 @@ function SynthSelector({
               style={{
                 padding: "3px 6px",
                 fontSize: 8, letterSpacing: "0.8px",
-                fontFamily: "'Courier New',monospace",
+                fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                 fontWeight: active ? 700 : 500,
                 cursor: "pointer",
                 borderRadius: 3,
@@ -13090,25 +13090,25 @@ function SynthPanel({
         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, flex: 1 }}>
           {collapsible && (
             <span style={{
-              fontSize: 10,
+              fontSize: 13,
               color: "rgba(255,210,140,0.85)",
               transform: isOpen ? "rotate(90deg)" : "rotate(0deg)",
               transition: "transform 0.15s ease",
               display: "inline-block",
-              width: 10,
+              width: 13,
             }}>▶</span>
           )}
           <div style={{
-            fontSize: 10, letterSpacing: "2px", textTransform: "uppercase",
-            fontFamily: "'Courier New',monospace", fontWeight: 700,
+            fontSize: 14, letterSpacing: "2.4px", textTransform: "uppercase",
+            fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontWeight: 700,
             color: "rgba(255,210,140,0.95)",
             textShadow: "0 0 6px rgba(232,160,32,0.7)",
           }}>{title}</div>
         </div>
         {subtitle && (
           <div style={{
-            fontSize: 8, letterSpacing: "1.4px", textTransform: "uppercase",
-            fontFamily: "'Courier New',monospace",
+            fontSize: 11, letterSpacing: "1.6px", textTransform: "uppercase",
+            fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
             color: accentColor,
             textShadow: `0 0 5px ${accentColor}`,
           }}>{subtitle}</div>
@@ -13206,8 +13206,9 @@ function Knob({
     }}>
       {/* Label above (engraved) */}
       <div style={{
-        fontSize: 8, letterSpacing: "1.4px", textTransform: "uppercase",
-        color: "rgba(243,238,255,0.78)", fontFamily: "'Courier New',monospace",
+        fontSize: 11, letterSpacing: "1.6px", textTransform: "uppercase",
+        color: "rgba(243,238,255,0.82)", fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
+        fontWeight: 700,
         textShadow: "0 1px 0 rgba(0,0,0,0.7), 0 -1px 0 rgba(255,255,255,0.05)",
         whiteSpace: "nowrap",
       }}>{label}</div>
@@ -13299,15 +13300,16 @@ function Knob({
 
       {/* Value LCD readout */}
       <div style={{
-        fontSize: 9, fontFamily: "'Courier New',monospace",
+        fontSize: 13, fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
         letterSpacing: "0.5px",
+        fontWeight: 700,
         color: "rgba(255,210,140,0.95)",
         background: "linear-gradient(180deg, #0A0312 0%, #160726 100%)",
         border: "1px solid rgba(0,0,0,0.55)",
         borderTop: "1px solid rgba(255,255,255,0.05)",
-        padding: "1px 6px",
+        padding: "2px 8px",
         borderRadius: 3,
-        minWidth: 36,
+        minWidth: 44,
         textAlign: "center",
         textShadow: "0 0 5px rgba(232,160,32,0.55)",
         boxShadow: "inset 0 1px 2px rgba(0,0,0,0.6)",
@@ -13481,7 +13483,7 @@ function ModeRack({
               <div style={{
                 fontSize: 8, letterSpacing: "1.4px",
                 color: "rgba(243,238,255,0.7)",
-                fontFamily: "'Courier New',monospace",
+                fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                 textTransform: "uppercase",
                 marginBottom: 5,
                 textShadow: "0 1px 0 rgba(0,0,0,0.6)",
