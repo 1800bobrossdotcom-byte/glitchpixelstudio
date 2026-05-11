@@ -2971,12 +2971,10 @@ void main() {
     }
     // In-band pixels are FULLY replaced with the sorted colour. uSortAmt
     // only gates whether the sort fires at all (and feeds the streak-length
-    // math above). Previously sortBlend was uSortAmt * mask * inBand so
-    // at the default knob value (~0.65) you only saw a 65% mix of the
-    // sorted pixels on top of the originals, which read as a translucent
-    // overlay instead of a real pixel sort.
-    // v1.3.32 — cap at 0.92 so any underlying UV-warp FX (kaleido/disrupt/droste/...) bleeds through the sort overlay; preserves classic streak look while keeping every other knob visibly active.
-    sortBlend = mask * smoothstep(0.0, 0.05, uSortAmt) * ((srcInBand || paintAll) ? 0.92 : 0.0);
+    // math above). v1.3.35 — pure pixel-level chain: in-band = 1.0 replace,
+    // not 0.92 mix. Each FX owns the pixel at full knob; the v1.3.32 cap
+    // read as translucent layering rather than a real sort.
+    sortBlend = mask * smoothstep(0.0, 0.05, uSortAmt) * ((srcInBand || paintAll) ? 1.0 : 0.0);
 
     // ── Hi-res pixel-art finishing pass on the sorted colour ──────────
     // Bayer 8x8 ordered dither + 4-bit-per-channel posterize. Only the
@@ -3031,18 +3029,17 @@ void main() {
   // person/scene split rips through the unified pixel signal.
   if (uSortMix * mask > 0.001) {
     vec3 sorted = texture2D(uSortTex, uv).rgb;
-    // v1.3.33 — cap at 0.92 so prior FX (warps + line-scan sort) bleed through.
-    float sortGate = min(smoothstep(0.0, 0.30, uSortMix * mask), 0.92);
+    // v1.3.35 — pure pixel-level chain.
+    float sortGate = smoothstep(0.0, 0.30, uSortMix * mask);
     color.rgb = mix(color.rgb, sorted, sortGate);
   }
 
   // 5. Datamosh blend (blend with prev frame)
   if (uDatamosh * mask > 0.001) {
-    // v1.3.33 — snapshot pre-mosh color so we can cap the cumulative drift
-    // at 92% at end of block. Datamosh chains 4-5 internal mixes each near
-    // 100%, which previously erased every other FX behind it. Snapshot+cap
-    // keeps mosh visually dominant while letting prior FX bleed through.
-    vec3 _moshColorIn = color.rgb;
+    // v1.3.35 — pure pixel-level chain. Datamosh's internal mixes operate on
+    // the running color.rgb sequentially, so prior FX naturally pass through
+    // the mv0..mv3 motion-vector taps and the jump/RGB-shift/smear stages.
+    // No snapshot+cap wrapper.
     float sceneLuma = lum(color.rgb);
     vec2 px = vec2(1.0 / uResolution.x, 1.0 / uResolution.y);
     vec3 edgeX = texture2D(uCamera, clamp(uv + vec2(px.x, 0.0), 0.001, 0.999)).rgb - texture2D(uCamera, clamp(uv - vec2(px.x, 0.0), 0.001, 0.999)).rgb;
@@ -3129,9 +3126,6 @@ void main() {
       vec3 smearPrev = texture2D(uPrevFrame, clamp(uv + smearOff, 0.001, 0.999)).rgb;
       color.rgb = mix(color.rgb, smearPrev, clamp(extra * (0.35 + motionCarry * 0.8), 0.0, 0.95));
     }
-    // v1.3.33 — cap cumulative datamosh drift: ensure 8% of the pre-mosh
-    // signal (which already carries warps + line-scan sort) remains visible.
-    color.rgb = mix(_moshColorIn, color.rgb, 0.92);
   }
   // 6. Chroma crash (extreme chroma separation)
   if (uChrash * mask > 0.001) {
@@ -3142,11 +3136,10 @@ void main() {
     float shiftR = texture2D(uCamera, clamp(uv + vec2(caa * 2.0,  caa * 0.4), 0.001, 0.999)).r;
     float shiftG = texture2D(uCamera, clamp(uv + vec2(0.0,        caa      ), 0.001, 0.999)).g;
     float shiftB = texture2D(uCamera, clamp(uv - vec2(caa * 2.0,  caa * 0.4), 0.001, 0.999)).b;
-    // v1.3.33 — cap at 0.92 so chrash never fully replaces the prior signal.
-    // Also: vec3(origR,origG,origB) is the RAW camera, not what is actually
-    // in color after upstream FX — switch source to color.rgb so chrash
-    // shifts the COMPOSITE (sort+warp+mosh) rather than re-sampling raw cam.
-    color.rgb = mix(color.rgb, vec3(shiftR, shiftG, shiftB), min(uChrash * mask, 0.92));
+    // v1.3.35 — pure pixel-level chain: full replacement at max knob.
+    // Source kept on color.rgb so chrash shifts the COMPOSITE (sort+warp+mosh)
+    // rather than re-sampling the raw camera.
+    color.rgb = mix(color.rgb, vec3(shiftR, shiftG, shiftB), clamp(uChrash * mask, 0.0, 1.0));
   }
   // 8. Feedback tunnel (zoom+rotate prev-frame loop)
   if (uFeedback * mask > 0.001) {
@@ -3158,8 +3151,8 @@ void main() {
     vec2 rotated = vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);
     vec2 fbUv = clamp(center + rotated * zm, 0.001, 0.999);
     vec3 fbColor = texture2D(uPrevFrame, fbUv).rgb;
-    // v1.3.33 — cap at 0.92 so prior FX bleed through the feedback loop.
-    color.rgb = mix(color.rgb, fbColor * vec3(0.97, 0.98, 1.02), min(uFeedback * mask, 0.92));
+    // v1.3.35 — pure pixel-level chain.
+    color.rgb = mix(color.rgb, fbColor * vec3(0.97, 0.98, 1.02), clamp(uFeedback * mask, 0.0, 1.0));
   }
   // 9. Contour lines (iso-luminance neon overlay)
   if (uContour * mask > 0.001) {
@@ -3168,8 +3161,8 @@ void main() {
     float wrapped = fract(l * bands);
     float edge = 1.0 - smoothstep(0.0, 0.12, min(wrapped, 1.0 - wrapped));
     vec3 lineColor = hsl2rgb(l * 0.6 + uTime * 0.03, 1.0, 0.6);
-    // v1.3.33 — cap at 0.92 so contour edges don't fully erase prior FX.
-    color.rgb = mix(color.rgb, lineColor, min(edge * uContour * mask, 0.92));
+    // v1.3.35 — pure pixel-level chain.
+    color.rgb = mix(color.rgb, lineColor, clamp(edge * uContour * mask, 0.0, 1.0));
   }
   // 10. ASCII / block ramp (cell luminance density pattern)
   if (uAscii * mask > 0.001) {
@@ -3195,10 +3188,10 @@ void main() {
     } else {
       fill = 1.0;
     }
-    // v1.3.33 — cap at 0.92 so the ASCII grid never fully overwrites prior FX.
-    // Also: cellColor was sampled from raw uCamera at cellCenter; mix in the
-    // cell-quantized luminance pattern instead, applied OVER the running color.
-    color.rgb = mix(color.rgb, color.rgb * fill + cellColor * fill * 0.5, min(uAscii * mask, 0.92));
+    // v1.3.35 — pure pixel-level chain. ASCII grid quantizes the running
+    // color (so prior FX colours show through inside lit glyphs) plus the
+    // raw cell sample at half strength for cleaner glyph edges.
+    color.rgb = mix(color.rgb, color.rgb * fill + cellColor * fill * 0.5, clamp(uAscii * mask, 0.0, 1.0));
   }
   // 11. Venetian blind (time-sliced horizontal band shuffle)
   if (uVenetian * mask > 0.001) {
@@ -3210,8 +3203,8 @@ void main() {
     vec2 bandUv = clamp(vec2(uv.x + xShift, uv.y), 0.001, 0.999);
     float blend = smoothstep(0.4, 0.6, phase);
     vec3 bandColor = mix(color.rgb, texture2D(uPrevFrame, bandUv).rgb, blend);
-    // v1.3.33 — cap at 0.92 so blind bands keep prior FX visible underneath.
-    color.rgb = mix(color.rgb, bandColor, min(uVenetian * mask, 0.92));
+    // v1.3.35 — pure pixel-level chain.
+    color.rgb = mix(color.rgb, bandColor, clamp(uVenetian * mask, 0.0, 1.0));
   }
   // ── v1.2.58 ASENDORF / GYSIN homage block ─────────────────────────────
   // 13. GYSIN ASCII GLYPH GRID — 4x4 atlas of ramp characters (ertdfgcvb).
@@ -3231,8 +3224,8 @@ void main() {
     vec2 atlasUv = (atlasCell + inCell) * 0.25;
     float gA = texture2D(uGlyphAtlas, atlasUv).r;
     vec3 glyphCol = vec3(gA) * (cellCol * 0.55 + vec3(cellL) * 0.55);
-    // v1.3.33 — cap at 0.92 so glyph grid composes with prior FX.
-    color.rgb = mix(color.rgb, glyphCol, min(uGlyph * mask, 0.92));
+    // v1.3.35 — pure pixel-level chain.
+    color.rgb = mix(color.rgb, glyphCol, clamp(uGlyph * mask, 0.0, 1.0));
   }
   // 14. CPU REAL PIXEL SORT — (block moved above DATAMOSH in v1.2.69 for
   // unified sort+mosh signal; see the relocated uSortMix * mask block
@@ -3253,8 +3246,8 @@ void main() {
       float sL = lum(s);
       if (sL > bestL) { bestL = sL; best = s; }
     }
-    // v1.3.33 — cap at 0.92 so HILBERT walk smear doesn't fully replace prior FX.
-    color.rgb = mix(color.rgb, best, min(uSortAmt * mask, 0.92));
+    // v1.3.35 — pure pixel-level chain.
+    color.rgb = mix(color.rgb, best, clamp(uSortAmt * mask, 0.0, 1.0));
   }
   // 16. REACTION-DIFFUSION MOSH — Gray-Scott PDE on the prev-frame R/G
   // channels (used as chemical concentrations U,V). Camera luma feeds V,
@@ -3276,8 +3269,8 @@ void main() {
     newUV.y = mix(newUV.y, lum(color.rgb), 0.04);
     float vMask = newUV.y;
     vec3 reactCol = mix(color.rgb, color.gbr, vMask);
-    // v1.3.33 — cap at 0.92 so reaction-diffusion composes with prior FX.
-    color.rgb = mix(color.rgb, reactCol, min(uReact * mask, 0.92));
+    // v1.3.35 — pure pixel-level chain.
+    color.rgb = mix(color.rgb, reactCol, clamp(uReact * mask, 0.0, 1.0));
   }
   // 17. VORONOI LUMA-SORT CELLS — Worley-noise spatial partition; each
   // cell takes the brightest of 4 taps inside it as its representative.
@@ -3306,11 +3299,10 @@ void main() {
     if (lum(b1) > bL) { bL = lum(b1); best = b1; }
     if (lum(b2) > bL) { bL = lum(b2); best = b2; }
     if (lum(b3) > bL) { bL = lum(b3); best = b3; }
-    // v1.3.33 — cap at 0.92 so Voronoi cells don't fully overwrite prior FX.
-    // Voronoi reads raw uCamera at cell-seed points (totally divorced from uv),
-    // so without this cap it was the worst offender — would slam every prior
-    // FX (warps, sort, mosh, contour, ascii, glyph) under flat cell colours.
-    color.rgb = mix(color.rgb, best, min(uVoroSort * mask, 0.92));
+    // v1.3.35 — pure pixel-level chain. At max knob Voronoi owns the pixel;
+    // pull knob back to mix prior FX through (this is what the user wants:
+    // no permanent opacity-layer feel, knob = real intensity).
+    color.rgb = mix(color.rgb, best, clamp(uVoroSort * mask, 0.0, 1.0));
   }
   float g = 0.5 + uGain * 4.5;
   float fx = uGain;
@@ -5334,7 +5326,16 @@ export default function SpectraAfter() {
     faceFxRef.current.invert = faceFxMode === "BG";
 
     let cancelled = false;
-    let timer: number | null = null;
+    let rafId: number | null = null;
+    let lastTickAt = 0;
+    // v1.3.35 — monotonic timestamp for segmentForVideo. MediaPipe's VIDEO
+    // running mode silently drops frames whose timestamp is <= the previous
+    // one. Using performance.now() can produce duplicates under main-thread
+    // pressure (heavy GIF capture / encode), which on Android WebView showed
+    // as the mask freezing the moment recording started. A monotonic counter
+    // (advanced by a fixed step per tick) guarantees strict increase regardless
+    // of wall-clock jitter.
+    let segTs = 0;
     type SegmentationMask = {
       getAsUint8Array?: () => Uint8Array;
       getAsFloat32Array?: () => Float32Array;
@@ -5427,10 +5428,22 @@ export default function SpectraAfter() {
 
       const tick = () => {
         if (cancelled) return;
-        const v = videoRef.current;
-        if (segmenter && v && v.videoWidth > 0 && v.readyState >= 2) {
+        // v1.3.35 — rAF-driven cadence with internal time-bucket gating.
+        // Replaces the previous setTimeout chain, which on Android WebView
+        // was throttled to ~1 Hz under recording load (heavy GIF
+        // capture + getImageData + encode), making the silhouette appear
+        // to freeze the moment record was pressed. rAF survives main-thread
+        // pressure far better and is paced by the compositor.
+        const now = performance.now();
+        const cadence = segmenter ? _segCadenceMs() : 250;
+        if (now - lastTickAt >= cadence) {
+          lastTickAt = now;
+          const v = videoRef.current;
+          if (segmenter && v && v.videoWidth > 0 && v.readyState >= 2) {
           try {
-            segmenter.segmentForVideo(v, performance.now(), (result) => {
+            // Strictly monotonic timestamp — see segTs declaration above.
+            segTs += 33;
+            segmenter.segmentForVideo(v, segTs, (result) => {
               // v1.3.30 — prefer confidenceMasks (smooth f32 alpha); fall back
               // to categoryMask if the runtime ignored the option (older WASM).
               const cat: SegmentationMask | undefined = (result.confidenceMasks?.[0] ?? result.categoryMask);
@@ -5537,14 +5550,15 @@ export default function SpectraAfter() {
           faceFxRef.current.cy += (0.42 - faceFxRef.current.cy) * 0.1;
           faceFxRef.current.r  += (0.28 - faceFxRef.current.r ) * 0.1;
         }
-        timer = window.setTimeout(tick, segmenter ? _segCadenceMs() : 250);
+        }
+        rafId = window.requestAnimationFrame(tick);
       };
       tick();
     };
     initAndRun();
     return () => {
       cancelled = true;
-      if (timer != null) window.clearTimeout(timer);
+      if (rafId != null) window.cancelAnimationFrame(rafId);
       try { segmenter?.close?.(); } catch { /* noop */ }
     };
   }, [faceFxMode, faceFxKick]);
