@@ -6005,6 +6005,10 @@ export default function SpectraAfter() {
   const [uiHidden, setUiHidden] = useState(false);
   const [fps, setFps] = useState(0);
   const [exportFormat, setExportFormat] = useState<"gif" | "video">("gif");
+  // v1.3.31 — render-loop GIF capture needs to read the current export
+  // format from inside a useCallback that's pinned with no React deps.
+  const exportFormatRef = useRef<"gif" | "video">("gif");
+  useEffect(() => { exportFormatRef.current = exportFormat; }, [exportFormat]);
   const [exportQuality, setExportQuality] = useState<"standard" | "high" | "ultra">("high");
   const [exportProfile, setExportProfile] = useState<ExportProfile>("native");
   // User-selectable canonical recording rate. Applied to both GIF and video
@@ -6083,6 +6087,15 @@ export default function SpectraAfter() {
   const gifStartTime = useRef(0);
   const gifInterval = useRef<ReturnType<typeof setInterval>|null>(null);
   const gifTimeoutRef = useRef<number | null>(null);
+  // v1.3.31 — render-loop-driven GIF capture. setTimeout-based capture
+  // raced with the rAF render loop, sampling the GL canvas at random
+  // phases of its draw cycle. Per-frame delays let us encode the ACTUAL
+  // wall-clock cadence of rendered frames so playback matches the live
+  // preview even when the render rate dips below the user-chosen fps.
+  const gifPeriodMsRef = useRef(40);          // bucket size in ms (1000/userFps, clamped >=20 for 50Hz GIF playback ceiling)
+  const gifBucketRef = useRef(0);             // index of the next bucket eligible for capture
+  const gifDelaysRef = useRef<number[]>([]);  // per-frame delays in centiseconds, parallel to gifFrames
+  const captureFrameRef = useRef<((delayCs: number) => void) | null>(null);
   const videoRecorderRef = useRef<MediaRecorder | null>(null);
   const videoChunksRef = useRef<BlobPart[]>([]);
   const videoComposeCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -8182,6 +8195,29 @@ export default function SpectraAfter() {
     // FPS
     fpsFrames.current++;
     const now = performance.now();
+    // v1.3.31 — GIF capture driven from the rAF render loop. Buckets
+    // are time slots of `gifPeriodMsRef.current` ms; whenever the loop
+    // crosses a new bucket boundary we snap one frame and encode the
+    // ELAPSED bucket count as the per-frame delay. If render falls
+    // behind (composeFrame + getImageData are heavy), the next capture
+    // crosses multiple buckets and gets a proportionally longer delay,
+    // so the encoded GIF plays back at true wall-clock motion instead
+    // of the previous setTimeout-chain behavior that fixed delay per
+    // frame and made dropped renders speed playback up to "chaos".
+    if (recordingRef.current && exportFormatRef.current === "gif" && captureFrameRef.current) {
+      const periodMs = gifPeriodMsRef.current;
+      const elapsedMs = now - gifStartTime.current;
+      const wantBucket = Math.floor(elapsedMs / periodMs) + 1;
+      const prevBucket = gifBucketRef.current;
+      if (wantBucket > prevBucket) {
+        const bucketsCrossed = wantBucket - prevBucket;
+        // Per-frame delay in centiseconds. Clamped to >=2 because the
+        // GIF spec floors per-frame delay at 2cs (browsers re-clamp).
+        const delayCs = Math.max(2, Math.round((bucketsCrossed * periodMs) / 10));
+        gifBucketRef.current = wantBucket;
+        captureFrameRef.current(delayCs);
+      }
+    }
     // v1.2.55 — ADAPTIVE RESOLUTION. EWMA the inter-frame interval so
     // momentary jank doesn't trigger a downscale, and require a steady
     // two-second fast streak before restoring full res so we don't
@@ -8852,7 +8888,7 @@ export default function SpectraAfter() {
     return frames.slice(0, bestIdx + 1);
   }
 
-  function encodeGIF(gw: number, gh: number, frames: Uint8ClampedArray[], delay: number, ditherStrength = 2.0): Uint8Array {
+  function encodeGIF(gw: number, gh: number, frames: Uint8ClampedArray[], delays: number[] | Uint16Array, ditherStrength = 2.0): Uint8Array {
     const buf: number[] = [];
     const wb = (b:number) => buf.push(b & 0xFF);
     const w16 = (v:number) => { wb(v); wb(v>>8); };
@@ -8900,7 +8936,10 @@ export default function SpectraAfter() {
     wb(0x21);wb(0xFF);wb(11);ws("NETSCAPE2.0");wb(3);wb(1);w16(0);wb(0);
     for(let f=0;f<frames.length;f++){
       const px=frames[f];
-      wb(0x21);wb(0xF9);wb(4);wb(0);w16(delay);wb(0);wb(0);
+      // v1.3.31 — per-frame delay so dropped render frames extend the
+      // current frame's playback time (matches wall-clock motion).
+      const fd = Math.max(2, (delays[f] ?? delays[delays.length - 1] ?? 4) | 0);
+      wb(0x21);wb(0xF9);wb(4);wb(0);w16(fd);wb(0);wb(0);
       wb(0x2C);w16(0);w16(0);w16(gw);w16(gh);wb(0);
       const idx=new Uint8Array(gw*gh);
       for (let y = 0; y < gh; y++) {
@@ -8932,7 +8971,7 @@ export default function SpectraAfter() {
     return { fps: 100 / delayCs, delayCs };
   };
 
-  const captureFrame = useCallback(() => {
+  const captureFrame = useCallback((delayCs: number) => {
     const canvas = canvasRef.current;
     const gl = glRef.current;
     if (!canvas || !gl) return;
@@ -8946,11 +8985,20 @@ export default function SpectraAfter() {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
     composeFrame(ctx, gw, gh);
-    const elapsed = performance.now() - gifStartTime.current;
     gifFrames.current.push(ctx.getImageData(0, 0, gw, gh).data.slice() as unknown as Uint8ClampedArray);
+    // Per-frame delay (centiseconds). render() computes this from the
+    // number of bucket boundaries crossed since the last capture, so a
+    // missed bucket (slow render frame) produces a proportionally longer
+    // encoded delay -> playback motion stays true to wall-clock instead
+    // of the GIF speeding up to compensate for dropped frames.
+    gifDelaysRef.current.push(Math.max(2, delayCs | 0));
+    const elapsed = performance.now() - gifStartTime.current;
     const recordCapMs = Math.min(MAX_RECORD_MS, recordMaxSecRef.current * 1000);
-    if (elapsed >= recordCapMs && gifInterval.current) stopRecordingRef.current();
+    if (elapsed >= recordCapMs && recordingRef.current) stopRecordingRef.current();
   }, [composeFrame, exportProfile, exportQuality, getExportDimensions, getGifProfile]);
+  // Pin a ref to the latest captureFrame so render() (which is wrapped
+  // in useCallback with [] deps) can call it without a stale closure.
+  useEffect(() => { captureFrameRef.current = captureFrame; }, [captureFrame]);
 
   const startVideoRecording = useCallback(() => {
     const canvas = canvasRef.current;
@@ -9064,6 +9112,7 @@ export default function SpectraAfter() {
   const startRecording = useCallback(() => {
     if (recordingRef.current) return;
     gifFrames.current = [];
+    gifDelaysRef.current = [];
     gifSizeRef.current = null;
     gifStartTime.current = performance.now();
     recordingRef.current = true;
@@ -9083,21 +9132,17 @@ export default function SpectraAfter() {
     gifFpsRef.current = snappedFps;
     gifDelayCsRef.current = delayCs;
     gifDitherRef.current = gifProfile.dither;
-    // Self-correcting setTimeout chain (instead of setInterval, which
-    // clusters callbacks under load and drifts ±tens of ms per minute).
-    const startTs = performance.now();
-    const periodMs = delayCs * 10; // GIF’s own playback period in ms
-    let n = 0;
-    const tick = () => {
-      if (!recordingRef.current) return;
-      captureFrame();
-      n++;
-      const target = startTs + n * periodMs;
-      const wait = Math.max(0, target - performance.now());
-      gifTimeoutRef.current = window.setTimeout(tick, wait);
-    };
-    gifTimeoutRef.current = window.setTimeout(tick, 0);
-  }, [captureFrame, exportFormat, exportProfile, exportQuality, getGifProfile, getRecordingHintText, startVideoRecording]);
+    // v1.3.31 — capture is driven from the rAF render loop (see render()).
+    // The setTimeout chain that used to live here raced with rAF and
+    // sampled the GL canvas at random phases of its draw cycle, so
+    // captures dup'd or skipped renders and produced jittery exports.
+    // Bucket size is the user-chosen frame period, clamped to >=20ms
+    // because the GIF spec floors playback delay at 2cs (50Hz). Going
+    // smaller would just encode 50Hz frames as if they were 60Hz and
+    // make the export play back ~17% slow.
+    gifPeriodMsRef.current = Math.max(20, delayCs * 10);
+    gifBucketRef.current = 0;
+  }, [exportFormat, exportProfile, exportQuality, getGifProfile, getRecordingHintText, startVideoRecording]);
 
   const stopRecording = useCallback(() => {
     if (!recordingRef.current) return;
@@ -9123,7 +9168,9 @@ export default function SpectraAfter() {
       return;
     }
     const frames = gifFrames.current.slice();
+    const delays = gifDelaysRef.current.slice();
     gifFrames.current = [];
+    gifDelaysRef.current = [];
     if (frames.length < 2) return;
     setProcessingStatus({ label: `Encoding GIF (${frames.length} frames)…` });
     setTimeout(() => {
@@ -9138,11 +9185,12 @@ export default function SpectraAfter() {
       // frame[0]. For generative content this finds a near-perfect loop
       // point in almost every recording over ~2 seconds.
       const looped = trimToLoopPoint(frames, gw, gh);
-      // GIF delay in centiseconds was already snapped at capture time so
-      // encoded playback rate exactly matches recorded cadence (no more
-      // "plays slightly faster than the live preview" bug).
-      const delayCs = gifDelayCsRef.current;
-      const data = encodeGIF(gw, gh, looped, delayCs, gifDitherRef.current);
+      // v1.3.31 — trim per-frame delays parallel to the trimmed frame
+      // count; encodeGIF writes each frame's delay individually so
+      // playback motion exactly mirrors the live preview's cadence
+      // (no more "plays slightly faster than the live preview" bug).
+      const loopedDelays = delays.slice(0, looped.length);
+      const data = encodeGIF(gw, gh, looped, loopedDelays, gifDitherRef.current);
       const blob = new Blob([data as unknown as BlobPart], { type: "image/gif" });
       const filename = `gps-${(MODES.find(m => m.id === mode)?.short ?? "PXL").toLowerCase()}-${Date.now()}.gif`;
       setProcessingStatus({ label: "Saving GIF…" });
