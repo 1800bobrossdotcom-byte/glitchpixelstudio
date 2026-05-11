@@ -5035,6 +5035,16 @@ export default function SpectraAfter() {
   // manual LOW POWER toggle so we don't overwrite their preference.
   // The render skip-frame check honours either flag.
   const batteryLowRef = useRef(false);
+  // v1.3.36 — THERMAL AUTO-THROTTLE. When the rolling frametime EWMA
+  // sits above ~32 ms (sustained <31 fps) for ~60 consecutive frames,
+  // we flip thermalThrottleRef on. The render() skip-frame check honours
+  // it (same path as manual LOW POWER + battery-low), halving the GPU
+  // workload so the SoC has room to cool. We only release the throttle
+  // after ~4 s of solid sub-18 ms frames so the device doesn't ping-pong
+  // back into thermal limit the moment we restore full rate.
+  const thermalThrottleRef = useRef(false);
+  const thermalSlowStreakRef = useRef(0);
+  const thermalCoolStreakRef = useRef(0);
   // v1.2.55 — ADAPTIVE RENDER RESOLUTION. When the rolling frametime
   // average crosses ~22 ms (sustained <45 fps) we drop the canvas DPR
   // multiplier to 0.75x to recover headroom; when it sits below ~14 ms
@@ -6968,7 +6978,11 @@ export default function SpectraAfter() {
     // v1.2.55 — also honour the battery-auto flag so an automatic
     // low-battery condition halves framerate even if the user hasn't
     // toggled the manual switch.
-    if (lowPowerRef.current || batteryLowRef.current) {
+    // v1.3.36 — also honour the thermal auto-throttle flag (set by the
+    // adaptive resolution block when the EWMA frametime is sustained slow,
+    // i.e. SoC is throttling for heat). Same skip-frame mechanism, no
+    // user action required — phone gets noticeably cooler under load.
+    if (lowPowerRef.current || batteryLowRef.current || thermalThrottleRef.current) {
       lowPowerSkipRef.current = !lowPowerSkipRef.current;
       if (lowPowerSkipRef.current) {
         rafRef.current = requestAnimationFrame(render);
@@ -8283,6 +8297,35 @@ export default function SpectraAfter() {
       // EWMA: 0.92 history weight → ~half-life of ~8 frames
       frametimeAvgRef.current = frametimeAvgRef.current * 0.92 + dt * 0.08;
       const avg = frametimeAvgRef.current;
+      // v1.3.36 — THERMAL AUTO-THROTTLE state machine. Track sustained
+      // slow / fast streaks against a hot threshold (~31 fps) and a cool
+      // threshold (~55 fps). Flip in after ~60 hot frames (~1 s on a
+      // throttled SoC), flip out only after ~240 cool frames (~4 s) so
+      // we don't ping-pong back into thermal limit. When throttled, we
+      // also pin the render scale at 0.66 (instead of just 0.75) so the
+      // shader pushes ~44% the pixels for an even larger thermal headroom.
+      if (avg > 32) {
+        thermalSlowStreakRef.current++;
+        thermalCoolStreakRef.current = 0;
+        if (!thermalThrottleRef.current && thermalSlowStreakRef.current > 60) {
+          thermalThrottleRef.current = true;
+          if (renderScaleRef.current > 0.67) {
+            renderScaleRef.current = 0.66;
+            fastFrameStreakRef.current = 0;
+            resize();
+          }
+        }
+      } else if (avg < 18) {
+        thermalCoolStreakRef.current++;
+        thermalSlowStreakRef.current = Math.max(0, thermalSlowStreakRef.current - 1);
+        if (thermalThrottleRef.current && thermalCoolStreakRef.current > 240) {
+          thermalThrottleRef.current = false;
+          thermalCoolStreakRef.current = 0;
+        }
+      } else {
+        thermalSlowStreakRef.current = Math.max(0, thermalSlowStreakRef.current - 1);
+        thermalCoolStreakRef.current = Math.max(0, thermalCoolStreakRef.current - 1);
+      }
       if (avg > 22 && renderScaleRef.current > 0.76) {
         // Sustained <45fps — shrink the GL canvas so the shader pushes
         // 0.75 × 0.75 = ~56% the pixels. Triggers a full FBO + texture
