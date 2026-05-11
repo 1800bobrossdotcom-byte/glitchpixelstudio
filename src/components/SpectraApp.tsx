@@ -6617,6 +6617,23 @@ export default function SpectraAfter() {
     // Sync draw overlay canvas
     const dc = drawCanvasRef.current;
     if (dc) { dc.width = canvas.width; dc.height = canvas.height; }
+    // v1.3.39 — INVALIDATE camera upload sentinels. The block above just
+    // re-allocated `textures.current[i]` (the camera ping-pong textures)
+    // to canvas dims with null pixels. The render-loop uploader at
+    // ~L7918 has a fast path: if `!firstFrameRef && sw === cameraTexSized`,
+    // it does `texSubImage2D(...texSource)` which assumes the texture is
+    // already sized to the VIDEO source. After resize() the texture is
+    // sized to the (smaller, post-renderScale) canvas backing — the
+    // sub-upload then exceeds bounds → GL_INVALID_VALUE → texture stays
+    // all-zero → camera goes black until the next window resize. Bug was
+    // dormant on desktop (resize() only fired on window resize, which
+    // also re-evaluated firstFrameRef paths through stream restart) but
+    // v1.3.36 thermal auto-throttle now triggers resize() from inside
+    // render() after ~60 hot frames, exposing it. Forcing a re-seed via
+    // these two flags makes the next render hit the texImage2D path,
+    // which correctly resizes the texture back to source dims.
+    firstFrameRef.current = true;
+    cameraTexSizedRef.current = { w: 0, h: 0 };
   }, []);
 
   // ── Render loop ───────────────────────────────────────────
