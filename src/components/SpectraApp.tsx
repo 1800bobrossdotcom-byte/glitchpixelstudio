@@ -5808,17 +5808,17 @@ export default function SpectraAfter() {
   const [brushColor, setBrushColor] = useState("#ff00ff");
   const [brushSize, setBrushSize] = useState(8);
   const [brushOpacity, setBrushOpacity] = useState(0.85);
-  const [colorCycle, setColorCycle] = useState(false);
-  const [colorCycleSpeed, setColorCycleSpeed] = useState(0.8);
+  // v1.3.37 — colorCycle/colorCycleSpeed/colorCycleHueRef/colorCycleRef
+  // dropped: DRAW feature is gated off (drawAvailable=false) and the cycle
+  // UI never shipped, so the state, refs, and the rainbow-cycle interval
+  // useEffect were dead weight. hslToHex helper removed alongside.
   const currentStrokeRef = useRef<DrawStroke|null>(null);
   const drawCanvasRef = useRef<HTMLCanvasElement>(null);
   // v1.2.77 — scratch canvas for compositing the user's brush strokes
   // into the source frame so glitch FX corrupt them. See render loop.
   const drawComposeCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const colorCycleHueRef = useRef(300);
   const [brushType, setBrushType] = useState<"round"|"spray"|"neon"|"wide">("round");
   const brushColorRef = useRef("#ff00ff");
-  const colorCycleRef = useRef(false);
   const brushTypeRef = useRef<string>("round");
 
   // ─── PIXEL DRAWER ──────────────────────────────────────────────────
@@ -6021,8 +6021,6 @@ export default function SpectraAfter() {
       setStrokes([]);
     }
   }, [drawAvailable, drawActive]);
-  // Reserved setters (color cycle UI may return later)
-  void setColorCycle; void setColorCycleSpeed;
 
   // ── DRAW crash safety net ───────────────────────────────────────────────
   // If anything inside the draw paint path throws, instead of letting the
@@ -6952,7 +6950,6 @@ export default function SpectraAfter() {
   useEffect(()=>{ moshMapRef.current=moshMap; },[moshMap]);
   useEffect(()=>{ moshDistortRef.current=moshDistort; },[moshDistort]);
   useEffect(()=>{ brushColorRef.current=brushColor; },[brushColor]);
-  useEffect(()=>{ colorCycleRef.current=colorCycle; },[colorCycle]);
   useEffect(()=>{ brushTypeRef.current=brushType; },[brushType]);
 
   // ── Collapsible panel sections ────────────────────────────
@@ -8103,14 +8100,16 @@ export default function SpectraAfter() {
     setF1(u.uSortAmt, _sortAudio);
     setF1(u.uScanTear, scanTearRef.current);
     setF1(u.uBlockGlitch, blockGlitchRef.current);
-    // Datamosh INTENS slider is 0..2. Old mapping used a pow(0.72) curve
-    // plus an aggressive HARD multiplier that clipped at 5.0 around the
-    // slider midpoint — the top half of the knob did nothing visible.
-    // Linear map keeps the full slider range live in both modes.
+    // Datamosh INTENS slider is 0..2. v1.3.37 — the MOSH HARD toggle is
+    // gone; hardness now derives smoothly from slider position so cranking
+    // the knob naturally enters the old HARD territory. Below the
+    // midpoint behaves like SOFT (mult ~1.6, no baseline); above midpoint
+    // smoothstep ramps mult → 2.5 and adds the 0.25 baseline. Top of
+    // slider matches the previous HARD ceiling (~5.25) exactly.
     const dmBase = Math.max(0, datamoshRef.current);
-    let dmMapped = moshHardRef.current
-      ? dmBase * 2.5 + 0.25  // HARD: 0.25 .. 5.25 across the full slider
-      : dmBase * 1.6;        // SOFT: 0    .. 3.2  across the full slider
+    const _dmH = Math.max(0, Math.min(1, (dmBase - 0.5) / 1.0));
+    const hardness = _dmH * _dmH * (3 - 2 * _dmH); // smoothstep(0.5, 1.5, dmBase)
+    let dmMapped = dmBase * (1.6 + 0.9 * hardness) + 0.25 * hardness;
     // v1.2.53 — audio modulation of the datamosh rack. Pulses the
     // mapped intensity on bass/beat so the rack visibly reacts to a
     // mic stream even when the slider is partway down. Capped at the
@@ -8585,7 +8584,6 @@ export default function SpectraAfter() {
       const pressure = Math.max(0.25, Math.min(1.2, 1 - speed * 1.2));
       pts.push({ ...pos, pressure });
       currentStrokeRef.current.width = brushSize * pressure;
-      if (colorCycleRef.current) currentStrokeRef.current.color = brushColorRef.current;
       renderDrawOverlay();
     } catch (err) {
       reportDrawCrash("onPointerMove", err);
@@ -10067,31 +10065,8 @@ export default function SpectraAfter() {
   // stripped to PXL+MOSH+GEN. paramsByMode persistence stays for legacy save
   // files but the per-mode update helpers are no longer wired into the UI.
 
-  const hslToHex = useCallback((h: number, s: number, l: number) => {
-    const ss = s / 100;
-    const ll = l / 100;
-    const c = (1 - Math.abs(2 * ll - 1)) * ss;
-    const x = c * (1 - Math.abs((h / 60) % 2 - 1));
-    const m = ll - c / 2;
-    let r = 0, g = 0, b = 0;
-    if (h < 60) { r = c; g = x; b = 0; }
-    else if (h < 120) { r = x; g = c; b = 0; }
-    else if (h < 180) { r = 0; g = c; b = x; }
-    else if (h < 240) { r = 0; g = x; b = c; }
-    else if (h < 300) { r = x; g = 0; b = c; }
-    else { r = c; g = 0; b = x; }
-    const toHex = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, "0");
-    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
-  }, []);
-
-  useEffect(() => {
-    if (!drawActive || !colorCycle) return;
-    const id = setInterval(() => {
-      colorCycleHueRef.current = (colorCycleHueRef.current + Math.max(0.1, colorCycleSpeed) * 3.5) % 360;
-      setBrushColor(hslToHex(Math.round(colorCycleHueRef.current), 100, 55));
-    }, 33);
-    return () => clearInterval(id);
-  }, [drawActive, colorCycle, colorCycleSpeed, hslToHex]);
+  // v1.3.37 — hslToHex + the rainbow-cycle interval useEffect removed.
+  // Both only existed to power the never-shipped color-cycle DRAW UI.
 
   // ── Device motion / accelerometer → accelEnergyRef ───────────────────────
   useEffect(() => {
@@ -12035,9 +12010,6 @@ export default function SpectraAfter() {
                 <Knob label="BLOCK"    value={blockGlitch}  min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setBlockGlitch}/>
                 <Knob label="LIQUID"   value={liquid}       min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setLiquid}/>
               </div>
-              <div style={{ display: "flex", justifyContent: "center", marginTop: 12 }}>
-                <SynthSwitch label="MOSH HARD" on={moshHard} onChange={setMoshHard} onLabel="HARD" offLabel="SOFT"/>
-              </div>
               <div style={{ display: "flex", justifyContent: "center", marginTop: 10 }}>
                 <button
                   className="sp-btn"
@@ -12081,13 +12053,15 @@ export default function SpectraAfter() {
 
             {/* ── PIXEL GENERATOR RACK ──────────────────────────────── */}
             <SynthPanel title="PIXEL GENERATOR" subtitle={`GEN · ${genStyle}`} accent="rgba(255,210,140,0.95)">
-              {/* Layer selector tabs (L1..L4 + MASTER) ────────────
+              {/* Layer selector tabs (L1..L4) ────────────
                   Tap a tab to select it — every knob, the style grid and
                   the INVERT/RANDOM controls below then edit THAT layer's
-                  params. Selecting MASTER broadcasts every edit to ALL 4
-                  layers simultaneously. The small "●/○" pill inside each
-                  layer tab toggles whether the layer participates in the
-                  fused output (independent of selection). */}
+                  params. The small "●/○" pill inside each layer tab
+                  toggles whether the layer participates in the fused
+                  output (independent of selection).
+                  v1.3.37 — MASTER (broadcast) tab removed; broadcast-edit
+                  was rarely used and easy to trigger by mistake. Edit
+                  layers individually, or use a preset to set them all. */}
               <div style={{
                 fontSize: 9, letterSpacing: "1.4px", color: "rgba(255,210,140,0.7)",
                 textTransform: "uppercase", marginBottom: 4, paddingLeft: 2,
@@ -12095,19 +12069,16 @@ export default function SpectraAfter() {
               }}>
                 <span>Layers · {genLayers.filter(l => l.enabled).length} active</span>
                 <span style={{ fontSize: 8, opacity: 0.6 }}>
-                  {selectedLayer === 4 ? "EDITING ALL" : `EDITING L${selectedLayer+1}`}
+                  {`EDITING L${selectedLayer+1}`}
                 </span>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 4, marginBottom: 8 }}>
-                {[0,1,2,3,4].map((i) => {
-                  const isMaster = i === 4;
-                  const layer = isMaster ? null : genLayers[i];
-                  const accent = isMaster
-                    ? "#f8f8f8"
-                    : ["#1200FF","#ff7a3a","#3aff8e","#ff3aa3"][i];
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 4, marginBottom: 8 }}>
+                {[0,1,2,3].map((i) => {
+                  const layer = genLayers[i];
+                  const accent = ["#1200FF","#ff7a3a","#3aff8e","#ff3aa3"][i];
                   const selected = selectedLayer === i;
-                  const enabled = isMaster ? true : !!layer?.enabled;
-                  const label = isMaster ? "MASTER" : `L${i+1}`;
+                  const enabled = !!layer?.enabled;
+                  const label = `L${i+1}`;
                   return (
                     <div key={`tab${i}`} style={{
                       position: "relative",
@@ -12126,10 +12097,10 @@ export default function SpectraAfter() {
                       <button
                         onPointerDown={(e) => e.stopPropagation()}
                         onClick={(e) => { e.stopPropagation(); setSelectedLayer(i); }}
-                        title={isMaster ? "MASTER — edits broadcast to all layers" : `Edit Layer ${i+1}'s params`}
+                        title={`Edit Layer ${i+1}'s params`}
                         style={{
                           flex: 1, padding: "12px 4px 6px",
-                          fontSize: isMaster ? 10 : 12, fontWeight: 900, letterSpacing: "1.4px",
+                          fontSize: 12, fontWeight: 900, letterSpacing: "1.4px",
                           fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                           color: selected ? "#f8f8f8" : `${accent}dd`,
                           background: "transparent",
@@ -12139,7 +12110,7 @@ export default function SpectraAfter() {
                           minHeight: 56,
                         }}
                       >{label}</button>
-                      {!isMaster && layer && (
+                      {layer && (
                         <button
                           onPointerDown={(e) => e.stopPropagation()}
                           onClick={(e) => {
@@ -12159,17 +12130,6 @@ export default function SpectraAfter() {
                             fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                           }}
                         >{enabled ? "● ON" : "○ OFF"}</button>
-                      )}
-                      {isMaster && (
-                        <div style={{
-                          margin: 4, padding: "3px 0",
-                          fontSize: 8, fontWeight: 800, letterSpacing: "0.8px",
-                          color: "rgba(248,248,248,0.6)", textAlign: "center",
-                          border: "1px dashed rgba(255,255,255,0.18)",
-                          background: "transparent",
-                          borderRadius: 3,
-                          fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
-                        }}>BCAST</div>
                       )}
                     </div>
                   );
@@ -12298,6 +12258,16 @@ export default function SpectraAfter() {
                 <Knob label="BRIGHT"  value={brightness}  min={0.2} max={2.0}  step={0.01} defaultValue={1.0} onChange={setBrightness}/>
                 <Knob label="CONT"    value={contrast}    min={0.2} max={3.0}  step={0.01} defaultValue={1.0} onChange={setContrast}/>
               </div>
+              {/* v1.3.37 — Output bus row (was the standalone MASTER panel).
+                  Folded in here so every post-process control lives in one
+                  place: Master Color tints the output, OUT scales it. */}
+              <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(255,180,255,0.7)", textTransform: "uppercase", marginBottom: 4, paddingLeft: 2 }}>Output</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center", marginBottom: 12 }}>
+                <Knob label="GAIN"   value={gain}       min={0} max={1}  step={0.01} defaultValue={0.5} onChange={setGain}/>
+                <Knob label="SPEED"  value={speed}      min={0} max={4}  step={0.05} defaultValue={1.0} onChange={setSpeed}/>
+                <Knob label="SCAN"   value={scanlines}  min={0} max={1}  step={0.01} defaultValue={0.0} onChange={setScanlines}/>
+                <Knob label="ZOOM"   value={zoom}       min={0} max={2}  step={0.01} defaultValue={0.0} onChange={setZoom}/>
+              </div>
               {/* Sort key (color channel that drives PIXEL SORT) */}
               <div style={{ display: "flex", justifyContent: "center" }}>
                 <SynthSelector label="SORT KEY" options={["LUM","HUE","SAT","R","G","B","INTENS","MIN"]} value={Math.round(sortKey)} onChange={(v) => setSortKey(v)}/>
@@ -12400,15 +12370,9 @@ export default function SpectraAfter() {
               </div>
             </SynthPanel>
 
-            {/* ── MASTER ─────────────────────────────────────────── */}
-            <SynthPanel title="MASTER" subtitle="OUT BUS">
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
-                <Knob label="GAIN"   value={gain}       min={0} max={1}  step={0.01} defaultValue={0.5} onChange={setGain}/>
-                <Knob label="SPEED"  value={speed}      min={0} max={4}  step={0.05} defaultValue={1.0} onChange={setSpeed}/>
-                <Knob label="SCAN"   value={scanlines}  min={0} max={1}  step={0.01} defaultValue={0.0} onChange={setScanlines}/>
-                <Knob label="ZOOM"   value={zoom}       min={0} max={2}  step={0.01} defaultValue={0.0} onChange={setZoom}/>
-              </div>
-            </SynthPanel>
+            {/* v1.3.37 — Standalone MASTER (OUT BUS) panel removed.
+                GAIN / SPEED / SCAN / ZOOM moved into COLOR → Output row
+                so the post-process controls all live in one rack. */}
 
           </Section>
 
