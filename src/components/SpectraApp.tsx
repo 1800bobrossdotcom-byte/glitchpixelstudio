@@ -2560,206 +2560,13 @@ void main() {
     }
     mask *= mix(fm, 1.0 - fm, uFaceInvert);
   }
-  // 1. Pixel sorting — TRUE line-scan sort, not UV displacement.
-  // For each pixel we scan back along the row (or column) up to runMax
-  // taps; among samples whose metric is INSIDE the threshold band we
-  // pick the one with the extremum metric and inherit its colour. This
-  // makes contiguous "runs" of in-band pixels collapse to the brightest
-  // / darkest pixel in the run — the classic ASDF / kim asendorf streak
-  // look. Outside the band the original pixel passes through.
-  //
-  // The scan only computes a colour here; we apply it AFTER the main
-  // color = texture2D(uCamera, uv) fetch so downstream UV-warp FX
-  // (scan tear, RGB drift, block glitch, liquid) still get to act on
-  // the original UV.
-  vec3 sortedCol = vec3(0.0);
-  float sortBlend = 0.0;
-  // v1.2.59 \u2014 mode 4 (HILBERT) bypasses this scanline body and is
-  // handled by the dedicated HILBERT block further below.
-  if (uSortAmt * mask > 0.001 && uSortMode < 3.5) {
-    float key = floor(clamp(uSortKey, 0.0, 7.0) + 0.5);
-    float modeF = floor(clamp(uSortMode, 0.0, 3.0) + 0.5);
-    float lo = min(uSortLow, uSortHigh);
-    float hi = max(uSortLow, uSortHigh);
-    // pixelsort-style scan angle (0 HORZ / 1 VERT / 2 DIAG↗ / 3 DIAG↘)
-    float angF = floor(clamp(uSortAngle, 0.0, 3.0) + 0.5);
-    bool sortVert = (angF > 0.5 && angF < 1.5);
-    vec2 px = vec2(1.0 / uResolution.x, 1.0 / uResolution.y);
-    vec2 step1;
-    if (angF < 0.5)      step1 = vec2(px.x, 0.0);     // HORZ
-    else if (angF < 1.5) step1 = vec2(0.0, px.y);     // VERT
-    else if (angF < 2.5) step1 = vec2(px.x, px.y);    // DIAG ↗
-    else                 step1 = vec2(px.x, -px.y);   // DIAG ↘
-    // Stride scaling: SEGMENT knob now extends sample STRIDE so 64 taps
-    // can cover up to ~1024 px of the source line, not just 64. Without
-    // this the sort streaks are invisible on 1080p phone screens.
-    float stride = mix(1.0, 16.0, clamp(uSortSegment, 0.0, 1.0)) * (0.6 + uSortAmt * 1.4);
-    step1 *= stride;
-    // 8..64 sample run, scaled by SortAmt and Segment so dialing the
-    // amount up creates LONGER streaks (not bigger displacements).
-    // GLSL ES 1.00 requires constant loop bounds, so we use 64 hard
-    // and gate work with float compare (NO break on dynamic value).
-    float runMaxF = mix(8.0, 64.0, clamp(uSortSegment, 0.0, 1.0)) * (0.4 + uSortAmt * 1.6);
-    runMaxF = clamp(runMaxF, 4.0, 64.0);
-    // Per-line jitter so streak edges don't align to a fixed grid.
-    float lineCoord = sortVert ? uv.x : uv.y;
-    float lineId = floor(lineCoord * (sortVert ? uResolution.x : uResolution.y));
-    // Subpixel jitter: every scan-line gets a fractional UV offset hashed
-    // off lineId so streaks don't snap to the integer-pixel grid (looks
-    // way crisper at hi-res). Asendorf-style alternating pick: even lines
-    // grab the brightest in-band pixel, odd lines grab the darkest. The
-    // resulting streak field has both light and dark runs interleaved
-    // instead of one uniform highlight pass over the whole frame.
-    float subpixJit = (hash(lineId * 0.137) - 0.5) * 0.85;
-    float pickMaxLine = step(0.5, fract(lineId * 0.5 + hash(lineId * 0.029) * 0.3));
-    // Boundary modulation (AE Pixel Sorter Modulation): two-frequency sine wave
-    // distorts lo/hi thresholds per scan-line → organic wavy segment edges.
-    float modWave = sin(lineCoord * 28.0 + uTime * 1.4)
-                  + sin(lineCoord * 47.0 + uTime * 0.9) * 0.4;
-    float modShift = modWave * uSortRandom * 0.22;
-    lo = clamp(lo + modShift, 0.0, 1.0);
-    hi = clamp(hi + modShift * 0.6, lo + 0.01, 1.0);
-    // Small scan-start offset tied to modulation (replaces pure random jitter).
-    float jitter = modShift * 6.0 + subpixJit;
-    // Per-line min/max selection (set above) drives the streak palette.
-    float pickMax = pickMaxLine;
-
-    // Per-mode sampling reference points (cheap, computed once).
-    vec2 blockOrigin = floor(uv / (8.0 * px)) * (8.0 * px);
-    vec2 spiralCenter = vec2(0.5, 0.5);
-    vec2 toCenter = uv - spiralCenter;
-    float spiralR = length(toCenter);
-    float spiralA = atan(toCenter.y, toCenter.x);
-    float spiralStep = 0.004 + uSortSegment * 0.025;
-
-    vec3 srcCol = texture2D(uCamera, uv).rgb;
-    float srcMet = sortMetric(srcCol, key);
-    bool srcInBandRaw = srcMet >= lo && srcMet <= hi;
-    // INTERVAL gate (satyarth/pixelsort-style): chooses which destination
-    // pixels participate. 0 BAND keeps legacy behaviour; others override.
-    float intF = floor(clamp(uSortInterval, 0.0, 6.0) + 0.5);
-    float srcLuma = lum(srcCol);
-    bool srcInBand = srcInBandRaw;
-    if (intF > 0.5 && intF < 1.5)       srcInBand = srcLuma >= lo;                        // BRIGHT
-    else if (intF < 2.5)                srcInBand = srcLuma <= hi;                        // DARK
-    else if (intF < 3.5) {                                                                 // RANDOM
-      float segW = mix(8.0, 64.0, clamp(uSortSegment, 0.0, 1.0));
-      float bx = floor((sortVert ? uv.y : uv.x) * (sortVert ? uResolution.y : uResolution.x) / segW);
-      float r = hash2(vec2(lineId * 0.07 + 0.13, bx + floor(uTime * 0.5)));
-      srcInBand = r > clamp(1.0 - uSortRandom, 0.05, 0.95);
-    }
-    else if (intF < 4.5) {                                                                 // WAVES
-      float w = sin(lineCoord * mix(20.0, 90.0, clamp(uSortSegment, 0.0, 1.0)) + uTime * 1.2);
-      srcInBand = w > 0.0;
-    }
-    else if (intF < 5.5) {                                                                 // EDGES
-      vec3 nx = texture2D(uCamera, clamp(uv + step1, 0.0, 1.0)).rgb;
-      float edge = abs(lum(nx) - srcLuma);
-      srcInBand = edge > mix(0.05, 0.45, 1.0 - clamp(uSortRandom, 0.0, 1.0));
-    }
-    else if (intF >= 5.5)               srcInBand = true;                                  // NONE
-
-    vec3 bestCol = srcCol;
-    float bestMet = pickMax > 0.5 ? -1.0 : 2.0;
-    float runActive = 1.0;
-    bool foundInBand = false;
-    // Constant 64-sample scan (GLSL ES 1.00 safe). Sample-position
-    // formula switches per uSortMode; the in-band/run-edge accounting
-    // is shared.
-    for (int s = 0; s < 64; s++) {
-      float fs = float(s) + jitter;
-      vec2 sUv;
-      if (modeF < 0.5) {
-        // LINE: scan backwards along row (or column).
-        sUv = uv - step1 * fs;
-      } else if (modeF < 1.5) {
-        // SPIRAL: walk along same radial ring at varying angles.
-        float ang = spiralA + (fs - 32.0) * spiralStep;
-        sUv = spiralCenter + vec2(cos(ang), sin(ang)) * spiralR;
-      } else if (modeF < 2.5) {
-        // BLOCK: deterministic 8x8 block sweep, all 64 pixels.
-        float bx = mod(float(s), 8.0);
-        float by = floor(float(s) / 8.0);
-        sUv = blockOrigin + vec2(bx, by) * px;
-      } else {
-        // SLICE: random pixels along the row/column (Jeff Thompson style).
-        float r = hash2(vec2(lineId * 0.31, fs * 0.17 + floor(uTime * 0.7)));
-        sUv = sortVert ? vec2(uv.x, r) : vec2(r, uv.y);
-      }
-      float inRange = step(float(s), runMaxF)
-                    * step(0.0, sUv.x) * step(sUv.x, 1.0)
-                    * step(0.0, sUv.y) * step(sUv.y, 1.0)
-                    * runActive;
-      vec2 fetchUv = clamp(sUv, 0.0, 1.0);
-      vec3 sc = texture2D(uCamera, fetchUv).rgb;
-      float m = sortMetric(sc, key);
-      bool inBand = (m >= lo && m <= hi);
-      if (inRange > 0.5 && inBand) {
-        foundInBand = true;
-        if (pickMax > 0.5 ? m > bestMet : m < bestMet) {
-          bestMet = m; bestCol = sc;
-        }
-      } else if (inRange > 0.5 && foundInBand && modeF < 0.5) {
-        // Crisp streak edge: stop accepting further samples (LINE only).
-        runActive = 0.0;
-      }
-    }
-    // BLOCK paints the whole 8x8 cell uniformly; LINE/SPIRAL/SLICE
-    // only paint in-band pixels so out-of-band passes through.
-    bool paintAll = (modeF >= 1.5 && modeF < 2.5);
-    sortedCol = bestCol;
-    // Signal phasing (AE Pixel Sorter Signal panel): luma noise, chroma
-    // luma-modulation, and tape-error bands on the sorted pixels.
-    if (uSortWobble > 0.001) {
-      // Luma noise: per-frame pixel-level brightness jitter.
-      float lumaJitter = (rand(uv + vec2(0.0, floor(uTime * 24.0) * 0.137)) - 0.5)
-                        * uSortWobble * 0.12;
-      sortedCol = clamp(sortedCol + lumaJitter, 0.0, 1.0);
-      // Luma modulation: oscillating brightness bands (VHS luma carrier).
-      float lumaMod = sin(uv.y * 565.0 + uTime * 3.8) * uSortWobble * 0.04;
-      sortedCol = clamp(sortedCol + lumaMod, 0.0, 1.0);
-      // Tape errors: sporadic horizontal corruption bands.
-      float tapeRow = floor(uv.y * uResolution.y / 5.0);
-      float tapeNoise = rand(vec2(tapeRow * 0.0031, floor(uTime * 5.0) * 0.017));
-      float tapeThresh = 1.0 - uSortWobble * 0.18;
-      float tapeWeight = clamp((tapeNoise - tapeThresh) / max(uSortWobble * 0.18, 0.001), 0.0, 1.0);
-      float shiftX = tapeWeight * uSortWobble * 0.22;
-      vec3 tapeSmp = texture2D(uCamera, clamp(uv + vec2(shiftX, 0.0), 0.0, 1.0)).rgb;
-      sortedCol = mix(sortedCol, tapeSmp, tapeWeight * 0.65);
-    }
-    // In-band pixels are FULLY replaced with the sorted colour. uSortAmt
-    // only gates whether the sort fires at all (and feeds the streak-length
-    // math above). Previously sortBlend was uSortAmt * mask * inBand so
-    // at the default knob value (~0.65) you only saw a 65% mix of the
-    // sorted pixels on top of the originals, which read as a translucent
-    // overlay instead of a real pixel sort.
-    sortBlend = mask * smoothstep(0.0, 0.05, uSortAmt) * ((srcInBand || paintAll) ? 1.0 : 0.0);
-
-    // ── Hi-res pixel-art finishing pass on the sorted colour ──────────
-    // Bayer 8x8 ordered dither + 4-bit-per-channel posterize. Only the
-    // SORTED pixels get this treatment (sortBlend > 0); out-of-band
-    // passthrough pixels stay full-bit so the camera detail behind the
-    // streaks isn't quantized. The Bayer threshold is centred at 0 so
-    // the dither doesn't shift overall brightness, only redistributes
-    // quantization error across neighbouring pixels (true error-diffuse
-    // approximation in a single pass).
-    if (sortBlend > 0.001) {
-      vec2 bp = mod(floor(uv * uResolution), 8.0);
-      float bx = bp.x; float by = bp.y;
-      // Standard 8x8 Bayer matrix, normalized to [0,1) then re-centred.
-      float bayer = mod(
-          bx * 1.0 + by * 8.0
-        + floor(bx * 0.5) * 2.0 + floor(by * 0.5) * 16.0
-        + floor(bx * 0.25) * 4.0 + floor(by * 0.25) * 32.0
-      , 64.0) / 64.0;
-      float dither = (bayer - 0.5) * (1.0 / 16.0); // ~±3% perturbation
-      vec3 ditherC = sortedCol + dither;
-      // 4-bit-per-channel posterize → 16 levels per channel = 4096 colours.
-      // Combined with Bayer that bumps perceived gamut to ~32k via dither.
-      vec3 quant = floor(clamp(ditherC, 0.0, 1.0) * 15.0 + 0.5) / 15.0;
-      sortedCol = quant;
-    }
-  }
+  // v1.3.32 — UV-WARP FX CHAIN MOVED HERE (was below pixel sort).
+  // Rationale: the pixel-sort scan further down samples uCamera at uv; if warps run AFTER
+  // sort, sort decides which pixels are 'in band' from the original scene and paints streaks
+  // at original positions, while the post-warp camera fetch shows a totally different scene
+  // -> sort and warps visually cancel each other (e.g. heavy DISRUPT made SORT invisible).
+  // Running warps FIRST means sort scans the SAME warped scene that the main fetch reads,
+  // so every warp knob composes correctly with sort and with each other.
   // 2. Scanline tear/glitch
   if (uScanTear * mask > 0.001) {
     float band = step(0.5, fract(uv.y * uResolution.y * (0.2 + uScanTear * mask * 2.0) + uTime * 2.0));
@@ -2985,7 +2792,216 @@ void main() {
       vec2 followShove  =  vDir * halo * 0.10 * (1.0 - contraryK);
       totalDisp += contraryPush + followShove;
     }
+    // v1.3.32 — cap accumulated displacement so 8 max-size blobs can't ram uv to the clamp
+    // boundary (which previously turned huge regions into flat edge-color and drowned out every
+    // other FX). 0.45 keeps disrupt strong-feeling while leaving room for kaleido/droste/etc.
+    float dispLen = length(totalDisp);
+    if (dispLen > 0.45) totalDisp *= 0.45 / dispLen;
     uv = clamp(uv + totalDisp * uDisrupt * mask, 0.001, 0.999);
+  }
+  // v1.3.32 — PIXEL SORT MOVED HERE (now runs AFTER all UV warps above).
+  // sortedCol/sortBlend are computed at the FINAL warped uv so the streaks track whatever
+  // shape the warps produced. Sort is still applied (mixed) into the final color further down.
+  // 1. Pixel sorting — TRUE line-scan sort, not UV displacement.
+  // For each pixel we scan back along the row (or column) up to runMax
+  // taps; among samples whose metric is INSIDE the threshold band we
+  // pick the one with the extremum metric and inherit its colour. This
+  // makes contiguous "runs" of in-band pixels collapse to the brightest
+  // / darkest pixel in the run — the classic ASDF / kim asendorf streak
+  // look. Outside the band the original pixel passes through.
+  //
+  // The scan only computes a colour here; we apply it AFTER the main
+  // color = texture2D(uCamera, uv) fetch so downstream UV-warp FX
+  // (scan tear, RGB drift, block glitch, liquid) still get to act on
+  // the original UV.
+  vec3 sortedCol = vec3(0.0);
+  float sortBlend = 0.0;
+  // v1.2.59 — mode 4 (HILBERT) bypasses this scanline body and is
+  // handled by the dedicated HILBERT block further below.
+  if (uSortAmt * mask > 0.001 && uSortMode < 3.5) {
+    float key = floor(clamp(uSortKey, 0.0, 7.0) + 0.5);
+    float modeF = floor(clamp(uSortMode, 0.0, 3.0) + 0.5);
+    float lo = min(uSortLow, uSortHigh);
+    float hi = max(uSortLow, uSortHigh);
+    // pixelsort-style scan angle (0 HORZ / 1 VERT / 2 DIAG↗ / 3 DIAG↘)
+    float angF = floor(clamp(uSortAngle, 0.0, 3.0) + 0.5);
+    bool sortVert = (angF > 0.5 && angF < 1.5);
+    vec2 px = vec2(1.0 / uResolution.x, 1.0 / uResolution.y);
+    vec2 step1;
+    if (angF < 0.5)      step1 = vec2(px.x, 0.0);     // HORZ
+    else if (angF < 1.5) step1 = vec2(0.0, px.y);     // VERT
+    else if (angF < 2.5) step1 = vec2(px.x, px.y);    // DIAG ↗
+    else                 step1 = vec2(px.x, -px.y);   // DIAG ↘
+    // Stride scaling: SEGMENT knob now extends sample STRIDE so 64 taps
+    // can cover up to ~1024 px of the source line, not just 64. Without
+    // this the sort streaks are invisible on 1080p phone screens.
+    float stride = mix(1.0, 16.0, clamp(uSortSegment, 0.0, 1.0)) * (0.6 + uSortAmt * 1.4);
+    step1 *= stride;
+    // 8..64 sample run, scaled by SortAmt and Segment so dialing the
+    // amount up creates LONGER streaks (not bigger displacements).
+    // GLSL ES 1.00 requires constant loop bounds, so we use 64 hard
+    // and gate work with float compare (NO break on dynamic value).
+    float runMaxF = mix(8.0, 64.0, clamp(uSortSegment, 0.0, 1.0)) * (0.4 + uSortAmt * 1.6);
+    runMaxF = clamp(runMaxF, 4.0, 64.0);
+    // Per-line jitter so streak edges don't align to a fixed grid.
+    float lineCoord = sortVert ? uv.x : uv.y;
+    float lineId = floor(lineCoord * (sortVert ? uResolution.x : uResolution.y));
+    // Subpixel jitter: every scan-line gets a fractional UV offset hashed
+    // off lineId so streaks don't snap to the integer-pixel grid (looks
+    // way crisper at hi-res). Asendorf-style alternating pick: even lines
+    // grab the brightest in-band pixel, odd lines grab the darkest. The
+    // resulting streak field has both light and dark runs interleaved
+    // instead of one uniform highlight pass over the whole frame.
+    float subpixJit = (hash(lineId * 0.137) - 0.5) * 0.85;
+    float pickMaxLine = step(0.5, fract(lineId * 0.5 + hash(lineId * 0.029) * 0.3));
+    // Boundary modulation (AE Pixel Sorter Modulation): two-frequency sine wave
+    // distorts lo/hi thresholds per scan-line → organic wavy segment edges.
+    float modWave = sin(lineCoord * 28.0 + uTime * 1.4)
+                  + sin(lineCoord * 47.0 + uTime * 0.9) * 0.4;
+    float modShift = modWave * uSortRandom * 0.22;
+    lo = clamp(lo + modShift, 0.0, 1.0);
+    hi = clamp(hi + modShift * 0.6, lo + 0.01, 1.0);
+    // Small scan-start offset tied to modulation (replaces pure random jitter).
+    float jitter = modShift * 6.0 + subpixJit;
+    // Per-line min/max selection (set above) drives the streak palette.
+    float pickMax = pickMaxLine;
+
+    // Per-mode sampling reference points (cheap, computed once).
+    vec2 blockOrigin = floor(uv / (8.0 * px)) * (8.0 * px);
+    vec2 spiralCenter = vec2(0.5, 0.5);
+    vec2 toCenter = uv - spiralCenter;
+    float spiralR = length(toCenter);
+    float spiralA = atan(toCenter.y, toCenter.x);
+    float spiralStep = 0.004 + uSortSegment * 0.025;
+
+    vec3 srcCol = texture2D(uCamera, uv).rgb;
+    float srcMet = sortMetric(srcCol, key);
+    bool srcInBandRaw = srcMet >= lo && srcMet <= hi;
+    // INTERVAL gate (satyarth/pixelsort-style): chooses which destination
+    // pixels participate. 0 BAND keeps legacy behaviour; others override.
+    float intF = floor(clamp(uSortInterval, 0.0, 6.0) + 0.5);
+    float srcLuma = lum(srcCol);
+    bool srcInBand = srcInBandRaw;
+    if (intF > 0.5 && intF < 1.5)       srcInBand = srcLuma >= lo;                        // BRIGHT
+    else if (intF < 2.5)                srcInBand = srcLuma <= hi;                        // DARK
+    else if (intF < 3.5) {                                                                 // RANDOM
+      float segW = mix(8.0, 64.0, clamp(uSortSegment, 0.0, 1.0));
+      float bx = floor((sortVert ? uv.y : uv.x) * (sortVert ? uResolution.y : uResolution.x) / segW);
+      float r = hash2(vec2(lineId * 0.07 + 0.13, bx + floor(uTime * 0.5)));
+      srcInBand = r > clamp(1.0 - uSortRandom, 0.05, 0.95);
+    }
+    else if (intF < 4.5) {                                                                 // WAVES
+      float w = sin(lineCoord * mix(20.0, 90.0, clamp(uSortSegment, 0.0, 1.0)) + uTime * 1.2);
+      srcInBand = w > 0.0;
+    }
+    else if (intF < 5.5) {                                                                 // EDGES
+      vec3 nx = texture2D(uCamera, clamp(uv + step1, 0.0, 1.0)).rgb;
+      float edge = abs(lum(nx) - srcLuma);
+      srcInBand = edge > mix(0.05, 0.45, 1.0 - clamp(uSortRandom, 0.0, 1.0));
+    }
+    else if (intF >= 5.5)               srcInBand = true;                                  // NONE
+
+    vec3 bestCol = srcCol;
+    float bestMet = pickMax > 0.5 ? -1.0 : 2.0;
+    float runActive = 1.0;
+    bool foundInBand = false;
+    // Constant 64-sample scan (GLSL ES 1.00 safe). Sample-position
+    // formula switches per uSortMode; the in-band/run-edge accounting
+    // is shared.
+    for (int s = 0; s < 64; s++) {
+      float fs = float(s) + jitter;
+      vec2 sUv;
+      if (modeF < 0.5) {
+        // LINE: scan backwards along row (or column).
+        sUv = uv - step1 * fs;
+      } else if (modeF < 1.5) {
+        // SPIRAL: walk along same radial ring at varying angles.
+        float ang = spiralA + (fs - 32.0) * spiralStep;
+        sUv = spiralCenter + vec2(cos(ang), sin(ang)) * spiralR;
+      } else if (modeF < 2.5) {
+        // BLOCK: deterministic 8x8 block sweep, all 64 pixels.
+        float bx = mod(float(s), 8.0);
+        float by = floor(float(s) / 8.0);
+        sUv = blockOrigin + vec2(bx, by) * px;
+      } else {
+        // SLICE: random pixels along the row/column (Jeff Thompson style).
+        float r = hash2(vec2(lineId * 0.31, fs * 0.17 + floor(uTime * 0.7)));
+        sUv = sortVert ? vec2(uv.x, r) : vec2(r, uv.y);
+      }
+      float inRange = step(float(s), runMaxF)
+                    * step(0.0, sUv.x) * step(sUv.x, 1.0)
+                    * step(0.0, sUv.y) * step(sUv.y, 1.0)
+                    * runActive;
+      vec2 fetchUv = clamp(sUv, 0.0, 1.0);
+      vec3 sc = texture2D(uCamera, fetchUv).rgb;
+      float m = sortMetric(sc, key);
+      bool inBand = (m >= lo && m <= hi);
+      if (inRange > 0.5 && inBand) {
+        foundInBand = true;
+        if (pickMax > 0.5 ? m > bestMet : m < bestMet) {
+          bestMet = m; bestCol = sc;
+        }
+      } else if (inRange > 0.5 && foundInBand && modeF < 0.5) {
+        // Crisp streak edge: stop accepting further samples (LINE only).
+        runActive = 0.0;
+      }
+    }
+    // BLOCK paints the whole 8x8 cell uniformly; LINE/SPIRAL/SLICE
+    // only paint in-band pixels so out-of-band passes through.
+    bool paintAll = (modeF >= 1.5 && modeF < 2.5);
+    sortedCol = bestCol;
+    // Signal phasing (AE Pixel Sorter Signal panel): luma noise, chroma
+    // luma-modulation, and tape-error bands on the sorted pixels.
+    if (uSortWobble > 0.001) {
+      // Luma noise: per-frame pixel-level brightness jitter.
+      float lumaJitter = (rand(uv + vec2(0.0, floor(uTime * 24.0) * 0.137)) - 0.5)
+                        * uSortWobble * 0.12;
+      sortedCol = clamp(sortedCol + lumaJitter, 0.0, 1.0);
+      // Luma modulation: oscillating brightness bands (VHS luma carrier).
+      float lumaMod = sin(uv.y * 565.0 + uTime * 3.8) * uSortWobble * 0.04;
+      sortedCol = clamp(sortedCol + lumaMod, 0.0, 1.0);
+      // Tape errors: sporadic horizontal corruption bands.
+      float tapeRow = floor(uv.y * uResolution.y / 5.0);
+      float tapeNoise = rand(vec2(tapeRow * 0.0031, floor(uTime * 5.0) * 0.017));
+      float tapeThresh = 1.0 - uSortWobble * 0.18;
+      float tapeWeight = clamp((tapeNoise - tapeThresh) / max(uSortWobble * 0.18, 0.001), 0.0, 1.0);
+      float shiftX = tapeWeight * uSortWobble * 0.22;
+      vec3 tapeSmp = texture2D(uCamera, clamp(uv + vec2(shiftX, 0.0), 0.0, 1.0)).rgb;
+      sortedCol = mix(sortedCol, tapeSmp, tapeWeight * 0.65);
+    }
+    // In-band pixels are FULLY replaced with the sorted colour. uSortAmt
+    // only gates whether the sort fires at all (and feeds the streak-length
+    // math above). Previously sortBlend was uSortAmt * mask * inBand so
+    // at the default knob value (~0.65) you only saw a 65% mix of the
+    // sorted pixels on top of the originals, which read as a translucent
+    // overlay instead of a real pixel sort.
+    // v1.3.32 — cap at 0.92 so any underlying UV-warp FX (kaleido/disrupt/droste/...) bleeds through the sort overlay; preserves classic streak look while keeping every other knob visibly active.
+    sortBlend = mask * smoothstep(0.0, 0.05, uSortAmt) * ((srcInBand || paintAll) ? 0.92 : 0.0);
+
+    // ── Hi-res pixel-art finishing pass on the sorted colour ──────────
+    // Bayer 8x8 ordered dither + 4-bit-per-channel posterize. Only the
+    // SORTED pixels get this treatment (sortBlend > 0); out-of-band
+    // passthrough pixels stay full-bit so the camera detail behind the
+    // streaks isn't quantized. The Bayer threshold is centred at 0 so
+    // the dither doesn't shift overall brightness, only redistributes
+    // quantization error across neighbouring pixels (true error-diffuse
+    // approximation in a single pass).
+    if (sortBlend > 0.001) {
+      vec2 bp = mod(floor(uv * uResolution), 8.0);
+      float bx = bp.x; float by = bp.y;
+      // Standard 8x8 Bayer matrix, normalized to [0,1) then re-centred.
+      float bayer = mod(
+          bx * 1.0 + by * 8.0
+        + floor(bx * 0.5) * 2.0 + floor(by * 0.5) * 16.0
+        + floor(bx * 0.25) * 4.0 + floor(by * 0.25) * 32.0
+      , 64.0) / 64.0;
+      float dither = (bayer - 0.5) * (1.0 / 16.0); // ~±3% perturbation
+      vec3 ditherC = sortedCol + dither;
+      // 4-bit-per-channel posterize → 16 levels per channel = 4096 colours.
+      // Combined with Bayer that bumps perceived gamut to ~32k via dither.
+      vec3 quant = floor(clamp(ditherC, 0.0, 1.0) * 15.0 + 0.5) / 15.0;
+      sortedCol = quant;
+    }
   }
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
     gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
@@ -8424,7 +8440,7 @@ export default function SpectraAfter() {
   // Sync draw canvas size to the WebGL canvas size whenever DRAW turns on
   // (and on first activation after an image upload). The canvas had no width/
   // height attributes, so without this it stays at the 300x150 HTML default
-  // until a window resize fires \u2014 and any lineWidth math like
+  // until a window resize fires — and any lineWidth math like
   // (stroke.width / dc.width) becomes wildly off (or 0/Infinity), which can
   // throw inside Canvas2D on some Android WebView builds.
   useEffect(() => {
@@ -8593,11 +8609,11 @@ export default function SpectraAfter() {
         return;
       }
       await releaseCameraBinding();
-      // v1.2.53 \u2014 intent re-check. While we were awaiting permission /
+      // v1.2.53 — intent re-check. While we were awaiting permission /
       // releasing the previous binding, the user may have toggled OFF
       // both source=camera AND face FX. If so, bail out instead of
       // acquiring a stream nobody asked for (this was the source of the
-      // \"camera won't come back\" stuck state when toggling fast \u2014 a
+      // \"camera won't come back\" stuck state when toggling fast — a
       // late-arriving stream would set cameraActive=true but no render
       // path was actually consuming it).
       if (!cameraIntentRef.current) {
@@ -8609,7 +8625,7 @@ export default function SpectraAfter() {
           setTimeout(() => rej(Object.assign(new Error("Camera start timed out — tap retry to try again."), { name: "TimeoutError" })), 12000)
         ),
       ]);
-      // v1.2.53 \u2014 second intent check after stream resolves. If user
+      // v1.2.53 — second intent check after stream resolves. If user
       // toggled away while getUserMedia was pending, stop the stream we
       // just got so we don't hold the device hostage.
       if (!cameraIntentRef.current) {
@@ -10072,7 +10088,7 @@ export default function SpectraAfter() {
            (Pixel 8 Pro, foldables, etc.) also reflow on rotate. We still
            guard with max-width:1023px so we never fight the desktop lg: layout. */
         @media (orientation: landscape) and (max-height: 600px) {
-          /* v1.2.81 \u2014 switched gate from (max-width:1023px) to
+          /* v1.2.81 — switched gate from (max-width:1023px) to
              (max-height:600px). On modern phones in landscape the CSS
              width can be 900\u20131180px which sometimes missed the old
              query; height in landscape is reliably <600px. This guarantees
