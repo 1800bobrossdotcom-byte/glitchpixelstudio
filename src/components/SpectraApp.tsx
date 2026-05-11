@@ -5026,6 +5026,9 @@ export default function SpectraAfter() {
   // texImage2D only when the source dimensions change (rare).
   const cameraTexSizedRef = useRef({ w: 0, h: 0 });
   const maskTexSizedRef = useRef({ w: 0, h: 0 });
+  // v1.3.30 — same trick for the FACE-FX mask texture (gated on segmenter
+  // mask geometry, which only changes when MediaPipe rebuilds its model).
+  const faceTexSizedRef = useRef({ w: 0, h: 0 });
   // v1.2.57 — alternate audio analyser updates so the FFT + RMS loop
   // runs at ~30 Hz instead of 60 Hz. Audio energy doesn't change
   // meaningfully faster than that and the cached gate is what the
@@ -5080,6 +5083,29 @@ export default function SpectraAfter() {
   // boolean as a const so existing className/effect branches continue to
   // work without rippling changes through the file.
   const neonMode = true;
+
+  // ── v1.3.30 — UI SKIN selector. Three readability-focused chassis looks
+  //    that all sit on top of the existing neon-mode glass scaffolding:
+  //      MOOG  — warm walnut + cream/orange (default; vintage analog console)
+  //      808   — Roland TR-808 grey + red/orange/yellow stripe (drum machine)
+  //      NEON  — original purple glass (legacy)
+  //    Skin only changes panel/button chrome and accent colors, not layout
+  //    or FX. Persisted in localStorage so 14-day testers keep their choice.
+  type UiSkin = "MOOG" | "808" | "NEON";
+  const SKIN_KEY = "gps:ui-skin";
+  const [uiSkin, setUiSkin] = useState<UiSkin>("MOOG");
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(SKIN_KEY);
+      if (v === "MOOG" || v === "808" || v === "NEON") setUiSkin(v);
+    } catch { /* noop */ }
+  }, []);
+  useEffect(() => {
+    try { localStorage.setItem(SKIN_KEY, uiSkin); } catch { /* noop */ }
+  }, [uiSkin]);
+  const cycleUiSkin = useCallback(() => {
+    setUiSkin(s => s === "MOOG" ? "808" : s === "808" ? "NEON" : "MOOG");
+  }, []);
   const tiltRootRef = useRef<HTMLDivElement>(null);
   // ── FACE FX cycle: universal mask that gates ALL FX inside or
   //    outside an AI-segmented person. Uses MediaPipe Tasks Vision
@@ -5280,9 +5306,13 @@ export default function SpectraAfter() {
     let segmenter: Segmenter | null = null;
 
     // Lazy mask canvas + a 2D ctx for upload-to-WebGL.
+    // v1.3.30 — bumped 256x144 -> 320x180. The shader-side dilation runs
+    // in OUTPUT-pixel units (uFaceMaskRadius), so a denser source mask
+    // gives the segmenter ~56% more silhouette samples per frame for
+    // negligible upload cost (~225 KB vs 147 KB / tick at 320x180 RGBA).
     if (!faceMaskCanvasRef.current) {
       const c = document.createElement("canvas");
-      c.width = 256; c.height = 144; // 16:9 lo-res — plenty for a soft roto edge
+      c.width = 320; c.height = 180; // 16:9 lo-res — denser silhouette than v1.3.29
       faceMaskCanvasRef.current = c;
     }
     const maskCanvas = faceMaskCanvasRef.current;
@@ -5333,8 +5363,14 @@ export default function SpectraAfter() {
           segmenter = await mp.ImageSegmenter.createFromOptions(fileset, {
             baseOptions: { modelAssetPath: "/mediapipe/selfie_segmenter.tflite", delegate: "GPU" },
             runningMode: "VIDEO",
-            outputCategoryMask: true,
-            outputConfidenceMasks: false,
+            // v1.3.30 — switch to CONFIDENCE masks (smooth Float32 0..1)
+            // for the silhouette. The category mask was hard binary which,
+            // combined with the v1.3.28 0.008 feather, made the edge look
+            // "chunky / not matching" on faces and hair. The smooth
+            // gradient gives MediaPipe's actual soft alpha through to the
+            // shader so the silhouette tracks subjects more faithfully.
+            outputCategoryMask: false,
+            outputConfidenceMasks: true,
           }) as unknown as Segmenter;
           break; // success
         } catch (err) {
@@ -5353,7 +5389,9 @@ export default function SpectraAfter() {
         if (segmenter && v && v.videoWidth > 0 && v.readyState >= 2) {
           try {
             segmenter.segmentForVideo(v, performance.now(), (result) => {
-              const cat = result.categoryMask;
+              // v1.3.30 — prefer confidenceMasks (smooth f32 alpha); fall back
+              // to categoryMask if the runtime ignored the option (older WASM).
+              const cat: SegmentationMask | undefined = (result.confidenceMasks?.[0] ?? result.categoryMask);
               if (!cat) return;
               // v1.2.47: MediaPipe Tasks Vision SelfieSegmenter category
               // mask outputs category 0 = background, non-zero = person.
@@ -5433,7 +5471,17 @@ export default function SpectraAfter() {
                 // flipped, which pushed the person's head off the top
                 // of the mask and chopped the upper third of the roto.
                 gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
+                // v1.3.30 — texSubImage2D fast path for the face mask.
+                // texImage2D reallocates GPU memory each call; texSubImage2D
+                // updates pixels in place. Mask geometry only changes when
+                // MediaPipe rebuilds the model (rare), so the seed is one-shot.
+                const _mw = maskCanvas.width, _mh = maskCanvas.height;
+                if (_mw !== faceTexSizedRef.current.w || _mh !== faceTexSizedRef.current.h) {
+                  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
+                  faceTexSizedRef.current = { w: _mw, h: _mh };
+                } else {
+                  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
+                }
                 faceFxRef.current.texValid = true;
               }
             });
@@ -9963,7 +10011,7 @@ export default function SpectraAfter() {
   return (
     <div
       ref={tiltRootRef}
-      className={"flex flex-col h-dvh overflow-hidden text-white" + (neonMode ? " neon-mode" : "") + (uiHidden ? " ui-hidden" : "")}
+      className={"flex flex-col h-dvh overflow-hidden text-white" + (neonMode ? " neon-mode" : "") + (uiHidden ? " ui-hidden" : "") + " skin-" + uiSkin.toLowerCase()}
       style={{ fontFamily: "'Courier New', monospace", background: "#000" }}
     >
       <style>{`
@@ -10358,6 +10406,209 @@ export default function SpectraAfter() {
             0 0 18px rgba(255,80,255,0.7),
             0 0 4px rgba(255,180,255,0.6) inset !important;
           text-shadow: 0 0 8px rgba(255,80,255,0.95);
+        }
+
+        /* ── v1.3.30 SKIN: MOOG ────────────────────────────────────────────
+           Vintage Moog-console look: walnut wood end-cheeks framing a black
+           anodized control panel; cream chiclet buttons with orange-amber
+           accents; high contrast white labels. Sits over the live FX but
+           reads as solid panels for max readability. */
+        .skin-moog .sp-panel-glass,
+        .skin-moog.neon-mode .sp-panel-glass {
+          background:
+            linear-gradient(180deg, rgba(20,16,14,0.92) 0%, rgba(12,9,7,0.94) 100%),
+            repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0 1px, transparent 1px 4px) !important;
+          backdrop-filter: blur(8px) saturate(1.1) !important;
+          -webkit-backdrop-filter: blur(8px) saturate(1.1) !important;
+          border-top: 6px solid #5a3a1c !important;
+          box-shadow:
+            0 -2px 0 rgba(255,180,90,0.35),
+            0 -10px 30px rgba(0,0,0,0.7),
+            inset 0 1px 0 rgba(255,210,140,0.18) !important;
+        }
+        .skin-moog .sp-rack,
+        .skin-moog.neon-mode .sp-rack {
+          background: linear-gradient(180deg, #1a1614 0%, #0e0b09 100%) !important;
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
+          border: 1px solid #3a2818 !important;
+          border-left: 4px solid #6a4220 !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,200,120,0.10),
+            0 2px 6px rgba(0,0,0,0.5) !important;
+        }
+        .skin-moog .sp-rack-inner,
+        .skin-moog.neon-mode .sp-rack-inner {
+          background:
+            repeating-linear-gradient(0deg, rgba(0,0,0,0.18) 0 1px, transparent 1px 3px),
+            linear-gradient(180deg, #1f1a16 0%, #15110e 100%) !important;
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
+          border: 1px solid #2a1f16 !important;
+          box-shadow: inset 0 2px 4px rgba(0,0,0,0.55) !important;
+        }
+        .skin-moog .sp-btn,
+        .skin-moog .sp-tile,
+        .skin-moog.neon-mode .sp-btn,
+        .skin-moog.neon-mode .sp-tile,
+        .skin-moog.neon-mode button.sp-btn,
+        .skin-moog.neon-mode button.sp-tile,
+        .skin-moog.neon-mode .sp-panel-glass button {
+          background: linear-gradient(180deg, #f4e6c8 0%, #d9c098 55%, #b89870 100%) !important;
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
+          border: 1px solid #5a3a1c !important;
+          border-radius: 4px !important;
+          color: #2a1810 !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.7),
+            inset 0 -2px 0 rgba(120,70,30,0.55),
+            0 2px 4px rgba(0,0,0,0.45) !important;
+          text-shadow: none !important;
+          font-weight: 700 !important;
+        }
+        .skin-moog .sp-btn:hover,
+        .skin-moog .sp-tile:hover,
+        .skin-moog.neon-mode .sp-btn:hover,
+        .skin-moog.neon-mode .sp-tile:hover,
+        .skin-moog.neon-mode .sp-panel-glass button:hover {
+          background: linear-gradient(180deg, #ffb64a 0%, #ff8a1c 55%, #c25c00 100%) !important;
+          color: #1a0a00 !important;
+          border-color: #8a4a10 !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.55),
+            inset 0 -2px 0 rgba(80,30,0,0.6),
+            0 0 12px rgba(255,140,40,0.55),
+            0 2px 4px rgba(0,0,0,0.55) !important;
+        }
+        .skin-moog.neon-mode .sp-panel-glass button,
+        .skin-moog.neon-mode .sp-panel-glass label,
+        .skin-moog.neon-mode .sp-panel-glass span {
+          text-shadow: none !important;
+          color: #f0e0c4;
+        }
+        .skin-moog input[type="range"],
+        .skin-moog.neon-mode input[type="range"] {
+          background: linear-gradient(180deg, #0a0705 0%, #1a1410 100%) !important;
+          border: 1px solid #4a3018 !important;
+          box-shadow: inset 0 2px 3px rgba(0,0,0,0.7), 0 0 0 1px #2a1810 !important;
+        }
+        .skin-moog .topnav-neon-on,
+        .skin-moog.neon-mode .topnav-neon-on {
+          background: linear-gradient(180deg, #ffb64a 0%, #c25c00 100%) !important;
+          color: #1a0a00 !important;
+          border-color: #ffd080 !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.6),
+            0 0 14px rgba(255,140,40,0.7) !important;
+          text-shadow: none !important;
+        }
+
+        /* ── v1.3.30 SKIN: 808 ─────────────────────────────────────────────
+           Roland TR-808 drum machine look: brushed graphite chassis with the
+           iconic red / orange / yellow / cream button-row colors. Solid panel
+           for high readability, no glass blur. Buttons are square-ish chiclets. */
+        .skin-808 .sp-panel-glass,
+        .skin-808.neon-mode .sp-panel-glass {
+          background:
+            repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0 1px, transparent 1px 3px),
+            linear-gradient(180deg, #2a2a2c 0%, #1a1a1c 100%) !important;
+          backdrop-filter: blur(4px) saturate(1.05) !important;
+          -webkit-backdrop-filter: blur(4px) saturate(1.05) !important;
+          border-top: 3px solid #d04020 !important;
+          box-shadow:
+            0 -2px 0 #f0a020,
+            0 -4px 0 #e8d040,
+            0 -10px 24px rgba(0,0,0,0.7),
+            inset 0 1px 0 rgba(255,255,255,0.10) !important;
+        }
+        .skin-808 .sp-rack,
+        .skin-808.neon-mode .sp-rack {
+          background: linear-gradient(180deg, #2e2e30 0%, #1c1c1e 100%) !important;
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
+          border: 1px solid #404044 !important;
+          border-top: 2px solid #555558 !important;
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 2px 4px rgba(0,0,0,0.5) !important;
+        }
+        .skin-808 .sp-rack-inner,
+        .skin-808.neon-mode .sp-rack-inner {
+          background:
+            repeating-linear-gradient(0deg, rgba(255,255,255,0.02) 0 1px, transparent 1px 2px),
+            linear-gradient(180deg, #232326 0%, #18181a 100%) !important;
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
+          border: 1px solid #38383c !important;
+          box-shadow: inset 0 2px 4px rgba(0,0,0,0.55) !important;
+        }
+        /* TR-808 chiclet pattern: cycle red / orange / yellow / cream
+           across consecutive buttons using nth-child. Cream is the
+           bass-pattern row color on a real 808. */
+        .skin-808 .sp-btn,
+        .skin-808 .sp-tile,
+        .skin-808.neon-mode .sp-btn,
+        .skin-808.neon-mode .sp-tile,
+        .skin-808.neon-mode button.sp-btn,
+        .skin-808.neon-mode button.sp-tile,
+        .skin-808.neon-mode .sp-panel-glass button {
+          background: linear-gradient(180deg, #f5ecd4 0%, #d8cdb0 100%) !important;
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
+          border: 1px solid #2a2a2c !important;
+          border-radius: 3px !important;
+          color: #1a1a1c !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.65),
+            inset 0 -2px 0 rgba(80,70,40,0.45),
+            0 2px 3px rgba(0,0,0,0.45) !important;
+          text-shadow: none !important;
+          font-weight: 700 !important;
+        }
+        .skin-808.neon-mode .sp-panel-glass button:nth-of-type(4n+1) {
+          background: linear-gradient(180deg, #ff5a3a 0%, #c02a0a 100%) !important;
+          color: #1a0500 !important;
+        }
+        .skin-808.neon-mode .sp-panel-glass button:nth-of-type(4n+2) {
+          background: linear-gradient(180deg, #ffaa30 0%, #d06800 100%) !important;
+          color: #200a00 !important;
+        }
+        .skin-808.neon-mode .sp-panel-glass button:nth-of-type(4n+3) {
+          background: linear-gradient(180deg, #ffe040 0%, #c8a000 100%) !important;
+          color: #1a1400 !important;
+        }
+        .skin-808 .sp-btn:hover,
+        .skin-808 .sp-tile:hover,
+        .skin-808.neon-mode .sp-btn:hover,
+        .skin-808.neon-mode .sp-tile:hover,
+        .skin-808.neon-mode .sp-panel-glass button:hover {
+          filter: brightness(1.15) !important;
+          border-color: #f0e040 !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.7),
+            inset 0 -2px 0 rgba(0,0,0,0.4),
+            0 0 12px rgba(255,200,40,0.55),
+            0 2px 4px rgba(0,0,0,0.55) !important;
+        }
+        .skin-808.neon-mode .sp-panel-glass label,
+        .skin-808.neon-mode .sp-panel-glass span {
+          text-shadow: none !important;
+          color: #e8e8ec !important;
+        }
+        .skin-808 input[type="range"],
+        .skin-808.neon-mode input[type="range"] {
+          background: linear-gradient(180deg, #0a0a0c 0%, #1a1a1c 100%) !important;
+          border: 1px solid #404044 !important;
+          box-shadow: inset 0 2px 3px rgba(0,0,0,0.7), 0 0 0 1px #2a2a2c !important;
+        }
+        .skin-808 .topnav-neon-on,
+        .skin-808.neon-mode .topnav-neon-on {
+          background: linear-gradient(180deg, #ff5a3a 0%, #c02a0a 100%) !important;
+          color: #1a0500 !important;
+          border-color: #ffaa30 !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.55),
+            0 0 14px rgba(255,90,40,0.7) !important;
+          text-shadow: none !important;
         }
       `}</style>
       {introVisible && <SpectraIntro onDone={() => setIntroWantsClose(true)} />}
@@ -10803,6 +11054,16 @@ export default function SpectraAfter() {
             }}
             title="Report a bug"
           >🐛</button>
+          {/* v1.3.30 — UI SKIN cycle: MOOG (walnut/cream) → 808 (Roland) → NEON (glass). */}
+          <button
+            className="sp-btn"
+            onClick={cycleUiSkin}
+            style={{
+              ...topBtnStyle,
+              width: 46, height: 36, padding: 0, fontSize: 9, borderRadius: 9, letterSpacing: "0.5px",
+            }}
+            title={`UI SKIN — ${uiSkin} (tap: MOOG → 808 → NEON)`}
+          >{uiSkin}</button>
           {/* v1.2.73 — HANDS-FREE always-visible top-bar tile so it
               works regardless of whether EXPORT panel is open.
               v1.2.77 — tightened to icon + tiny number so it fits in one row. */}
