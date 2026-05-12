@@ -19,6 +19,16 @@ const nextConfig: NextConfig = {
     NEXT_PUBLIC_BUILD_SHA: SHORT_SHA,
     NEXT_PUBLIC_BUILD_TIME: new Date().toISOString(),
   },
+  // v1.3.41 — load .glsl / .vert / .frag as raw strings so shaders can live
+  // in their own files instead of JS template literals. Eliminates the
+  // backtick-in-shader-comment build-break footgun for good.
+  webpack: (config) => {
+    config.module.rules.push({
+      test: /\.(glsl|vert|frag)$/,
+      type: "asset/source",
+    });
+    return config;
+  },
 };
 
 export default nextConfig;
