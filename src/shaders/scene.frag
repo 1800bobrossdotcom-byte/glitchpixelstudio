@@ -544,7 +544,13 @@ void main() {
     // on a phone (300+ ppi). Stride ceiling 24→48 and amt mult
     // (0.6 + uSortAmt*2.0) → (1.0 + uSortAmt*4.0). At max segment+amt
     // a single tap can now traverse ~5x what it did pre-1.3.44.
-    float stride = mix(2.0, 48.0, clamp(uSortSegment, 0.0, 1.0)) * (1.0 + uSortAmt * 4.0);
+    // v1.3.48 — phone bump TWO. v1.3.45 levels still felt weak after
+    // boot defaults zeroed everything. Stride floor 2.0→12.0 (6x),
+    // ceiling 48→96.0 (2x). Amt curve (1.0+uSortAmt*4.0) →
+    // (2.5+uSortAmt*6.0). At AMOUNT=1 / SEGMENT=0 a single tap now
+    // traverses ~4900 px — dramatic full-line streaks even with all
+    // other sort knobs at null.
+    float stride = mix(12.0, 96.0, clamp(uSortSegment, 0.0, 1.0)) * (2.5 + uSortAmt * 6.0);
     step1 *= stride;
     // 8..64 sample run, scaled by SortAmt and Segment so dialing the
     // amount up creates LONGER streaks (not bigger displacements).
@@ -552,8 +558,10 @@ void main() {
     // and gate work with float compare (NO break on dynamic value).
     // v1.3.45 — base run 8→24 and amt curve (0.4+amt*1.6) → (0.7+amt*1.3)
     // so even at low AMOUNT the run is long enough to read on phone.
-    float runMaxF = mix(24.0, 64.0, clamp(uSortSegment, 0.0, 1.0)) * (0.7 + uSortAmt * 1.3);
-    runMaxF = clamp(runMaxF, 12.0, 64.0);
+    // v1.3.48 — base run 24→40 so even at SEGMENT=0 we use 80%% of the
+    // 64-sample loop ceiling. Clamp floor 12→20 (no anaemic short runs).
+    float runMaxF = mix(40.0, 64.0, clamp(uSortSegment, 0.0, 1.0)) * (0.8 + uSortAmt * 1.2);
+    runMaxF = clamp(runMaxF, 20.0, 64.0);
     // Per-line jitter so streak edges don't align to a fixed grid.
     float lineCoord = sortVert ? uv.x : uv.y;
     float lineId = floor(lineCoord * (sortVert ? uResolution.x : uResolution.y));
@@ -825,17 +833,22 @@ void main() {
     float jump = floor(uTime * (4.0 + dm * (14.0 + uMoshDistort * 18.0)));
     // v1.3.46 — phone bump: macroblock jump 0.07/0.11 → 0.13/0.20 so DATAMOSH+DISTORT
     // at full knob produces real chunky MPEG-style displacement, not just micro-shudder.
+    // v1.3.48 — phone bump TWO: macroblock jump 0.13/0.20 → 0.30/0.35 so
+    // INTENS alone produces real chunky displacement before DISTORT/family
+    // is even dialed.
     vec2 jumpOff = vec2(
       (hash(jump * 1.73 + floor(uv.y * 120.0)) - 0.5),
       (hash(jump * 2.11 + floor(uv.x * 90.0)) - 0.5)
-    ) * dm * (0.13 + uMoshDistort * 0.20);
+    ) * dm * (0.30 + uMoshDistort * 0.35);
     vec2 jUv = clamp(uv + jumpOff, 0.001, 0.999);
     vec3 jumpPrev = texture2D(uPrevFrame, jUv).rgb;
     color.rgb = mix(color.rgb, jumpPrev, clamp(dm * (0.45 + motionCarry * 0.5), 0.0, 0.96));
 
     // v1.3.46 — phone bump: chroma sep 0.012/0.05 → 0.028/0.11 so MOSH BLEED at max
     // produces obvious channel separation alongside the bigger jumps above.
-    float sep = dm * (0.028 + bleed * 0.11);
+    // v1.3.48 — phone bump TWO: chroma sep 0.028/0.11 → 0.060/0.18 so
+    // INTENS alone produces visible RGB rip before BLEED/family is dialed.
+    float sep = dm * (0.060 + bleed * 0.18);
     float rr = texture2D(uPrevFrame, clamp(jUv + vec2(sep, 0.0), 0.001, 0.999)).r;
     float gg = texture2D(uPrevFrame, jUv).g;
     float bb = texture2D(uPrevFrame, clamp(jUv - vec2(sep, 0.0), 0.001, 0.999)).b;
@@ -844,8 +857,9 @@ void main() {
     if (dm > 0.8) {
       // v1.3.46 — phone bump: extra-smear amplitude 0.16→0.26 so the supercharged
       // (audio-beat-driven) headroom past 1.0 produces dramatic motion-vector trails.
+      // v1.3.48 — phone bump TWO: extra-smear amplitude 0.26→0.45.
       float extra = max(0.0, dm - 1.0);
-      vec2 smearOff = vec2(sin(uTime * 1.3 + uv.y * 10.0), cos(uTime * 0.9 + uv.x * 8.0)) * extra * 0.26;
+      vec2 smearOff = vec2(sin(uTime * 1.3 + uv.y * 10.0), cos(uTime * 0.9 + uv.x * 8.0)) * extra * 0.45;
       vec3 smearPrev = texture2D(uPrevFrame, clamp(uv + smearOff, 0.001, 0.999)).rgb;
       color.rgb = mix(color.rgb, smearPrev, clamp(extra * (0.35 + motionCarry * 0.8), 0.0, 0.95));
     }

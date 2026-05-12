@@ -10284,7 +10284,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.47 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.48 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
@@ -10574,10 +10574,17 @@ export default function SpectraAfter() {
             {/* v1.3.47 — BLEED + COMPRES knobs replaced by the FAMILY selector.
                 FAMILY shapes the character of INTENS by driving moshBleed +
                 moshDistort uniforms to fixed values per family. State for the
-                old knobs is kept for preset round-trip but no longer surfaced. */}
-            <SynthPanel title="DATAMOSH" subtitle="MOSH · 9 CTRL" accent="rgba(231,174,255,0.95)">
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
+                old knobs is kept for preset round-trip but no longer surfaced.
+                v1.3.48 — added FAMILY as a Knob next to INTENS (per user) so it
+                lives in the knob rack; the SynthSelector below stays as a
+                visual legend showing which family the knob position maps to. */}
+            <SynthPanel title="DATAMOSH" subtitle="MOSH · 9 CTRL + FAMILY" accent="rgba(231,174,255,0.95)">
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
                 <Knob label="INTENS"   value={datamosh}     min={0} max={2}  step={0.01} defaultValue={0.0}  onChange={setDatamosh}/>
+                <Knob label="FAMILY"   value={moshFamily}   min={0} max={5}  step={1}    defaultValue={0}    onChange={(v) => {
+                  const fv = ([[0.20,0.10],[0.55,0.40],[0.10,0.75],[0.85,0.15],[0.60,0.60],[0.35,0.90]][v]) || [0,0];
+                  setMoshFamily(v); setMoshBleed(fv[0]); setMoshDistort(fv[1]);
+                }}/>
                 <Knob label="I-FRAME"  value={moshIFrame}   min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setMoshIFrame}/>
                 <Knob label="MOTION"   value={moshMotion}   min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setMoshMotion}/>
                 <Knob label="MAP"      value={moshMap}      min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setMoshMap}/>
