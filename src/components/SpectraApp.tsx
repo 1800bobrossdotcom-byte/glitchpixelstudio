@@ -6843,29 +6843,11 @@ export default function SpectraAfter() {
     // FPS
     fpsFrames.current++;
     const now = performance.now();
-    // v1.3.31 — GIF capture driven from the rAF render loop. Buckets
-    // are time slots of `gifPeriodMsRef.current` ms; whenever the loop
-    // crosses a new bucket boundary we snap one frame and encode the
-    // ELAPSED bucket count as the per-frame delay. If render falls
-    // behind (composeFrame + getImageData are heavy), the next capture
-    // crosses multiple buckets and gets a proportionally longer delay,
-    // so the encoded GIF plays back at true wall-clock motion instead
-    // of the previous setTimeout-chain behavior that fixed delay per
-    // frame and made dropped renders speed playback up to "chaos".
-    if (recordingRef.current && exportFormatRef.current === "gif" && captureFrameRef.current) {
-      const periodMs = gifPeriodMsRef.current;
-      const elapsedMs = now - gifStartTime.current;
-      const wantBucket = Math.floor(elapsedMs / periodMs) + 1;
-      const prevBucket = gifBucketRef.current;
-      if (wantBucket > prevBucket) {
-        const bucketsCrossed = wantBucket - prevBucket;
-        // Per-frame delay in centiseconds. Clamped to >=2 because the
-        // GIF spec floors per-frame delay at 2cs (browsers re-clamp).
-        const delayCs = Math.max(2, Math.round((bucketsCrossed * periodMs) / 10));
-        gifBucketRef.current = wantBucket;
-        captureFrameRef.current(delayCs);
-      }
-    }
+    // v1.3.51 — GIF rAF capture branch REMOVED. The per-frame
+    // `getImageData` round-trip during recording forced a GPU↔CPU sync
+    // every frame and was the dominant recording-mode cost. Video
+    // export uses MediaRecorder against the compose canvas which keeps
+    // the pipeline on the GPU.
     // v1.3.42 — UNIFIED ADAPTIVE GOVERNOR (collapsed). One closed-loop
     // controller drives every perf knob in the app. Three stages, one
     // EWMA input:
@@ -7779,38 +7761,14 @@ export default function SpectraAfter() {
 
   const startRecording = useCallback(() => {
     if (recordingRef.current) return;
-    gifFrames.current = [];
-    gifDelaysRef.current = [];
-    gifSizeRef.current = null;
-    gifStartTime.current = performance.now();
     recordingRef.current = true;
     setRecording(true);
     setRecordingHint(getRecordingHintText(exportFormat, exportQuality, exportProfile));
     if (recordingHintTimerRef.current) clearTimeout(recordingHintTimerRef.current);
     recordingHintTimerRef.current = setTimeout(() => setRecordingHint(null), 2000);
-    if (exportFormat === "video") {
-      startVideoRecording();
-      return;
-    }
-    const gifProfile = getGifProfile(exportQuality);
-    // Snap to a GIF-representable cadence so encoded delay == capture
-    // delay (otherwise the export plays at a slightly different speed
-    // than what was recorded — the classic "GIF feels off" bug).
-    const { fps: snappedFps, delayCs } = snapGifFps(recordFpsRef.current);
-    gifFpsRef.current = snappedFps;
-    gifDelayCsRef.current = delayCs;
-    gifDitherRef.current = gifProfile.dither;
-    // v1.3.31 — capture is driven from the rAF render loop (see render()).
-    // The setTimeout chain that used to live here raced with rAF and
-    // sampled the GL canvas at random phases of its draw cycle, so
-    // captures dup'd or skipped renders and produced jittery exports.
-    // Bucket size is the user-chosen frame period, clamped to >=20ms
-    // because the GIF spec floors playback delay at 2cs (50Hz). Going
-    // smaller would just encode 50Hz frames as if they were 60Hz and
-    // make the export play back ~17% slow.
-    gifPeriodMsRef.current = Math.max(20, delayCs * 10);
-    gifBucketRef.current = 0;
-  }, [exportFormat, exportProfile, exportQuality, getGifProfile, getRecordingHintText, startVideoRecording]);
+    // v1.3.51 — GIF removed; video is the only export path.
+    startVideoRecording();
+  }, [exportFormat, exportProfile, exportQuality, getRecordingHintText, startVideoRecording]);
 
   const stopRecording = useCallback(() => {
     if (!recordingRef.current) return;
@@ -8282,7 +8240,7 @@ export default function SpectraAfter() {
           moshDistort: p.moshDistort ?? 0.5,
           paramsByMode: (p.paramsByMode && typeof p.paramsByMode === "object") ? p.paramsByMode : undefined,
         });
-        setExportFormat(p.exportFormat ?? "gif");
+        setExportFormat("video");
         setExportQuality(p.exportQuality ?? "high");
         setExportProfile(p.exportProfile ?? "native");
         if (Array.isArray(p.openSections)) setOpenSections(new Set<string>(p.openSections as string[]));
@@ -9927,7 +9885,7 @@ export default function SpectraAfter() {
                 borderColor: recording ? "#E03D3D" : (topBtnStyle.borderColor as string | undefined),
                 boxShadow: recording ? "0 0 18px rgba(224,61,61,0.85)" : topBtnStyle.boxShadow,
               }}
-              title="Tap = photo · Hold = record GIF/video (release to stop)"
+              title="Tap = photo · Hold = record video (release to stop)"
             >{recording ? "REC●" : "PHOTO"}</button>
             {/* v1.2.76 — inline hint so users discover the press-and-hold
                 gesture without reading docs. Sits under the PHOTO button,
@@ -10280,7 +10238,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.50 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.51 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
@@ -11115,11 +11073,6 @@ export default function SpectraAfter() {
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <button
                   className="sp-tile"
-                  onClick={() => setExportFormat("gif")}
-                  style={{ ...modeBtnStyle, ...(exportFormat === "gif" ? modeBtnActive : {}), minWidth: 80 }}
-                >GIF</button>
-                <button
-                  className="sp-tile"
                   onClick={() => setExportFormat("video")}
                   style={{ ...modeBtnStyle, ...(exportFormat === "video" ? modeBtnActive : {}), minWidth: 80 }}
                 >VIDEO</button>
@@ -11167,12 +11120,9 @@ export default function SpectraAfter() {
                 background: "rgba(20,2,32,0.55)",
                 border: "1px solid rgba(83,16,120,0.4)",
               }}>
-                {exportFormat === "gif"
-                  ? `${exportQuality.toUpperCase()} GIF — ${getGifProfile(exportQuality).maxDim}px @ ${recordFps}fps · ${exportProfile === "native" ? "native aspect" : exportProfile === "vertical" ? "9:16" : exportProfile === "square" ? "1:1" : "16:9"} · ${recordMaxSec}s${perfectLoop ? " · loop" : ""}`
-                  : `${exportQuality.toUpperCase()} VIDEO — ${getExportMaxDim(exportQuality)}px @ ${recordFps}fps · ${exportProfile === "native" ? "native aspect" : exportProfile === "vertical" ? "9:16" : exportProfile === "square" ? "1:1" : "16:9"} · ${recordMaxSec}s${audioActive ? " · 🔊 AUDIO" : ""}`
-                }
+                {`${exportQuality.toUpperCase()} VIDEO — ${getExportMaxDim(exportQuality)}px @ ${recordFps}fps · ${exportProfile === "native" ? "native aspect" : exportProfile === "vertical" ? "9:16" : exportProfile === "square" ? "1:1" : "16:9"} · ${recordMaxSec}s${audioActive ? " · 🔊 AUDIO" : ""}`}
               </div>
-              {exportFormat === "video" && !audioActive && (
+              {!audioActive && (
                 <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(200,180,220,0.55)", textAlign: "center", textTransform: "uppercase" }}>
                   Tap 🔈 in top bar to include microphone audio
                 </div>
