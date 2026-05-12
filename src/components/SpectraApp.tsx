@@ -3408,26 +3408,19 @@ export default function SpectraAfter() {
   const [automateRate, setAutomateRate] = useState(0.45);     // 0..1 (slow..fast)
   const [automateStyles, setAutomateStyles] = useState(false); // also rotate gen STYLE
   const [automateBlend, setAutomateBlend] = useState(false);   // also rotate pixel BLEND
-  // ── LOW POWER: caps render to ~30fps by skipping every other RAF tick.
-  //    Phones run noticeably cooler with this on, especially in PXL/MOSH.
+  // ── LOW POWER: user-facing toggle. Pre-v1.3.42 this skipped every
+  //    other RAF tick (binary halving). v1.3.42 folds it into the
+  //    unified governor as a hard ceiling on fxQuality (≤0.5), which
+  //    in turn drops renderScale to ~0.78 via the continuous mapping.
+  //    Net thermal/battery savings are comparable to the old skip but
+  //    without the visible stutter.
   const [lowPowerOn, setLowPowerOn] = useState(false);
   const lowPowerRef = useRef(false);
-  const lowPowerSkipRef = useRef(false);
   useEffect(() => { lowPowerRef.current = lowPowerOn; }, [lowPowerOn]);
-  // v1.2.55 — BATTERY-AWARE auto low-power. Independent of the user's
-  // manual LOW POWER toggle so we don't overwrite their preference.
-  // The render skip-frame check honours either flag.
+  // v1.2.55 — BATTERY-AWARE auto low-power. Independent of the manual
+  // LOW POWER toggle so we don't overwrite the user's preference. Both
+  // flags now feed the same fxQuality clamp inside the governor.
   const batteryLowRef = useRef(false);
-  // v1.3.36 — THERMAL AUTO-THROTTLE. When the rolling frametime EWMA
-  // sits above ~32 ms (sustained <31 fps) for ~60 consecutive frames,
-  // we flip thermalThrottleRef on. The render() skip-frame check honours
-  // it (same path as manual LOW POWER + battery-low), halving the GPU
-  // workload so the SoC has room to cool. We only release the throttle
-  // after ~4 s of solid sub-18 ms frames so the device doesn't ping-pong
-  // back into thermal limit the moment we restore full rate.
-  const thermalThrottleRef = useRef(false);
-  const thermalSlowStreakRef = useRef(0);
-  const thermalCoolStreakRef = useRef(0);
   // v1.3.40 — UNIFIED FX QUALITY GOVERNOR. Replaces the v1.3.36 binary
   // thermal flip + binary skip-frame mechanism with a continuous control
   // loop. The governor compares the rolling frametime EWMA against a
@@ -3446,13 +3439,12 @@ export default function SpectraAfter() {
   // quality down before the device is actually warm.
   const fxQualityRef = useRef(1.0);
   const bootFrameRef = useRef(0);
-  // v1.2.55 — ADAPTIVE RENDER RESOLUTION. When the rolling frametime
-  // average crosses ~22 ms (sustained <45 fps) we drop the canvas DPR
-  // multiplier to 0.75x to recover headroom; when it sits below ~14 ms
-  // (>70 fps) for two solid seconds we restore 1.0x. The resize()
-  // callback multiplies dpr by this value when sizing the GL canvas
-  // and FBO textures, so flipping the scale + calling resize() is the
-  // entire mechanism.
+  // v1.3.42 — ADAPTIVE RENDER RESOLUTION. Continuous linear map of
+  // fxQuality∈[0.30,1.00] → renderScale∈[0.55,1.00], rounded to the
+  // nearest 0.05 so resize() (which re-allocates the GL canvas + FBO
+  // + camera/mask textures) only fires when the bucket actually
+  // changes. Replaced the v1.3.40 discrete ladder {1.00,0.85,0.70,0.55}
+  // + 180/300-frame streak counters with one expression.
   const renderScaleRef = useRef(1.0);
   const frametimeAvgRef = useRef(16.7);
   const lastFrameTsRef = useRef(0);
@@ -5394,23 +5386,12 @@ export default function SpectraAfter() {
       rafRef.current = 0;
       return;
     }
-    // LOW POWER: drop every other frame to halve GPU/CPU load + heat.
-    // We still re-arm the RAF so input + state stays responsive.
-    // v1.3.40 — also honour the battery-auto flag so an automatic
-    // low-battery condition halves framerate even if the user hasn't
-    // toggled the manual switch. NOTE: thermal flag is INTENTIONALLY no
-    // longer in this skip-frame chain. Binary skip-frame caused visible
-    // app-wide stutter; thermal compensation now flows through the
-    // analog FX-quality governor (uFxQuality) + adaptive renderScale
-    // instead. Manual LOW POWER + battery-low remain hard binary
-    // switches because they are user/system-driven and need to be felt.
-    if (lowPowerRef.current || batteryLowRef.current) {
-      lowPowerSkipRef.current = !lowPowerSkipRef.current;
-      if (lowPowerSkipRef.current) {
-        rafRef.current = requestAnimationFrame(render);
-        return;
-      }
-    }
+    // v1.3.42 — manual LOW POWER + battery-low no longer skip frames.
+    // Both flags are folded into the FX-quality governor below as a
+    // hard ceiling on fxQuality, which routes through the universal
+    // shader mask AND the continuous renderScale mapping. Net effect
+    // ≈ same thermal/battery savings as the old skip-every-other-frame
+    // but without the visible app-wide stutter that pulsed the FX state.
     // Upload mask canvas to mask texture
     const gl = glRef.current;
     const maskTex = maskTextureRef.current;
@@ -6722,29 +6703,32 @@ export default function SpectraAfter() {
         captureFrameRef.current(delayCs);
       }
     }
-    // v1.3.40 — UNIFIED ADAPTIVE GOVERNOR. Replaces the v1.3.36 binary
-    // thermal flip-in and the v1.2.55 binary renderScale step with a
-    // single closed-loop controller. Three stages, one EWMA input:
+    // v1.3.42 — UNIFIED ADAPTIVE GOVERNOR (collapsed). One closed-loop
+    // controller drives every perf knob in the app. Three stages, one
+    // EWMA input:
     //
     //   1. fxQualityRef: continuous proportional control in [0.30, 1.00]
-    //      nudged each frame by (target - measured) / target.  Multiplied
+    //      nudged each frame by (target - measured) / target. Multiplied
     //      into the universal shader mask via uFxQuality so EVERY FX
     //      gate / blend softens analogously when frametime overruns
     //      budget, and smoothly recovers when headroom returns. No skip
-    //      frames, no all-or-nothing thermal flip, no visible pulsing.
+    //      frames, no binary thermal flip, no visible pulsing.
+    //      Manual LOW POWER + battery-low fold in here as a 0.5 ceiling.
     //
-    //   2. renderScaleRef: discrete steps {1.00, 0.85, 0.70, 0.55}.
-    //      Crossed only when fxQuality has been pinned at a band for a
-    //      sustained streak — prevents resize() thrashing.
+    //   2. renderScaleRef: continuous linear mapping Q→[0.55, 1.00],
+    //      rounded to the nearest 0.05 so resize() (which reallocates
+    //      the GL canvas + FBOs + camera/mask textures) only fires
+    //      when the bucket changes. Replaces the v1.3.40 discrete
+    //      ladder + streak counters.
     //
-    //   3. bootFrameRef: cold-start grace.  For the first ~300 frames
+    //   3. bootFrameRef: cold-start grace. For the first ~300 frames
     //      (~5 s @ 60 fps) the governor is pinned at 1.0 and renderScale
-    //      can't drop below 0.85.  Fixes the v1.3.38 black-screen-after-
-    //      10s class: WebView startup jank pushed the old binary slow-
-    //      streak counter past its 60-frame trigger before the device
-    //      was actually warm, firing resize() from inside render() into
-    //      undersized camera textures.  The continuous governor + grace
-    //      window makes that whole class of bug impossible by design.
+    //      can't leave 1.0. Fixes the v1.3.38 black-screen-after-10s
+    //      class: WebView startup jank pushed the old binary slow-streak
+    //      counter past its 60-frame trigger before the device was
+    //      actually warm, firing resize() from inside render() into
+    //      undersized camera textures. Cold-start grace makes that
+    //      whole class of bug impossible by design.
     if (lastFrameTsRef.current > 0) {
       const dt = now - lastFrameTsRef.current;
       // EWMA: 0.92 history weight → ~half-life of ~8 frames.
@@ -6772,46 +6756,23 @@ export default function SpectraAfter() {
         // Cold start: pin to full quality regardless of jank.
         fxQualityRef.current = 1.0;
       }
-      // --- Stage 2: discrete renderScale ladder ----------------------
-      // Move down when quality has been below a band threshold for the
-      // streak window; move up when sustained above the recovery band.
+      // --- Stage 1b: manual LOW POWER + battery-low ceiling ---------
+      // Hard cap at 0.5 when either flag is set. Replaces the v1.3.40
+      // skip-every-other-frame branch that visibly stuttered.
+      if (lowPowerRef.current || batteryLowRef.current) {
+        if (fxQualityRef.current > 0.50) fxQualityRef.current = 0.50;
+      }
+      // --- Stage 2: continuous renderScale --------------------------
+      // Linear map Q∈[0.30,1.00] → scale∈[0.55,1.00], snapped to the
+      // nearest 0.05. resize() only fires on bucket change → typically
+      // a few times per minute under sustained load, never per frame.
       const Q = fxQualityRef.current;
-      if (Q < 0.55 && warm) {
-        thermalSlowStreakRef.current++;
-        thermalCoolStreakRef.current = 0;
-      } else if (Q > 0.85) {
-        thermalCoolStreakRef.current++;
-        thermalSlowStreakRef.current = Math.max(0, thermalSlowStreakRef.current - 1);
-      } else {
-        thermalSlowStreakRef.current = Math.max(0, thermalSlowStreakRef.current - 1);
-        thermalCoolStreakRef.current = Math.max(0, thermalCoolStreakRef.current - 1);
-      }
-      // Sustained heat: drop a step.  180-frame streak (~3 s) so
-      // momentary jank never triggers — and only after cold-start grace.
-      if (warm && thermalSlowStreakRef.current > 180) {
-        if (renderScaleRef.current > 0.71)      { renderScaleRef.current = 0.70; resize(); }
-        else if (renderScaleRef.current > 0.56) { renderScaleRef.current = 0.55; resize(); }
-        thermalSlowStreakRef.current = 0;
-      }
-      // Sustained cool: climb a step.  300-frame streak (~5 s) so the
-      // restore is committed only when the device has clearly cooled.
-      if (thermalCoolStreakRef.current > 300) {
-        if (renderScaleRef.current < 0.71)      { renderScaleRef.current = 0.85; resize(); }
-        else if (renderScaleRef.current < 0.86) { renderScaleRef.current = 1.00; resize(); }
-        thermalCoolStreakRef.current = 0;
-      }
-      // Cold-start cap on renderScale floor — same reasoning as fxQuality.
-      if (!warm && renderScaleRef.current < 0.85) {
-        renderScaleRef.current = 1.0;
+      const desiredScale = warm
+        ? Math.round((0.55 + 0.45 * Q) * 20) / 20
+        : 1.0;
+      if (Math.abs(renderScaleRef.current - desiredScale) > 0.001) {
+        renderScaleRef.current = desiredScale;
         resize();
-      }
-      // Legacy compat: keep thermalThrottleRef in sync with the analog
-      // signal so any other reader of the flag (e.g. UI badges) keeps
-      // behaving.  Triggered when quality < 0.6, released when quality > 0.85.
-      if (!thermalThrottleRef.current && fxQualityRef.current < 0.60 && warm) {
-        thermalThrottleRef.current = true;
-      } else if (thermalThrottleRef.current && fxQualityRef.current > 0.85) {
-        thermalThrottleRef.current = false;
       }
     }
     lastFrameTsRef.current = now;
