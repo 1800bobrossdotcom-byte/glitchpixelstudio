@@ -530,17 +530,21 @@ void main() {
     // Stride scaling: SEGMENT knob now extends sample STRIDE so 64 taps
     // can cover up to ~1024 px of the source line, not just 64. Without
     // this the sort streaks are invisible on 1080p phone screens.
-    // v1.3.44 — bumped max stride 16→24 and amount-multiplier ceiling
-    // 1.4→2.0 so SEGMENT and AMOUNT both produce a much more obvious
-    // change in streak length on the user's phone screen.
-    float stride = mix(1.0, 24.0, clamp(uSortSegment, 0.0, 1.0)) * (0.6 + uSortAmt * 2.0);
+    // v1.3.45 — phone-only app. Pushed coefficients hard so AMOUNT and
+    // SEGMENT both produce IMMEDIATELY obvious streak length changes
+    // on a phone (300+ ppi). Stride ceiling 24→48 and amt mult
+    // (0.6 + uSortAmt*2.0) → (1.0 + uSortAmt*4.0). At max segment+amt
+    // a single tap can now traverse ~5x what it did pre-1.3.44.
+    float stride = mix(2.0, 48.0, clamp(uSortSegment, 0.0, 1.0)) * (1.0 + uSortAmt * 4.0);
     step1 *= stride;
     // 8..64 sample run, scaled by SortAmt and Segment so dialing the
     // amount up creates LONGER streaks (not bigger displacements).
     // GLSL ES 1.00 requires constant loop bounds, so we use 64 hard
     // and gate work with float compare (NO break on dynamic value).
-    float runMaxF = mix(8.0, 64.0, clamp(uSortSegment, 0.0, 1.0)) * (0.4 + uSortAmt * 1.6);
-    runMaxF = clamp(runMaxF, 4.0, 64.0);
+    // v1.3.45 — base run 8→24 and amt curve (0.4+amt*1.6) → (0.7+amt*1.3)
+    // so even at low AMOUNT the run is long enough to read on phone.
+    float runMaxF = mix(24.0, 64.0, clamp(uSortSegment, 0.0, 1.0)) * (0.7 + uSortAmt * 1.3);
+    runMaxF = clamp(runMaxF, 12.0, 64.0);
     // Per-line jitter so streak edges don't align to a fixed grid.
     float lineCoord = sortVert ? uv.x : uv.y;
     float lineId = floor(lineCoord * (sortVert ? uResolution.x : uResolution.y));
@@ -554,11 +558,11 @@ void main() {
     float pickMaxLine = step(0.5, fract(lineId * 0.5 + hash(lineId * 0.029) * 0.3));
     // Boundary modulation (AE Pixel Sorter Modulation): two-frequency sine wave
     // distorts lo/hi thresholds per scan-line → organic wavy segment edges.
-    // v1.3.44 — bumped modulation depth 0.22→0.45 so NOISE knob produces
-    // visibly wavy segment boundaries instead of a near-imperceptible drift.
+    // v1.3.45 — phone bump: depth 0.45→0.9 so NOISE at 1.0 fully sweeps the
+    // band threshold, producing dramatic boundary wave instead of subtle drift.
     float modWave = sin(lineCoord * 28.0 + uTime * 1.4)
                   + sin(lineCoord * 47.0 + uTime * 0.9) * 0.4;
-    float modShift = modWave * uSortRandom * 0.45;
+    float modShift = modWave * uSortRandom * 0.9;
     lo = clamp(lo + modShift, 0.0, 1.0);
     hi = clamp(hi + modShift * 0.6, lo + 0.01, 1.0);
     // Small scan-start offset tied to modulation (replaces pure random jitter).
@@ -652,24 +656,26 @@ void main() {
     sortedCol = bestCol;
     // Signal phasing (AE Pixel Sorter Signal panel): luma noise, chroma
     // luma-modulation, and tape-error bands on the sorted pixels.
-    // v1.3.44 — bumped all three coefficients ~2x so WOBBLE produces
-    // an obvious VHS signal rather than a polite suggestion.
+    // v1.3.45 — phone bump again: WOBBLE now reads as a real broken-VHS
+    // signal at any value above ~0.2. Coefficients pushed to the edge of
+    // tasteful so the knob has wide dynamic range on a small screen.
     if (uSortWobble > 0.001) {
       // Luma noise: per-frame pixel-level brightness jitter.
       float lumaJitter = (rand(uv + vec2(0.0, floor(uTime * 24.0) * 0.137)) - 0.5)
-                        * uSortWobble * 0.24;
+                        * uSortWobble * 0.55;
       sortedCol = clamp(sortedCol + lumaJitter, 0.0, 1.0);
       // Luma modulation: oscillating brightness bands (VHS luma carrier).
-      float lumaMod = sin(uv.y * 565.0 + uTime * 3.8) * uSortWobble * 0.10;
+      float lumaMod = sin(uv.y * 565.0 + uTime * 3.8) * uSortWobble * 0.22;
       sortedCol = clamp(sortedCol + lumaMod, 0.0, 1.0);
       // Tape errors: sporadic horizontal corruption bands.
+      // Threshold drops to 0.45 at WOBBLE=1 so bands cover ~half the frame.
       float tapeRow = floor(uv.y * uResolution.y / 5.0);
       float tapeNoise = rand(vec2(tapeRow * 0.0031, floor(uTime * 5.0) * 0.017));
-      float tapeThresh = 1.0 - uSortWobble * 0.32;
-      float tapeWeight = clamp((tapeNoise - tapeThresh) / max(uSortWobble * 0.32, 0.001), 0.0, 1.0);
-      float shiftX = tapeWeight * uSortWobble * 0.40;
+      float tapeThresh = 1.0 - uSortWobble * 0.55;
+      float tapeWeight = clamp((tapeNoise - tapeThresh) / max(uSortWobble * 0.55, 0.001), 0.0, 1.0);
+      float shiftX = tapeWeight * uSortWobble * 0.75;
       vec3 tapeSmp = texture2D(uCamera, clamp(uv + vec2(shiftX, 0.0), 0.0, 1.0)).rgb;
-      sortedCol = mix(sortedCol, tapeSmp, tapeWeight * 0.85);
+      sortedCol = mix(sortedCol, tapeSmp, tapeWeight);
     }
     // In-band pixels are FULLY replaced with the sorted colour. uSortAmt
     // only gates whether the sort fires at all (and feeds the streak-length

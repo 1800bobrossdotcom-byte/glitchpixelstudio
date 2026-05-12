@@ -6268,15 +6268,17 @@ export default function SpectraAfter() {
         texSource = gc; srcW = gc.width; srcH = gc.height;
       }
 
-      // v1.3.44 — GEN MIX override. When srcMode is CAMERA but we
+      // v1.3.44/45 — GEN MIX override. When srcMode is CAMERA but we
       // entered this branch because MIX > 0, ignore the routing
       // decisions above (they assumed srcMode === "generator") and
-      // emit a single, predictable blend: the live camera frame as
-      // the base + the generator hard-light blended on top at MIX
-      // alpha. The shader's downstream FX then operate on that
-      // mixed pixel signal — generator is no longer an island.
-      // If camera isn't ready yet, fall back to pure gc so we never
-      // emit a stale or empty texture.
+      // emit a single, predictable blend: live camera as the base,
+      // generator drawn on top at MIX opacity (plain source-over).
+      // v1.3.45 — switched from hard-light to source-over so MIX is a
+      // straight, predictable cross-fade: 0 = pure cam, 1 = pure gen,
+      // 0.5 = 50/50. Hard-light hid the generator on mid-gray pixels;
+      // source-over guarantees a visible blend regardless of content.
+      // The shader's downstream FX then operate on the mixed pixel
+      // signal — generator stops being an island.
       if (srcMode === "camera") {
         if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0) {
           let cc = genCompositeCanvasRef.current;
@@ -6289,10 +6291,8 @@ export default function SpectraAfter() {
             cctx.globalAlpha = 1;
             cctx.clearRect(0, 0, cw, ch);
             cctx.drawImage(video, 0, 0, cw, ch);
-            cctx.globalCompositeOperation = "hard-light";
             cctx.globalAlpha = Math.max(0, Math.min(1, genMixRef.current));
             cctx.drawImage(gc, 0, 0, cw, ch);
-            cctx.globalCompositeOperation = "source-over";
             cctx.globalAlpha = 1;
             texSource = cc; srcW = cw; srcH = ch;
           } else {
