@@ -3648,38 +3648,9 @@ export default function SpectraAfter() {
   const versionTapTimerRef = useRef<number | null>(null);
   const locked = entitlement === null && graceRemaining <= 0;
 
-  // Tick the grace counter once per second while foregrounded and unlocked.
-  // Pauses automatically when the tab/app is hidden (visibilitychange).
-  // Effect deps intentionally exclude graceRemaining — we use the functional
-  // setState form so the interval doesn't have to be torn down each tick.
-  useEffect(() => {
-    if (entitlement !== null) return; // unlocked → no tick needed
-    let last = Date.now();
-    let stopped = false;
-    const tick = () => {
-      if (stopped) return;
-      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
-        last = Date.now();
-        return;
-      }
-      const now = Date.now();
-      const dt = now - last;
-      last = now;
-      setGraceRemaining(prev => {
-        const next = Math.max(0, prev - dt);
-        saveGraceRemaining(next);
-        return next;
-      });
-    };
-    const id = window.setInterval(tick, 1000);
-    const onVis = () => { last = Date.now(); };
-    document.addEventListener("visibilitychange", onVis);
-    return () => {
-      stopped = true;
-      window.clearInterval(id);
-      document.removeEventListener("visibilitychange", onVis);
-    };
-  }, [entitlement]);
+  // v1.3.52 — grace-period tick removed along with the lock screen.
+  // entitlement / graceRemaining state remain only to keep the PLANS panel
+  // status line typesafe; nothing in the app blocks on them anymore.
 
   // ── NEON MODE tilt parallax: read DeviceOrientation and write CSS vars.
   // Heavily smoothed so panels glide instead of jitter. Auto-disabled when
@@ -9441,114 +9412,7 @@ export default function SpectraAfter() {
         </div>
       )}
 
-      {/* ── LOCK SCREEN — shown when grace expires and no entitlement.
-            Blocks all interaction with the app behind it. */}
-      {locked && (
-        <div
-          style={{
-            position: "fixed", inset: 0, zIndex: 9999,
-            background: "linear-gradient(180deg,#070213 0%,#1a0530 60%,#03000c 100%)",
-            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-            padding: 24, fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", color: "rgba(231,210,255,0.95)",
-            overflowY: "auto",
-          }}
-        >
-          <div style={{ fontSize: 12, letterSpacing: "5px", color: "rgba(231,174,255,0.55)", marginBottom: 6 }}>GLITCH PHOTO STUDIO</div>
-          <div style={{ fontSize: 28, letterSpacing: "6px", color: "rgba(255,210,140,0.98)", textShadow: "0 0 14px rgba(232,160,32,0.7)", marginBottom: 4 }}>LOCKED</div>
-          <div style={{ fontSize: 10, letterSpacing: "1.6px", color: "rgba(200,180,220,0.6)", marginBottom: 22, textAlign: "center", maxWidth: 320 }}>
-            Your 30-minute trial has ended. Unlock GPS to keep glitching.
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%", maxWidth: 340 }}>
-            <button
-              onClick={() => {
-                // Placeholder — real Play Billing wires in next release.
-                alert("In-app purchase ships in the next update. For now, tap GPS v" + APP_VERSION + " 5 times to enter a dev unlock code.");
-              }}
-              style={{
-                fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 14, letterSpacing: "3px",
-                padding: "16px 18px", borderRadius: 6, cursor: "pointer",
-                background: "linear-gradient(180deg,rgba(255,210,140,0.18),rgba(232,160,32,0.08))",
-                border: "1px solid rgba(255,210,140,0.7)",
-                color: "rgba(255,235,205,0.98)",
-                textShadow: "0 0 6px rgba(232,160,32,0.55)",
-              }}
-            >BUY GPS — $3.99</button>
-            <button
-              onClick={() => {
-                alert("Subscriptions ship in the next update. For now, tap GPS v" + APP_VERSION + " 5 times to enter a dev unlock code.");
-              }}
-              style={{
-                fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 12, letterSpacing: "2.5px",
-                padding: "12px 16px", borderRadius: 6, cursor: "pointer",
-                background: "linear-gradient(180deg,rgba(120,255,200,0.14),rgba(40,200,140,0.06))",
-                border: "1px solid rgba(120,255,200,0.55)",
-                color: "rgba(220,255,235,0.95)",
-              }}
-            >SUBSCRIBE TO STUDIO — $6.90 / MO</button>
-            <button
-              onClick={() => alert("Restore Purchases will check the Play Store for prior entitlements once billing is wired up.")}
-              style={{
-                fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 11, letterSpacing: "2px",
-                padding: "10px 14px", borderRadius: 6, cursor: "pointer",
-                background: "transparent",
-                border: "1px solid rgba(231,174,255,0.4)",
-                color: "rgba(231,174,255,0.85)",
-              }}
-            >RESTORE PURCHASES</button>
-            <button
-              onClick={() => setTierInfoOpen(true)}
-              style={{
-                fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 10, letterSpacing: "1.8px",
-                padding: "8px 12px", borderRadius: 6, cursor: "pointer",
-                background: "transparent",
-                border: "1px dashed rgba(200,180,220,0.3)",
-                color: "rgba(200,180,220,0.7)",
-              }}
-            >SEE WHAT&apos;S INCLUDED</button>
-          </div>
-
-          {unlockInputVisible && (
-            <div style={{ marginTop: 24, width: "100%", maxWidth: 340, display: "flex", flexDirection: "column", gap: 8 }}>
-              <div style={{ fontSize: 9, letterSpacing: "1.6px", color: "rgba(200,180,220,0.6)", textTransform: "uppercase" }}>Dev unlock code</div>
-              <input
-                value={unlockCode}
-                onChange={(e) => setUnlockCode(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") applyUnlockCode(unlockCode); }}
-                inputMode="numeric"
-                autoFocus
-                style={{
-                  fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 16, letterSpacing: "4px",
-                  padding: "10px 12px", borderRadius: 4,
-                  background: "rgba(8,2,20,0.85)",
-                  border: "1px solid rgba(231,174,255,0.5)",
-                  color: "rgba(255,235,205,0.98)", outline: "none", textAlign: "center",
-                }}
-                placeholder="••••"
-              />
-              <button
-                onClick={() => applyUnlockCode(unlockCode)}
-                style={{
-                  fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontSize: 11, letterSpacing: "2px",
-                  padding: "8px 12px", borderRadius: 4, cursor: "pointer",
-                  background: "rgba(231,174,255,0.12)",
-                  border: "1px solid rgba(231,174,255,0.5)",
-                  color: "rgba(231,210,255,0.95)",
-                }}
-              >APPLY</button>
-            </div>
-          )}
-
-          <div
-            onClick={onVersionTap}
-            style={{
-              marginTop: 28, fontSize: 9, letterSpacing: "1.4px",
-              color: "rgba(200,180,220,0.45)", cursor: "pointer", userSelect: "none",
-            }}
-            title="tap 5 times for dev unlock"
-          >GPS v{APP_VERSION}</div>
-        </div>
-      )}
+      {/* v1.3.52 — LOCK SCREEN removed (no trial / paywall in current build). */}
 
       {/* ── Processing overlay (GIF/video encode + save) */}
       {processingStatus && (
@@ -10238,7 +10102,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.51 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.52 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
