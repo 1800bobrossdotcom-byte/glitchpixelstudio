@@ -2368,6 +2368,16 @@ uniform float uFaceInvert;     // 0 = FX inside face/person, 1 = FX outside
 uniform float uFaceFeather;    // soft edge width for AI mask
 uniform float uFaceMaskRadius; // v1.3.29 — outer-ring tap distance in OUTPUT pixels.
                                //   Replaces the per-tick CPU separable max-filter on a
+// v1.3.40 — UNIFIED FX QUALITY GOVERNOR. A single closed-loop scalar in
+// [0.30 .. 1.00] driven on the JS side by a PID-style controller against
+// the rolling frametime EWMA. Multiplied into mask once, immediately
+// after the touch / face-FX gating, so every downstream FX gate (uX *
+// mask > 0.001) and mix(color, fxOut, uX * mask) is uniformly softened
+// under load and uniformly restored when load drops — instead of the
+// pre-v1.3.40 binary skip-frame mechanism which manifested as visible
+// stutter. At 1.0 nothing changes; at lower values every effects
+// intensity is analog-scaled in lockstep so the picture never goes dead.
+uniform float uFxQuality;
                                //   256x144 buffer (which cost ~10-20 ms/tick of JS time and
                                //   stalled the segmenter callback). Now the dilation runs
                                //   on the GPU as part of the fragment shader's existing
@@ -2560,6 +2570,11 @@ void main() {
     }
     mask *= mix(fm, 1.0 - fm, uFaceInvert);
   }
+  // v1.3.40 — global FX quality governor multiplied into the universal
+  // mask. Acts as a soft master-fade on every downstream FX gate /
+  // mix(...) so sustained heavy load smoothly dims compounded effects
+  // instead of the device locking up or the skip-frame logic stuttering.
+  mask *= uFxQuality;
   // v1.3.32 — UV-WARP FX CHAIN MOVED HERE (was below pixel sort).
   // Rationale: the pixel-sort scan further down samples uCamera at uv; if warps run AFTER
   // sort, sort decides which pixels are 'in band' from the original scene and paints streaks
@@ -5045,6 +5060,24 @@ export default function SpectraAfter() {
   const thermalThrottleRef = useRef(false);
   const thermalSlowStreakRef = useRef(0);
   const thermalCoolStreakRef = useRef(0);
+  // v1.3.40 — UNIFIED FX QUALITY GOVERNOR. Replaces the v1.3.36 binary
+  // thermal flip + binary skip-frame mechanism with a continuous control
+  // loop. The governor compares the rolling frametime EWMA against a
+  // target budget (17 ms ≈ 58 fps with a 1-frame compositor margin) and
+  // each frame nudges fxQualityRef up or down by a small step. The ref
+  // is uploaded to the shader as `uFxQuality` and multiplied into the
+  // universal `mask` once, so every FX gate / mix is smoothly scaled in
+  // lockstep — instead of the entire app pulsing at half rate (skip
+  // frames) the user sees compounding FX gracefully dim under load and
+  // smoothly restore as headroom returns. The CPU pixel-sort tick and
+  // segmenter cadence also read this scalar, so under sustained load
+  // the most expensive non-shader work is naturally throttled too.
+  // Bounded [0.30, 1.00]: 0.30 keeps a visible scene even on a hot SoC,
+  // 1.00 = "off" (no degradation). bootFrameRef gates the governor so
+  // WebView cold-start jank (~300 frames @ 60 = first 5 s) can't drag
+  // quality down before the device is actually warm.
+  const fxQualityRef = useRef(1.0);
+  const bootFrameRef = useRef(0);
   // v1.2.55 — ADAPTIVE RENDER RESOLUTION. When the rolling frametime
   // average crosses ~22 ms (sustained <45 fps) we drop the canvas DPR
   // multiplier to 0.75x to recover headroom; when it sits below ~14 ms
@@ -5392,9 +5425,14 @@ export default function SpectraAfter() {
     // the figure mask keeps up with fast dance moves (was 6/10/12 Hz).
     const _segCadenceMs = () => {
       const f = frametimeAvgRef.current;
-      if (f > 22) return 100; // ~10 Hz when busy (was 6)
-      if (f < 14) return 50;  // ~20 Hz when idle (was 12)
-      return 67;              // ~15 Hz default (was 10)
+      // v1.3.40 — also factor the global FX quality scalar. Under
+      // sustained heat the governor drives fxQualityRef well below 1.0;
+      // we lengthen segmenter cadence proportionally so the WASM call
+      // stops fighting the shader for the GPU.  At Q=0.30 cadence is
+      // ~3.3× the headroom-case interval (15 Hz → ~4.5 Hz).
+      const q = Math.max(0.3, fxQualityRef.current || 1.0);
+      const baseMs = f > 22 ? 100 : (f < 14 ? 50 : 67);
+      return Math.round(baseMs / q);
     };
 
     const initAndRun = async () => {
@@ -6444,6 +6482,7 @@ export default function SpectraAfter() {
       "uFaceActive","uFaceCenter","uFaceRadius","uFaceInvert",
       "uFaceTex","uFaceTexValid","uFaceFeather","uFaceMaskRadius",
       "uGlyph","uSortMix","uReact","uVoroSort","uGlyphAtlas","uSortTex",
+      "uFxQuality",
       "uModeParams[0]"];
       // Mask texture for touch FX
       const maskTex = gl.createTexture();
@@ -6989,14 +7028,15 @@ export default function SpectraAfter() {
     }
     // LOW POWER: drop every other frame to halve GPU/CPU load + heat.
     // We still re-arm the RAF so input + state stays responsive.
-    // v1.2.55 — also honour the battery-auto flag so an automatic
+    // v1.3.40 — also honour the battery-auto flag so an automatic
     // low-battery condition halves framerate even if the user hasn't
-    // toggled the manual switch.
-    // v1.3.36 — also honour the thermal auto-throttle flag (set by the
-    // adaptive resolution block when the EWMA frametime is sustained slow,
-    // i.e. SoC is throttling for heat). Same skip-frame mechanism, no
-    // user action required — phone gets noticeably cooler under load.
-    if (lowPowerRef.current || batteryLowRef.current || thermalThrottleRef.current) {
+    // toggled the manual switch. NOTE: thermal flag is INTENTIONALLY no
+    // longer in this skip-frame chain. Binary skip-frame caused visible
+    // app-wide stutter; thermal compensation now flows through the
+    // analog FX-quality governor (uFxQuality) + adaptive renderScale
+    // instead. Manual LOW POWER + battery-low remain hard binary
+    // switches because they are user/system-driven and need to be felt.
+    if (lowPowerRef.current || batteryLowRef.current) {
       lowPowerSkipRef.current = !lowPowerSkipRef.current;
       if (lowPowerSkipRef.current) {
         rafRef.current = requestAnimationFrame(render);
@@ -7955,7 +7995,13 @@ export default function SpectraAfter() {
     // value (the Asendorf 'absolute rgb' key). The sorted canvas is
     // uploaded to TEXTURE5 / uSortTex; the shader's uSortMix block blends.
     if (sortMixRef.current > 0.001 && hasVideo && texSource && cpuSortTexRef.current) {
-      cpuSortTickRef.current = (cpuSortTickRef.current + 1) % 3;
+      // v1.3.40 — quality-aware stride. Default tick mod 3 (every 3rd
+      // frame); under FX-governor pressure stretch to mod 5 or mod 8 so
+      // the JS sort + readback doesn't compete with the shader for
+      // main-thread time when frametime is already overrun.
+      const _qS = fxQualityRef.current;
+      const stride = _qS > 0.80 ? 3 : _qS > 0.50 ? 5 : 8;
+      cpuSortTickRef.current = (cpuSortTickRef.current + 1) % stride;
       if (cpuSortTickRef.current === 0) {
         try {
           const SW = 256, SH = 144;
@@ -8195,6 +8241,10 @@ export default function SpectraAfter() {
     //   (b) dilation in shader == dilation in image space at the screen's true resolution,
     //       so the silhouette covers the whole subject without aliasing-driven gaps.
     setF1(u.uFaceMaskRadius, 2.5 + Math.max(0, Math.min(1, maskExpandRef.current)) * 36.0);
+    // v1.3.40 — single uniform that smoothly dims every FX under load.
+    // Multiplied into the shader's universal `mask` so all gates and
+    // mix() calls scale in lockstep.
+    setF1(u.uFxQuality, fxQualityRef.current);
     if (faceTextureRef.current) {
       gl.activeTexture(gl.TEXTURE4);
       gl.bindTexture(gl.TEXTURE_2D, faceTextureRef.current);
@@ -8304,63 +8354,96 @@ export default function SpectraAfter() {
         captureFrameRef.current(delayCs);
       }
     }
-    // v1.2.55 — ADAPTIVE RESOLUTION. EWMA the inter-frame interval so
-    // momentary jank doesn't trigger a downscale, and require a steady
-    // two-second fast streak before restoring full res so we don't
-    // ping-pong on the first frame after a downscale.
+    // v1.3.40 — UNIFIED ADAPTIVE GOVERNOR. Replaces the v1.3.36 binary
+    // thermal flip-in and the v1.2.55 binary renderScale step with a
+    // single closed-loop controller. Three stages, one EWMA input:
+    //
+    //   1. fxQualityRef: continuous proportional control in [0.30, 1.00]
+    //      nudged each frame by (target - measured) / target.  Multiplied
+    //      into the universal shader mask via uFxQuality so EVERY FX
+    //      gate / blend softens analogously when frametime overruns
+    //      budget, and smoothly recovers when headroom returns. No skip
+    //      frames, no all-or-nothing thermal flip, no visible pulsing.
+    //
+    //   2. renderScaleRef: discrete steps {1.00, 0.85, 0.70, 0.55}.
+    //      Crossed only when fxQuality has been pinned at a band for a
+    //      sustained streak — prevents resize() thrashing.
+    //
+    //   3. bootFrameRef: cold-start grace.  For the first ~300 frames
+    //      (~5 s @ 60 fps) the governor is pinned at 1.0 and renderScale
+    //      can't drop below 0.85.  Fixes the v1.3.38 black-screen-after-
+    //      10s class: WebView startup jank pushed the old binary slow-
+    //      streak counter past its 60-frame trigger before the device
+    //      was actually warm, firing resize() from inside render() into
+    //      undersized camera textures.  The continuous governor + grace
+    //      window makes that whole class of bug impossible by design.
     if (lastFrameTsRef.current > 0) {
       const dt = now - lastFrameTsRef.current;
-      // EWMA: 0.92 history weight → ~half-life of ~8 frames
+      // EWMA: 0.92 history weight → ~half-life of ~8 frames.
       frametimeAvgRef.current = frametimeAvgRef.current * 0.92 + dt * 0.08;
       const avg = frametimeAvgRef.current;
-      // v1.3.36 — THERMAL AUTO-THROTTLE state machine. Track sustained
-      // slow / fast streaks against a hot threshold (~31 fps) and a cool
-      // threshold (~55 fps). Flip in after ~60 hot frames (~1 s on a
-      // throttled SoC), flip out only after ~240 cool frames (~4 s) so
-      // we don't ping-pong back into thermal limit. When throttled, we
-      // also pin the render scale at 0.66 (instead of just 0.75) so the
-      // shader pushes ~44% the pixels for an even larger thermal headroom.
-      if (avg > 32) {
+      bootFrameRef.current = Math.min(100000, bootFrameRef.current + 1);
+      const warm = bootFrameRef.current > 300;
+      // --- Stage 1: continuous FX quality control --------------------
+      // Target 17 ms (~58 fps).  Error normalized so 33 ms (30 fps)
+      // gives -1, i.e. one full step toward minimum quality per frame
+      // at half framerate.  Asymmetric gain — DECAY faster than RECOVER
+      // so the picture dims quickly under heat and rebuilds gently
+      // (avoids visible up-pulse when load suddenly clears).
+      if (warm) {
+        const TARGET = 17.0;
+        const err = (TARGET - avg) / TARGET;       // > 0 = headroom, < 0 = overrun
+        const stepDown = 0.015;                    // ~67 frames to floor under sustained overrun
+        const stepUp   = 0.004;                    // ~250 frames to ceiling once headroom returns
+        if (err < 0) {
+          fxQualityRef.current = Math.max(0.30, fxQualityRef.current + err * stepDown);
+        } else {
+          fxQualityRef.current = Math.min(1.00, fxQualityRef.current + err * stepUp);
+        }
+      } else {
+        // Cold start: pin to full quality regardless of jank.
+        fxQualityRef.current = 1.0;
+      }
+      // --- Stage 2: discrete renderScale ladder ----------------------
+      // Move down when quality has been below a band threshold for the
+      // streak window; move up when sustained above the recovery band.
+      const Q = fxQualityRef.current;
+      if (Q < 0.55 && warm) {
         thermalSlowStreakRef.current++;
         thermalCoolStreakRef.current = 0;
-        if (!thermalThrottleRef.current && thermalSlowStreakRef.current > 60) {
-          thermalThrottleRef.current = true;
-          if (renderScaleRef.current > 0.67) {
-            renderScaleRef.current = 0.66;
-            fastFrameStreakRef.current = 0;
-            resize();
-          }
-        }
-      } else if (avg < 18) {
+      } else if (Q > 0.85) {
         thermalCoolStreakRef.current++;
         thermalSlowStreakRef.current = Math.max(0, thermalSlowStreakRef.current - 1);
-        if (thermalThrottleRef.current && thermalCoolStreakRef.current > 240) {
-          thermalThrottleRef.current = false;
-          thermalCoolStreakRef.current = 0;
-        }
       } else {
         thermalSlowStreakRef.current = Math.max(0, thermalSlowStreakRef.current - 1);
         thermalCoolStreakRef.current = Math.max(0, thermalCoolStreakRef.current - 1);
       }
-      if (avg > 22 && renderScaleRef.current > 0.76) {
-        // Sustained <45fps — shrink the GL canvas so the shader pushes
-        // 0.75 × 0.75 = ~56% the pixels. Triggers a full FBO + texture
-        // re-allocation via resize().
-        renderScaleRef.current = 0.75;
-        fastFrameStreakRef.current = 0;
+      // Sustained heat: drop a step.  180-frame streak (~3 s) so
+      // momentary jank never triggers — and only after cold-start grace.
+      if (warm && thermalSlowStreakRef.current > 180) {
+        if (renderScaleRef.current > 0.71)      { renderScaleRef.current = 0.70; resize(); }
+        else if (renderScaleRef.current > 0.56) { renderScaleRef.current = 0.55; resize(); }
+        thermalSlowStreakRef.current = 0;
+      }
+      // Sustained cool: climb a step.  300-frame streak (~5 s) so the
+      // restore is committed only when the device has clearly cooled.
+      if (thermalCoolStreakRef.current > 300) {
+        if (renderScaleRef.current < 0.71)      { renderScaleRef.current = 0.85; resize(); }
+        else if (renderScaleRef.current < 0.86) { renderScaleRef.current = 1.00; resize(); }
+        thermalCoolStreakRef.current = 0;
+      }
+      // Cold-start cap on renderScale floor — same reasoning as fxQuality.
+      if (!warm && renderScaleRef.current < 0.85) {
+        renderScaleRef.current = 1.0;
         resize();
-      } else if (avg < 14 && renderScaleRef.current < 1.0) {
-        // Counting fast frames toward a recovery promotion. ~120 frames
-        // at 60fps == 2s. Resets on every slow frame above.
-        fastFrameStreakRef.current++;
-        if (fastFrameStreakRef.current > 120) {
-          renderScaleRef.current = 1.0;
-          fastFrameStreakRef.current = 0;
-          resize();
-        }
-      } else if (avg > 16) {
-        // In the dead band but not great — keep streak from accumulating.
-        fastFrameStreakRef.current = Math.max(0, fastFrameStreakRef.current - 1);
+      }
+      // Legacy compat: keep thermalThrottleRef in sync with the analog
+      // signal so any other reader of the flag (e.g. UI badges) keeps
+      // behaving.  Triggered when quality < 0.6, released when quality > 0.85.
+      if (!thermalThrottleRef.current && fxQualityRef.current < 0.60 && warm) {
+        thermalThrottleRef.current = true;
+      } else if (thermalThrottleRef.current && fxQualityRef.current > 0.85) {
+        thermalThrottleRef.current = false;
       }
     }
     lastFrameTsRef.current = now;
