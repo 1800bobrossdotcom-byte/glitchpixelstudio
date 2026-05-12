@@ -263,9 +263,12 @@ void main() {
   // Running warps FIRST means sort scans the SAME warped scene that the main fetch reads,
   // so every warp knob composes correctly with sort and with each other.
   // 2. Scanline tear/glitch
+  // v1.3.46 — phone bump: tear amplitude 0.12→0.22 so the knob produces an unmistakable
+  // sideways shred at max value on a 6" portrait screen. Band frequency multiplier 2.0→3.5
+  // so a fully-cranked knob also adds VISIBLY MORE bands (denser tear field, not just bigger).
   if (uScanTear * mask > 0.001) {
-    float band = step(0.5, fract(uv.y * uResolution.y * (0.2 + uScanTear * mask * 2.0) + uTime * 2.0));
-    uv.x += band * (rand(vec2(uv.y, uTime)) - 0.5) * uScanTear * mask * 0.12;
+    float band = step(0.5, fract(uv.y * uResolution.y * (0.2 + uScanTear * mask * 3.5) + uTime * 2.0));
+    uv.x += band * (rand(vec2(uv.y, uTime)) - 0.5) * uScanTear * mask * 0.22;
   }
   // 4. Block glitch (block corruption + JPEG-style DCT block paint at high values)
   if (uBlockGlitch * mask > 0.001) {
@@ -304,9 +307,11 @@ void main() {
     }
   }
   // 4b. Liquid distort (curl-noise UV warp)
+  // v1.3.46 — phone bump: warp magnitude 0.07→0.14 so LIQUID at max actually melts
+  // the picture instead of producing a faint shimmer.
   if (uLiquid * mask > 0.001) {
     float t = uTime * 0.4;
-    float s = uLiquid * mask * 0.07;
+    float s = uLiquid * mask * 0.14;
     vec2 p = uv * 3.5;
     float dx = sin(p.y * 2.1 + t * 1.3) * cos(p.x * 1.7 + t * 0.8)
              + sin(p.x * 3.2 + t * 0.6) * 0.4;
@@ -483,15 +488,19 @@ void main() {
         core = (1.0 - smoothstep(0.0, radius, dist)) * (0.5 + 0.5 * swirl);
         halo = (1.0 - smoothstep(radius, radius * 2.0, dist)) * (1.0 - core);
       }
-      vec2 contraryPush = -vDir * core * 0.18 * (0.5 + contraryK * 1.5);
-      vec2 followShove  =  vDir * halo * 0.10 * (1.0 - contraryK);
+      // v1.3.46 — phone bump: core push 0.18→0.30, halo shove 0.10→0.18 so DISRUPT
+      // SIZE+COUNT at max produces dramatic counter-flow without needing the SORT to read.
+      vec2 contraryPush = -vDir * core * 0.30 * (0.5 + contraryK * 1.5);
+      vec2 followShove  =  vDir * halo * 0.18 * (1.0 - contraryK);
       totalDisp += contraryPush + followShove;
     }
     // v1.3.32 — cap accumulated displacement so 8 max-size blobs can't ram uv to the clamp
     // boundary (which previously turned huge regions into flat edge-color and drowned out every
-    // other FX). 0.45 keeps disrupt strong-feeling while leaving room for kaleido/droste/etc.
+    // other FX).
+    // v1.3.46 — phone bump: cap 0.45→0.62 to give the new stronger per-blob push room to
+    // breathe (the 0.45 ceiling was clipping at 4+ max-size blobs and capping the look).
     float dispLen = length(totalDisp);
-    if (dispLen > 0.45) totalDisp *= 0.45 / dispLen;
+    if (dispLen > 0.62) totalDisp *= 0.62 / dispLen;
     uv = clamp(uv + totalDisp * uDisrupt * mask, 0.001, 0.999);
   }
   // v1.3.32 — PIXEL SORT MOVED HERE (now runs AFTER all UV warps above).
@@ -814,30 +823,38 @@ void main() {
     }
 
     float jump = floor(uTime * (4.0 + dm * (14.0 + uMoshDistort * 18.0)));
+    // v1.3.46 — phone bump: macroblock jump 0.07/0.11 → 0.13/0.20 so DATAMOSH+DISTORT
+    // at full knob produces real chunky MPEG-style displacement, not just micro-shudder.
     vec2 jumpOff = vec2(
       (hash(jump * 1.73 + floor(uv.y * 120.0)) - 0.5),
       (hash(jump * 2.11 + floor(uv.x * 90.0)) - 0.5)
-    ) * dm * (0.07 + uMoshDistort * 0.11);
+    ) * dm * (0.13 + uMoshDistort * 0.20);
     vec2 jUv = clamp(uv + jumpOff, 0.001, 0.999);
     vec3 jumpPrev = texture2D(uPrevFrame, jUv).rgb;
     color.rgb = mix(color.rgb, jumpPrev, clamp(dm * (0.45 + motionCarry * 0.5), 0.0, 0.96));
 
-    float sep = dm * (0.012 + bleed * 0.05);
+    // v1.3.46 — phone bump: chroma sep 0.012/0.05 → 0.028/0.11 so MOSH BLEED at max
+    // produces obvious channel separation alongside the bigger jumps above.
+    float sep = dm * (0.028 + bleed * 0.11);
     float rr = texture2D(uPrevFrame, clamp(jUv + vec2(sep, 0.0), 0.001, 0.999)).r;
     float gg = texture2D(uPrevFrame, jUv).g;
     float bb = texture2D(uPrevFrame, clamp(jUv - vec2(sep, 0.0), 0.001, 0.999)).b;
     color.rgb = mix(color.rgb, vec3(rr, gg, bb), clamp(dm * (0.22 + bleed * 0.75), 0.0, 0.9));
 
     if (dm > 0.8) {
+      // v1.3.46 — phone bump: extra-smear amplitude 0.16→0.26 so the supercharged
+      // (audio-beat-driven) headroom past 1.0 produces dramatic motion-vector trails.
       float extra = max(0.0, dm - 1.0);
-      vec2 smearOff = vec2(sin(uTime * 1.3 + uv.y * 10.0), cos(uTime * 0.9 + uv.x * 8.0)) * extra * 0.16;
+      vec2 smearOff = vec2(sin(uTime * 1.3 + uv.y * 10.0), cos(uTime * 0.9 + uv.x * 8.0)) * extra * 0.26;
       vec3 smearPrev = texture2D(uPrevFrame, clamp(uv + smearOff, 0.001, 0.999)).rgb;
       color.rgb = mix(color.rgb, smearPrev, clamp(extra * (0.35 + motionCarry * 0.8), 0.0, 0.95));
     }
   }
   // 6. Chroma crash (extreme chroma separation)
+  // v1.3.46 — phone bump: caa multiplier 0.07→0.14 so CHRASH at max knob smears
+  // chroma across ~28%% of the frame instead of a subtle ~14%% — reads as real RGB rip.
   if (uChrash * mask > 0.001) {
-    float caa = uChrash * mask * 0.07;
+    float caa = uChrash * mask * 0.14;
     float origR = color.r;
     float origG = color.g;
     float origB = color.b;
@@ -850,11 +867,13 @@ void main() {
     color.rgb = mix(color.rgb, vec3(shiftR, shiftG, shiftB), clamp(uChrash * mask, 0.0, 1.0));
   }
   // 8. Feedback tunnel (zoom+rotate prev-frame loop)
+  // v1.3.46 — phone bump: per-frame angle 0.06→0.11 + zoom 0.04→0.08 so FEEDBACK at max
+  // produces a real spinning vortex tunnel inside one frame, not a slow drift over seconds.
   if (uFeedback * mask > 0.001) {
     vec2 center = vec2(0.5);
     vec2 d = uv - center;
-    float angle = uFeedback * mask * 0.06;
-    float zm = 1.0 - uFeedback * mask * 0.04;
+    float angle = uFeedback * mask * 0.11;
+    float zm = 1.0 - uFeedback * mask * 0.08;
     float cs = cos(angle), sn = sin(angle);
     vec2 rotated = vec2(d.x * cs - d.y * sn, d.x * sn + d.y * cs);
     vec2 fbUv = clamp(center + rotated * zm, 0.001, 0.999);
@@ -863,11 +882,13 @@ void main() {
     color.rgb = mix(color.rgb, fbColor * vec3(0.97, 0.98, 1.02), clamp(uFeedback * mask, 0.0, 1.0));
   }
   // 9. Contour lines (iso-luminance neon overlay)
+  // v1.3.46 — phone bump: edge width 0.12→0.20 so the neon contour LINES are fat
+  // enough to actually be visible on phone (was a hairline at high pixel density).
   if (uContour * mask > 0.001) {
     float l = lum(color.rgb);
     float bands = 5.0 + uContour * mask * 20.0;
     float wrapped = fract(l * bands);
-    float edge = 1.0 - smoothstep(0.0, 0.12, min(wrapped, 1.0 - wrapped));
+    float edge = 1.0 - smoothstep(0.0, 0.20, min(wrapped, 1.0 - wrapped));
     vec3 lineColor = hsl2rgb(l * 0.6 + uTime * 0.03, 1.0, 0.6);
     // v1.3.35 — pure pixel-level chain.
     color.rgb = mix(color.rgb, lineColor, clamp(edge * uContour * mask, 0.0, 1.0));
@@ -902,12 +923,14 @@ void main() {
     color.rgb = mix(color.rgb, color.rgb * fill + cellColor * fill * 0.5, clamp(uAscii * mask, 0.0, 1.0));
   }
   // 11. Venetian blind (time-sliced horizontal band shuffle)
+  // v1.3.46 — phone bump: per-band x-shift 0.14→0.24 so VENETIAN at max knob
+  // visibly tears each blind sideways instead of nudging it.
   if (uVenetian * mask > 0.001) {
     float bandCount = 6.0 + uVenetian * mask * 18.0;
     float bandIdx = floor(uv.y * bandCount);
     float t2 = uTime * (0.8 + uVenetian * mask * 1.5);
     float phase = fract(bandIdx * 0.618 + t2 * 0.15);
-    float xShift = sin(bandIdx * 2.1 + t2) * uVenetian * mask * 0.14;
+    float xShift = sin(bandIdx * 2.1 + t2) * uVenetian * mask * 0.24;
     vec2 bandUv = clamp(vec2(uv.x + xShift, uv.y), 0.001, 0.999);
     float blend = smoothstep(0.4, 0.6, phase);
     vec3 bandColor = mix(color.rgb, texture2D(uPrevFrame, bandUv).rgb, blend);
@@ -1549,9 +1572,11 @@ void main() {
   // ── RGBNDR (analog VGA channel-bender, ohss/RGBNDR-inspired) ──────
   if (uRgbR > 0.001 || uRgbG > 0.001 || uRgbB > 0.001 || uRgbBars > 0.001 || uRgbSwap > 0.5) {
     // Per-channel oscillator-driven horizontal sample offset.
-    float oR = sin(vUv.y * 47.0 + uTime * 1.7) * uRgbR * 0.08;
-    float oG = sin(vUv.y * 73.0 + uTime * 1.1 + 1.7) * uRgbG * 0.08;
-    float oB = sin(vUv.y * 31.0 + uTime * 0.6 + 3.1) * uRgbB * 0.08;
+    // v1.3.46 — phone bump: per-channel sweep 0.08→0.14 so RGBNDR R/G/B knobs at
+    // max produce a wide ~28%% screen sweep, reading as full analog channel-bend.
+    float oR = sin(vUv.y * 47.0 + uTime * 1.7) * uRgbR * 0.14;
+    float oG = sin(vUv.y * 73.0 + uTime * 1.1 + 1.7) * uRgbG * 0.14;
+    float oB = sin(vUv.y * 31.0 + uTime * 0.6 + 3.1) * uRgbB * 0.14;
     float rCh = texture2D(uCamera, clamp(vec2(vUv.x + oR, vUv.y), 0.0, 1.0)).r;
     float gCh = texture2D(uCamera, clamp(vec2(vUv.x + oG, vUv.y), 0.0, 1.0)).g;
     float bCh = texture2D(uCamera, clamp(vec2(vUv.x + oB, vUv.y), 0.0, 1.0)).b;
@@ -1597,9 +1622,12 @@ void main() {
     float row = floor(vUv.y * uResolution.y);
     float seed = floor(uTime * (3.0 + uHSync * 12.0));
     float roll = rand(vec2(row * 0.013, seed * 0.071));
-    float thresh = 1.0 - clamp(uHSync, 0.0, 1.0) * 0.45;
+    // v1.3.46 — phone bump: row-eligibility threshold 0.45→0.70 so at max H-SYNC
+    // the majority of scanlines participate in the slip (was ~45%% of rows). Jump
+    // amplitude 0.5→0.8 so each slipped row tears further — full broken-VHS look.
+    float thresh = 1.0 - clamp(uHSync, 0.0, 1.0) * 0.70;
     if (roll > thresh) {
-      float jump = (rand(vec2(row * 0.029, seed * 0.041)) - 0.5) * uHSync * 0.5;
+      float jump = (rand(vec2(row * 0.029, seed * 0.041)) - 0.5) * uHSync * 0.8;
       vec2 sUv = clamp(vec2(vUv.x + jump, vUv.y), 0.0, 1.0);
       vec3 slipped = texture2D(uCamera, sUv).rgb;
       post = mix(post, slipped, clamp(uHSync * 1.2, 0.0, 1.0));
