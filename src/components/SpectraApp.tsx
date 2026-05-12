@@ -3417,6 +3417,35 @@ export default function SpectraAfter() {
   const [lowPowerOn, setLowPowerOn] = useState(false);
   const lowPowerRef = useRef(false);
   useEffect(() => { lowPowerRef.current = lowPowerOn; }, [lowPowerOn]);
+  // v1.3.43 — 4 MACRO KNOBS (INTENSITY / MOTION / COLOR / BREAK).
+  // Default 1.0 = pass-through (existing v1.3.42 behavior). Range [0, 1.5]:
+  // 0 kills the family, 1 = user values as-set, 1.5 = +50% boost (clamped
+  // shader-side by the existing universal mask). These are MULTIPLIERS
+  // applied at uniform-bind time only; per-knob state is never mutated,
+  // so the existing fine-grained sliders keep their feel and the macros
+  // act as a fast "global mix" pre-amp. Each macro sweeps a coherent
+  // family of uniforms in lockstep:
+  //   INTENSITY -> structured FX amount  (sortMix, datamosh, glyph,
+  //                 react/voro, all 10 radial warps, liquid, ...)
+  //   MOTION    -> temporal animation    (sortWobble, moshMotion,
+  //                 moshBleed, moshIFrame)
+  //   COLOR     -> palette aggressiveness (sat/contrast/brightness lerp
+  //                 from neutral 1.0 toward user value, hueShift scale)
+  //   BREAK     -> chaos / corruption    (chrash, feedback, blockGlitch,
+  //                 moshDistort, scanTear, sortRandom, disrupt, RGB
+  //                 drift, rupture, hsync, moshMap)
+  const [intensityMacro, setIntensityMacro] = useState(1.0);
+  const [motionMacro,    setMotionMacro]    = useState(1.0);
+  const [colorMacro,     setColorMacro]     = useState(1.0);
+  const [breakMacro,     setBreakMacro]     = useState(1.0);
+  const intensityMacroRef = useRef(1.0);
+  const motionMacroRef    = useRef(1.0);
+  const colorMacroRef     = useRef(1.0);
+  const breakMacroRef     = useRef(1.0);
+  useEffect(() => { intensityMacroRef.current = intensityMacro; }, [intensityMacro]);
+  useEffect(() => { motionMacroRef.current    = motionMacro;    }, [motionMacro]);
+  useEffect(() => { colorMacroRef.current     = colorMacro;     }, [colorMacro]);
+  useEffect(() => { breakMacroRef.current     = breakMacro;     }, [breakMacro]);
   // v1.2.55 — BATTERY-AWARE auto low-power. Independent of the manual
   // LOW POWER toggle so we don't overwrite the user's preference. Both
   // flags now feed the same fxQuality clamp inside the governor.
@@ -6482,11 +6511,22 @@ export default function SpectraAfter() {
     setF1(u.uABass, audioBassRef.current || 0.0);
     setF1(u.uATreb, audioTrebleRef.current || 0.0);
     setF1(u.uABeat, audioBeatRef.current || 0.0);
-    setF1(u.uBrightness, brightnessRef.current);
-    setF1(u.uContrast, contrastRef.current);
-    setF1(u.uSaturation, saturationRef.current);
-    setF1(u.uHueShift, hueShiftRef.current);
-    setF1(u.uScanlines, scanlinesRef.current);
+    // v1.3.43 — macro multipliers, resolved once per frame.
+    // mI/mM/mC/mB pass through user-set per-knob values when all 4 dials
+    // sit at 1.0 (the defaults), so behavior is byte-identical to v1.3.42
+    // until the user touches a macro. COLOR uses a lerp from neutral 1.0
+    // toward the user value because brightness/contrast/saturation are
+    // multiplicative neutrals at 1.0 (NOT 0). Everything else is a flat
+    // multiplier because those knobs are additive neutrals at 0.
+    const _mI = intensityMacroRef.current;
+    const _mM = motionMacroRef.current;
+    const _mC = colorMacroRef.current;
+    const _mB = breakMacroRef.current;
+    setF1(u.uBrightness, 1 + (brightnessRef.current - 1) * _mC);
+    setF1(u.uContrast,   1 + (contrastRef.current   - 1) * _mC);
+    setF1(u.uSaturation, 1 + (saturationRef.current - 1) * _mC);
+    setF1(u.uHueShift,   hueShiftRef.current * _mC);
+    setF1(u.uScanlines, scanlinesRef.current * _mB);
     setF1(u.uZoom, zoomRef.current);
     // v1.2.53 — universal audio reactivity for the two camera-source FX
     // racks (PIXEL SORT + DATAMOSH). Generator already has a deep audio
@@ -6509,9 +6549,9 @@ export default function SpectraAfter() {
     // nothing. Now REALSORT only controls the CPU Asendorf cross-fade
     // (uSortMix); AMOUNT directly drives the shader sort uniform so each
     // sub-knob produces a visible, independent change.
-    setF1(u.uSortAmt, _sortAudio);
-    setF1(u.uScanTear, scanTearRef.current);
-    setF1(u.uBlockGlitch, blockGlitchRef.current);
+    setF1(u.uSortAmt, _sortAudio * _mI);
+    setF1(u.uScanTear, scanTearRef.current * _mB);
+    setF1(u.uBlockGlitch, blockGlitchRef.current * _mB);
     // Datamosh INTENS slider is 0..2. v1.3.37 — the MOSH HARD toggle is
     // gone; hardness now derives smoothly from slider position so cranking
     // the knob naturally enters the old HARD territory. Below the
@@ -6527,29 +6567,29 @@ export default function SpectraAfter() {
     // mic stream even when the slider is partway down. Capped at the
     // HARD ceiling so we don't push past what the shader was tuned for.
     dmMapped = Math.min(5.5, dmMapped * (1 + _aGate * 0.55) + _aGate * 0.22);
-    setF1(u.uDatamosh, dmMapped);
-    setF1(u.uChrash, chrashRef.current);
-    setF1(u.uLiquid, liquidRef.current);
+    setF1(u.uDatamosh, dmMapped * _mI);
+    setF1(u.uChrash, chrashRef.current * _mB);
+    setF1(u.uLiquid, liquidRef.current * _mI);
     // v1.2.58 — Asendorf / Gysin homage rack uniform writes (v1.2.59: streak/hilbert removed)
-    setF1(u.uGlyph, glyphRef.current);
-    setF1(u.uSortMix, sortMixRef.current);
-    setF1(u.uReact, reactDRef.current);
-    setF1(u.uVoroSort, voroSortRef.current);
-    setF1(u.uFeedback, feedbackRef.current);
-    setF1(u.uContour, contourRef.current);
-    setF1(u.uAscii, asciiRef.current);
-    setF1(u.uVenetian, venetianRef.current);
-    setF1(u.uKaleido, kaleidoRef.current);
-    setF1(u.uTile, tileRef.current);
-    setF1(u.uInvert, invertSymRef.current);
-    setF1(u.uDroste, drosteRef.current);
-    setF1(u.uSpiral, spiralRef.current);
-    setF1(u.uYantra, yantraRef.current);
-    setF1(u.uMandala, mandalaRef.current);
-    setF1(u.uRosette, rosetteRef.current);
-    setF1(u.uStarfold, starfoldRef.current);
-    setF1(u.uHexfold, hexfoldRef.current);
-    setF1(u.uDisrupt, disruptRef.current);
+    setF1(u.uGlyph, glyphRef.current * _mI);
+    setF1(u.uSortMix, sortMixRef.current * _mI);
+    setF1(u.uReact, reactDRef.current * _mI);
+    setF1(u.uVoroSort, voroSortRef.current * _mI);
+    setF1(u.uFeedback, feedbackRef.current * _mB);
+    setF1(u.uContour, contourRef.current * _mI);
+    setF1(u.uAscii, asciiRef.current * _mI);
+    setF1(u.uVenetian, venetianRef.current * _mI);
+    setF1(u.uKaleido, kaleidoRef.current * _mI);
+    setF1(u.uTile, tileRef.current * _mI);
+    setF1(u.uInvert, invertSymRef.current * _mI);
+    setF1(u.uDroste, drosteRef.current * _mI);
+    setF1(u.uSpiral, spiralRef.current * _mI);
+    setF1(u.uYantra, yantraRef.current * _mI);
+    setF1(u.uMandala, mandalaRef.current * _mI);
+    setF1(u.uRosette, rosetteRef.current * _mI);
+    setF1(u.uStarfold, starfoldRef.current * _mI);
+    setF1(u.uHexfold, hexfoldRef.current * _mI);
+    setF1(u.uDisrupt, disruptRef.current * _mB);
     setF1(u.uDisruptCount, disruptCountRef.current);
     setF1(u.uDisruptSize, disruptSizeRef.current);
     setF1(u.uDisruptContrary, disruptContraryRef.current);
@@ -6559,22 +6599,22 @@ export default function SpectraAfter() {
     setF1(u.uSortHigh, sortHighRef.current);
     setF1(u.uSortMode, sortModeRef.current);
     setF1(u.uSortSegment, sortSegmentRef.current);
-    setF1(u.uSortRandom, sortRandomRef.current);
-    setF1(u.uSortWobble, sortWobbleRef.current);
+    setF1(u.uSortRandom, sortRandomRef.current * _mB);
+    setF1(u.uSortWobble, sortWobbleRef.current * _mM);
     setF1(u.uSortInterval, sortIntervalRef.current);
     setF1(u.uSortAngle, sortAngleRef.current);
-    setF1(u.uRgbR, rgbRRef.current);
-    setF1(u.uRgbG, rgbGRef.current);
-    setF1(u.uRgbB, rgbBRef.current);
-    setF1(u.uRgbBars, rgbBarsRef.current);
-    setF1(u.uRgbSwap, rgbSwapRef.current);
-    setF1(u.uRupture, ruptureRef.current);
-    setF1(u.uHSync, hsyncRef.current);
-    setF1(u.uMoshIFrame, moshIFrameRef.current);
-    setF1(u.uMoshMotion, moshMotionRef.current);
-    setF1(u.uMoshBleed, moshBleedRef.current);
-    setF1(u.uMoshMap, moshMapRef.current);
-    setF1(u.uMoshDistort, moshDistortRef.current);
+    setF1(u.uRgbR, rgbRRef.current * _mB);
+    setF1(u.uRgbG, rgbGRef.current * _mB);
+    setF1(u.uRgbB, rgbBRef.current * _mB);
+    setF1(u.uRgbBars, rgbBarsRef.current * _mB);
+    setF1(u.uRgbSwap, rgbSwapRef.current * _mB);
+    setF1(u.uRupture, ruptureRef.current * _mB);
+    setF1(u.uHSync, hsyncRef.current * _mB);
+    setF1(u.uMoshIFrame, moshIFrameRef.current * _mM);
+    setF1(u.uMoshMotion, moshMotionRef.current * _mM);
+    setF1(u.uMoshBleed, moshBleedRef.current * _mM);
+    setF1(u.uMoshMap, moshMapRef.current * _mB);
+    setF1(u.uMoshDistort, moshDistortRef.current * _mB);
     // Face FX universal mask uniforms (driven by faceFxMode + segmentation loop).
     setF1(u.uFaceActive, faceFxRef.current.active ? 1.0 : 0.0);
     setF1(u.uFaceTexValid, faceFxRef.current.texValid ? 1.0 : 0.0);
@@ -7348,6 +7388,11 @@ export default function SpectraAfter() {
     setAudioActive(false);
     // ── Low-power off so reset = vanilla performance baseline
     setLowPowerOn(false);
+    // ── v1.3.43: macros back to 1.0 (pass-through)
+    setIntensityMacro(1.0);
+    setMotionMacro(1.0);
+    setColorMacro(1.0);
+    setBreakMacro(1.0);
 
     setParamsByMode(defaultsForAllModes());
     setSourceMode("camera");
@@ -11037,6 +11082,49 @@ export default function SpectraAfter() {
                 <button className="sp-tile" onClick={saveProject} style={{ ...modeBtnStyle, flex: 1, fontSize: 10 }}>SAVE PROJECT</button>
                 <button className="sp-tile" onClick={() => projectFileInputRef.current?.click()} style={{ ...modeBtnStyle, flex: 1, fontSize: 10 }}>LOAD PROJECT</button>
               </div>
+
+              {/* ── v1.3.43 MACROS row (4 global FX dials) ────────── */}
+              <div style={{ height: 4 }}/>
+              <div style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase",
+              }}>
+                <span>Macros · Global FX Mix</span>
+                <button
+                  onClick={() => { setIntensityMacro(1.0); setMotionMacro(1.0); setColorMacro(1.0); setBreakMacro(1.0); }}
+                  title="Reset all 4 macros to 1.0 (pass-through)"
+                  style={{
+                    background: "transparent", border: "1px solid rgba(231,174,255,0.25)",
+                    color: "rgba(231,174,255,0.7)", borderRadius: 4, padding: "1px 6px",
+                    fontSize: 8, letterSpacing: "1px", cursor: "pointer", textTransform: "uppercase",
+                  }}
+                >reset</button>
+              </div>
+              {([
+                { label: "INT", v: intensityMacro, set: setIntensityMacro, hint: "Intensity: structured FX amount (sort, mosh, glyph, react, radial warps, liquid)" },
+                { label: "MOT", v: motionMacro,    set: setMotionMacro,    hint: "Motion: temporal animation (sort wobble, mosh motion / bleed / I-frame)" },
+                { label: "COL", v: colorMacro,     set: setColorMacro,     hint: "Color: palette aggressiveness (sat / contrast / brightness lerp from neutral, hue shift scale)" },
+                { label: "BRK", v: breakMacro,     set: setBreakMacro,     hint: "Break: chaos / corruption (chrash, feedback, block glitch, mosh distort, scan tear, sort random, disrupt, RGB drift)" },
+              ] as const).map(({ label, v, set, hint }) => (
+                <div key={label} title={hint} style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                  <div style={{
+                    width: 32, fontSize: 10, letterSpacing: "1.5px",
+                    color: Math.abs(v - 1.0) < 0.005 ? "rgba(231,174,255,0.55)" : "rgba(232,160,32,0.95)",
+                    fontWeight: 600,
+                  }}>{label}</div>
+                  <input
+                    type="range" min={0} max={1.5} step={0.01} value={v}
+                    onChange={(e) => set(parseFloat(e.target.value))}
+                    onDoubleClick={() => set(1.0)}
+                    style={{ flex: 1, background: "linear-gradient(to right, #1A0329, #B014F0 66%, #C840FF)" }}
+                  />
+                  <div style={{
+                    width: 36, textAlign: "right", fontSize: 10,
+                    color: Math.abs(v - 1.0) < 0.005 ? "rgba(231,174,255,0.55)" : "rgba(232,160,32,0.95)",
+                    fontVariantNumeric: "tabular-nums",
+                  }}>{v.toFixed(2)}</div>
+                </div>
+              ))}
 
               {/* ── PERFORMANCE / TIER row */}
               <div style={{ height: 4 }}/>
