@@ -3292,19 +3292,16 @@ export default function SpectraAfter() {
 
   // ── Upload source (image / gif / short video) — feeds the same texture path
   type SourceMode = "camera" | "upload" | "generator";
-  // Boot policy: start in CAMERA mode so the live image is the default canvas.
-  // v1.2.82 — default sourceMode = "generator" so first launch lands
-  // in GEN+CAM (the auto-start-camera effect below fires because
-  // faceFxMode defaults to "BG", which kicks the segmenter and the
-  // person-over-source composite). User opens the app and immediately
-  // sees the procedural FX wrapping their selfie.
-  const [sourceMode, setSourceMode] = useState<SourceMode>("generator");
+  // v1.3.47 — boot in CAMERA mode with all FX nulled and generator layers
+  // disabled. Pixel-sorter is the lightest GPU rack to leave armed-but-idle
+  // (knobs at 0 means no work in the shader). Generator is OFF until the
+  // user enables a layer or dials MIX up — that path is now a true per-pixel
+  // hash mosaic, not a translucent overlay.
+  const [sourceMode, setSourceMode] = useState<SourceMode>("camera");
   const [uploadName, setUploadName] = useState<string | null>(null);
   const [uploadKind, setUploadKind] = useState<"image" | "video" | null>(null);
-  // v1.2.98 — ref default must match state default. Was "camera", which
-  // caused the very first render() to take the camera branch (and skip
-  // the GEN+CAM composite) before the sync useEffect could catch up.
-  const sourceModeRef = useRef<SourceMode>("generator");
+  // v1.3.47 — ref default tracks state default (now "camera").
+  const sourceModeRef = useRef<SourceMode>("camera");
   const uploadImgRef = useRef<HTMLImageElement | null>(null);
   const uploadVideoRef = useRef<HTMLVideoElement | null>(null);
   const uploadObjectUrlRef = useRef<string | null>(null);
@@ -3594,10 +3591,13 @@ export default function SpectraAfter() {
   // v1.2.83: default to FACE so FX wrap the SUBJECT (foreground person)
   // — the user wanted to see procedural FX painting THEIR body, not the
   // wall behind them. Background segmentation hid the effect.
-  const [faceFxMode, setFaceFxMode] = useState<FaceFxMode>("FACE");
+  // v1.3.47 — segmenter OFF at boot for lightest cold-start (no MediaPipe
+  // load, no segmenter loop). User can enable FACE/BG from the GEN OVERLAY
+  // tiles when they want the person-over-source composite.
+  const [faceFxMode, setFaceFxMode] = useState<FaceFxMode>("OFF");
   // v1.2.53 — ref mirror so the camera-acquire path can re-check the
   // user's current intent after each await without re-binding the closure.
-  const faceFxModeRef = useRef<FaceFxMode>("FACE");
+  const faceFxModeRef = useRef<FaceFxMode>("OFF");
   useEffect(() => { faceFxModeRef.current = faceFxMode; }, [faceFxMode]);
   const [faceFxToast, setFaceFxToast] = useState<string | null>(null);
   // v1.3.7 — explicit re-arm counter. Lets GEN OVERLAY tiles force a
@@ -4113,8 +4113,10 @@ export default function SpectraAfter() {
     moshX: 0, moshY: 0, scatter: 0, scatterMode: 0,
     glyphMode: 0,
   });
+  // v1.3.47 — all four generator layers disabled at boot. Generator is no
+  // longer rendering on cold launch; user enables a layer or dials MIX > 0.
   const [genLayers, setGenLayers] = useState<GenLayer[]>([
-    { ...makeLayerDefaults("BAYER", 7),  enabled: true  },
+    { ...makeLayerDefaults("BAYER", 7),  enabled: false },
     { ...makeLayerDefaults("PLIFE", 23), enabled: false },
     { ...makeLayerDefaults("RINGS", 41), enabled: false },
     { ...makeLayerDefaults("WAVES", 89), enabled: false },
@@ -4129,6 +4131,11 @@ export default function SpectraAfter() {
   const genLayerCanvasesRef = useRef<HTMLCanvasElement[]>([]);
   const genCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const genCompositeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  // v1.3.47 — per-pixel hash mosaic for GEN MIX over CAM. mask is a fixed
+  // Uint8Array of [0..255] thresholds, generated once per resize. Pixels with
+  // mask[i] < MIX*255 take the gen value; the rest stay cam. No alpha blend.
+  const genHashMaskRef = useRef<Uint8Array | null>(null);
+  const genHashScratchRef = useRef<HTMLCanvasElement | null>(null);
   // v1.2.51 — person-on-source composite canvases. faceComposeCanvasRef
   // is the final RGBA frame uploaded to WebGL (gen/upload as background +
   // camera-person on top); faceComposePersonRef is a scratch canvas used
@@ -4213,12 +4220,14 @@ export default function SpectraAfter() {
   // v1.2.74 — 0 BLOB, 1 RING, 2 HEX, 3 CROSS, 4 STRIPE, 5 SPIRAL
   const [disruptShape, setDisruptShape] = useState(0);
   const [sortKey, setSortKey] = useState(0);
-  const [sortLow, setSortLow] = useState(0.35);
-  const [sortHigh, setSortHigh] = useState(0.92);
+  // v1.3.47 — all PIXEL SORT knobs null at boot (HIGH=1.0 = full passthrough
+  // band so the moment user dials AMOUNT up the sort sees the full luma range).
+  const [sortLow, setSortLow] = useState(0.0);
+  const [sortHigh, setSortHigh] = useState(1.0);
   const [sortMode, setSortMode] = useState(0); // 0 LINE, 1 SPIRAL, 2 BLOCK, 3 SLICE, 4 HILBERT
-  const [sortSegment, setSortSegment] = useState(0.35);
-  const [sortRandom, setSortRandom] = useState(0.18);
-  const [sortWobble, setSortWobble] = useState(0.12);
+  const [sortSegment, setSortSegment] = useState(0.0);
+  const [sortRandom, setSortRandom] = useState(0.0);
+  const [sortWobble, setSortWobble] = useState(0.0);
   // satyarth/Akascape pixelsort-style extensions
   const [sortInterval, setSortInterval] = useState(0); // 0 BAND,1 BRIGHT,2 DARK,3 RAND,4 WAVE,5 EDGE,6 NONE
   const [sortAngle, setSortAngle] = useState(0);       // 0 HORZ,1 VERT,2 DIAG↗,3 DIAG↘
@@ -4233,11 +4242,15 @@ export default function SpectraAfter() {
   // HSYNC is a per-row tear-and-shift slip emulation.
   const [rupture, setRupture] = useState(0);
   const [hsync, setHsync] = useState(0);
-  const [moshIFrame, setMoshIFrame] = useState(0.7);
-  const [moshMotion, setMoshMotion] = useState(0.55);
-  const [moshBleed, setMoshBleed] = useState(0.45);
+  // v1.3.47 — all DATAMOSH knobs null at boot. moshBleed + moshDistort are
+  // no longer user-facing knobs; they're driven by the new FAMILY selector
+  // (SOFT/HARD/SLICE/SMEAR/CHAOS/GLITCH). State kept for preset round-trip.
+  const [moshIFrame, setMoshIFrame] = useState(0.0);
+  const [moshMotion, setMoshMotion] = useState(0.0);
+  const [moshBleed, setMoshBleed] = useState(0.0);
   const [moshMap, setMoshMap] = useState(0.0);
-  const [moshDistort, setMoshDistort] = useState(0.5);
+  const [moshDistort, setMoshDistort] = useState(0.0);
+  const [moshFamily, setMoshFamily] = useState(0); // 0 SOFT,1 HARD,2 SLICE,3 SMEAR,4 CHAOS,5 GLITCH
 
   // ── Draw overlay
   const [drawActive, setDrawActive] = useState(false);
@@ -6284,16 +6297,54 @@ export default function SpectraAfter() {
           let cc = genCompositeCanvasRef.current;
           if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
           const cw = video.videoWidth, ch = video.videoHeight;
-          if (cc.width !== cw || cc.height !== ch) { cc.width = cw; cc.height = ch; }
+          if (cc.width !== cw || cc.height !== ch) {
+            cc.width = cw; cc.height = ch;
+            // Resize invalidates the cached hash mask.
+            genHashMaskRef.current = null;
+          }
           const cctx = cc.getContext("2d");
           if (cctx) {
+            const mix = Math.max(0, Math.min(1, genMixRef.current));
             cctx.globalCompositeOperation = "source-over";
             cctx.globalAlpha = 1;
             cctx.clearRect(0, 0, cw, ch);
             cctx.drawImage(video, 0, 0, cw, ch);
-            cctx.globalAlpha = Math.max(0, Math.min(1, genMixRef.current));
-            cctx.drawImage(gc, 0, 0, cw, ch);
-            cctx.globalAlpha = 1;
+            if (mix > 0.001) {
+              // v1.3.47 — TRUE PER-PIXEL MOSAIC. Each output pixel comes 100%
+              // from EITHER cam OR gen, chosen by a fixed per-pixel hash
+              // threshold. No alpha translucency, no "ghost overlay" feel.
+              // density = MIX. Cached mask regenerates only on resize.
+              const npx = cw * ch;
+              let mask = genHashMaskRef.current;
+              if (!mask || mask.length !== npx) {
+                mask = new Uint8Array(npx);
+                for (let i = 0; i < npx; i++) mask[i] = (Math.random() * 256) | 0;
+                genHashMaskRef.current = mask;
+              }
+              let scratch = genHashScratchRef.current;
+              if (!scratch) { scratch = document.createElement("canvas"); genHashScratchRef.current = scratch; }
+              if (scratch.width !== cw || scratch.height !== ch) { scratch.width = cw; scratch.height = ch; }
+              const sctx = scratch.getContext("2d");
+              if (sctx) {
+                sctx.globalCompositeOperation = "source-over";
+                sctx.globalAlpha = 1;
+                sctx.clearRect(0, 0, cw, ch);
+                sctx.drawImage(gc, 0, 0, cw, ch);
+                const camData = cctx.getImageData(0, 0, cw, ch);
+                const genData = sctx.getImageData(0, 0, cw, ch);
+                const cd = camData.data, gd = genData.data;
+                const thresh = (mix * 256) | 0;
+                for (let i = 0, p = 0; i < npx; i++, p += 4) {
+                  if (mask[i] < thresh) {
+                    cd[p]     = gd[p];
+                    cd[p + 1] = gd[p + 1];
+                    cd[p + 2] = gd[p + 2];
+                    // alpha left as-is (cam alpha is opaque)
+                  }
+                }
+                cctx.putImageData(camData, 0, 0);
+              }
+            }
             texSource = cc; srcW = cw; srcH = ch;
           } else {
             texSource = video; srcW = cw; srcH = ch;
@@ -10233,7 +10284,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.29 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.47 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
@@ -10483,11 +10534,11 @@ export default function SpectraAfter() {
                   uniform, so each sub-knob produces a visible, independent
                   change without needing REALSORT lifted at all. */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
-                <Knob label="AMOUNT"  value={sortAmt}      min={0} max={1}    step={0.01} defaultValue={0.5}  onChange={setSortAmt}/>
+                <Knob label="AMOUNT"  value={sortAmt}      min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortAmt}/>
                 <Knob label="LOW"     value={sortLow}      min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortLow}/>
                 <Knob label="HIGH"    value={sortHigh}     min={0} max={1}    step={0.01} defaultValue={1.0}  onChange={setSortHigh}/>
-                <Knob label="SEGMENT" value={sortSegment}  min={0} max={1}    step={0.01} defaultValue={0.5}  onChange={setSortSegment}/>
-                <Knob label="NOISE"   value={sortRandom}   min={0} max={1}    step={0.01} defaultValue={0.2}  onChange={setSortRandom}/>
+                <Knob label="SEGMENT" value={sortSegment}  min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortSegment}/>
+                <Knob label="NOISE"   value={sortRandom}   min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortRandom}/>
                 <Knob label="WOBBLE"  value={sortWobble}   min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortWobble}/>
                 <Knob label="TEAR"    value={scanTear}     min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setScanTear}/>
               </div>
@@ -10502,12 +10553,14 @@ export default function SpectraAfter() {
                 <button
                   className="sp-btn"
                   onClick={() => {
-                    setSortAmt(0.5); setSortLow(0.0); setSortHigh(1.0); setSortSegment(0.5);
-                    setSortRandom(0.2); setSortWobble(0.0); setScanTear(0.0);
+                    // v1.3.47 — true null reset. AMOUNT=0 means no work; LOW/HIGH
+                    // bracket the full luma range so any subsequent dial-up is visible.
+                    setSortAmt(0.0); setSortLow(0.0); setSortHigh(1.0); setSortSegment(0.0);
+                    setSortRandom(0.0); setSortWobble(0.0); setScanTear(0.0);
                     setSortMode(0); setSortInterval(0); setSortAngle(0);
                   }}
                   style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
-                  title="Reset every PIXEL SORT control to default"
+                  title="Reset every PIXEL SORT control to null"
                 >HARD RESET</button>
               </div>
             </SynthPanel>
@@ -10518,29 +10571,55 @@ export default function SpectraAfter() {
                 shader uniforms remain so saved presets still load. */}
 
             {/* ── DATAMOSH RACK ─────────────────────────────────────────── */}
-            <SynthPanel title="DATAMOSH" subtitle="MOSH · 12 CTRL" accent="rgba(231,174,255,0.95)">
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
+            {/* v1.3.47 — BLEED + COMPRES knobs replaced by the FAMILY selector.
+                FAMILY shapes the character of INTENS by driving moshBleed +
+                moshDistort uniforms to fixed values per family. State for the
+                old knobs is kept for preset round-trip but no longer surfaced. */}
+            <SynthPanel title="DATAMOSH" subtitle="MOSH · 9 CTRL" accent="rgba(231,174,255,0.95)">
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
                 <Knob label="INTENS"   value={datamosh}     min={0} max={2}  step={0.01} defaultValue={0.0}  onChange={setDatamosh}/>
                 <Knob label="I-FRAME"  value={moshIFrame}   min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setMoshIFrame}/>
                 <Knob label="MOTION"   value={moshMotion}   min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setMoshMotion}/>
-                <Knob label="BLEED"    value={moshBleed}    min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setMoshBleed}/>
                 <Knob label="MAP"      value={moshMap}      min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setMoshMap}/>
-                <Knob label="COMPRES"  value={moshDistort}  min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setMoshDistort}/>
                 <Knob label="CHRASH"   value={chrash}       min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setChrash}/>
                 <Knob label="FEEDBK"   value={feedback}     min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setFeedback}/>
                 <Knob label="BLOCK"    value={blockGlitch}  min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setBlockGlitch}/>
                 <Knob label="LIQUID"   value={liquid}       min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setLiquid}/>
               </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
+                <SynthSelector
+                  label="FAMILY"
+                  options={["SOFT","HARD","SLICE","SMEAR","CHAOS","GLITCH"]}
+                  value={moshFamily}
+                  onChange={(v) => {
+                    // v1.3.47 — family character matrix [bleed, distort].
+                    const fv = ([
+                      [0.20, 0.10], // SOFT  — gentle smear, low compression
+                      [0.55, 0.40], // HARD  — solid mosh body
+                      [0.10, 0.75], // SLICE — clean compression slabs
+                      [0.85, 0.15], // SMEAR — long bleed, soft compress
+                      [0.60, 0.60], // CHAOS — equal parts both
+                      [0.35, 0.90], // GLITCH — heavy compression, sharp bleed
+                    ][v]) || [0, 0];
+                    setMoshFamily(v);
+                    setMoshBleed(fv[0]);
+                    setMoshDistort(fv[1]);
+                  }}
+                />
+              </div>
               <div style={{ display: "flex", justifyContent: "center", marginTop: 10 }}>
                 <button
                   className="sp-btn"
                   onClick={() => {
+                    // v1.3.47 — true null reset. FAMILY back to SOFT but bleed/distort
+                    // forced to 0 so nothing is active until INTENS is dialed up.
                     setDatamosh(0.0); setMoshIFrame(0.0); setMoshMotion(0.0); setMoshBleed(0.0);
                     setMoshMap(0.0); setMoshDistort(0.0); setChrash(0.0);
                     setFeedback(0.0); setBlockGlitch(0.0); setLiquid(0.0); setMoshHard(false);
+                    setMoshFamily(0);
                   }}
                   style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
-                  title="Reset every DATAMOSH control to default"
+                  title="Reset every DATAMOSH control to null"
                 >HARD RESET</button>
               </div>
             </SynthPanel>
