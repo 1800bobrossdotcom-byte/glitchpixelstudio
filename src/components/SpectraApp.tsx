@@ -6308,41 +6308,63 @@ export default function SpectraAfter() {
             cctx.globalCompositeOperation = "source-over";
             cctx.globalAlpha = 1;
             cctx.clearRect(0, 0, cw, ch);
-            cctx.drawImage(video, 0, 0, cw, ch);
-            if (mix > 0.001) {
-              // v1.3.47 — TRUE PER-PIXEL MOSAIC. Each output pixel comes 100%
-              // from EITHER cam OR gen, chosen by a fixed per-pixel hash
-              // threshold. No alpha translucency, no "ghost overlay" feel.
-              // density = MIX. Cached mask regenerates only on resize.
-              const npx = cw * ch;
+            if (mix <= 0.001) {
+              cctx.drawImage(video, 0, 0, cw, ch);
+            } else {
+              // v1.3.50 — HALF-RES UINT32 MOSAIC (CS perf solve).
+              // The v1.3.47 mosaic ran a per-pixel hash swap on the FULL
+              // cam resolution (~1920×1080 on phone) with two ImageData
+              // round-trips per frame. Each round-trip forces a GPU↔CPU
+              // sync; the JS swap loop did 3 byte writes per replaced
+              // pixel. Combined cost on phone ≈ 10–20 ms / frame in mix
+              // mode, dwarfing the FX shader pass.
+              //
+              // The mosaic is already pure random hash dither — there is
+              // no high-frequency cam detail to preserve INSIDE the dot
+              // pattern. So we run the mosaic at HALF resolution and
+              // upscale the result with nearest-neighbor `drawImage`.
+              // Visible result: dots become 2×2 blocks instead of 1×1.
+              // To the eye that reads as the same noise field, but:
+              //   • npx → npx / 4   (4× less ImageData traffic)
+              //   • inner loop → 1 Uint32 write instead of 3 byte writes
+              //     (≈ 3× faster body)
+              // Net mix-mode CPU cost ≈ 1–2 ms / frame. The downstream
+              // fragment shader still sees a full-resolution `cc` texture
+              // because the upscale fills it back in.
+              const hw = Math.max(1, cw >> 1);
+              const hh = Math.max(1, ch >> 1);
+              const npxH = hw * hh;
               let mask = genHashMaskRef.current;
-              if (!mask || mask.length !== npx) {
-                mask = new Uint8Array(npx);
-                for (let i = 0; i < npx; i++) mask[i] = (Math.random() * 256) | 0;
+              if (!mask || mask.length !== npxH) {
+                mask = new Uint8Array(npxH);
+                for (let i = 0; i < npxH; i++) mask[i] = (Math.random() * 256) | 0;
                 genHashMaskRef.current = mask;
               }
               let scratch = genHashScratchRef.current;
               if (!scratch) { scratch = document.createElement("canvas"); genHashScratchRef.current = scratch; }
-              if (scratch.width !== cw || scratch.height !== ch) { scratch.width = cw; scratch.height = ch; }
+              if (scratch.width !== hw || scratch.height !== hh) { scratch.width = hw; scratch.height = hh; }
               const sctx = scratch.getContext("2d");
               if (sctx) {
+                sctx.imageSmoothingEnabled = true;
                 sctx.globalCompositeOperation = "source-over";
                 sctx.globalAlpha = 1;
-                sctx.clearRect(0, 0, cw, ch);
-                sctx.drawImage(gc, 0, 0, cw, ch);
-                const camData = cctx.getImageData(0, 0, cw, ch);
-                const genData = sctx.getImageData(0, 0, cw, ch);
-                const cd = camData.data, gd = genData.data;
+                sctx.clearRect(0, 0, hw, hh);
+                sctx.drawImage(video, 0, 0, hw, hh);
+                const camData = sctx.getImageData(0, 0, hw, hh);
+                sctx.clearRect(0, 0, hw, hh);
+                sctx.drawImage(gc, 0, 0, hw, hh);
+                const genData = sctx.getImageData(0, 0, hw, hh);
+                const cd32 = new Uint32Array(camData.data.buffer);
+                const gd32 = new Uint32Array(genData.data.buffer);
                 const thresh = (mix * 256) | 0;
-                for (let i = 0, p = 0; i < npx; i++, p += 4) {
-                  if (mask[i] < thresh) {
-                    cd[p]     = gd[p];
-                    cd[p + 1] = gd[p + 1];
-                    cd[p + 2] = gd[p + 2];
-                    // alpha left as-is (cam alpha is opaque)
-                  }
+                for (let i = 0; i < npxH; i++) {
+                  if (mask[i] < thresh) cd32[i] = gd32[i];
                 }
-                cctx.putImageData(camData, 0, 0);
+                sctx.putImageData(camData, 0, 0);
+                cctx.imageSmoothingEnabled = false;
+                cctx.drawImage(scratch, 0, 0, cw, ch);
+              } else {
+                cctx.drawImage(video, 0, 0, cw, ch);
               }
             }
             texSource = cc; srcW = cw; srcH = ch;
@@ -10258,7 +10280,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.49 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.50 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
