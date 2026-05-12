@@ -3392,6 +3392,15 @@ export default function SpectraAfter() {
   const [genHueSpread, setGenHueSpread] = useState(0.35);     // palette spread (0..1)
   const [genSat, setGenSat] = useState(0.85);                 // saturation (0..1)
   const [genContrastG, setGenContrastG] = useState(0.7);      // contrast (0..1)
+  // v1.3.44 — generator MIX: alpha-blends the generator output OVER the
+  // active source feed (camera or upload) BEFORE all FX run, so the
+  // generator pixel-integrates with the camera and the rest of the FX
+  // chain (sort/mosh/glitch/warps) operates on the blended pixel signal
+  // instead of treating the generator as an island. 0 = generator
+  // contributes nothing in CAM/UPLOAD mode (legacy behaviour); 1 = full
+  // hard-light pre-blend. Default 0 keeps the existing UX byte-identical
+  // until the user dials it in.
+  const [genMix, setGenMix] = useState(0.0);
   const [genWarp, setGenWarp] = useState(0.25);               // domain warp (0..1)
   const [genJitter, setGenJitter] = useState(0.15);           // per-cell jitter (0..1)
   const [genSeed, setGenSeed] = useState(7);                  // integer seed (0..999)
@@ -4028,6 +4037,7 @@ export default function SpectraAfter() {
   const genHueSpreadRef = useRef(0.35);
   const genSatRef = useRef(0.85);
   const genContrastGRef = useRef(0.7);
+  const genMixRef = useRef(0.0); // v1.3.44
   const genWarpRef = useRef(0.25);
   const genJitterRef = useRef(0.15);
   const genSeedRef = useRef(7);
@@ -5185,6 +5195,7 @@ export default function SpectraAfter() {
   useEffect(()=>{ genHueSpreadRef.current=genHueSpread; },[genHueSpread]);
   useEffect(()=>{ genSatRef.current=genSat; },[genSat]);
   useEffect(()=>{ genContrastGRef.current=genContrastG; },[genContrastG]);
+  useEffect(()=>{ genMixRef.current=genMix; },[genMix]); // v1.3.44
   useEffect(()=>{ genWarpRef.current=genWarp; },[genWarp]);
   useEffect(()=>{ genJitterRef.current=genJitter; },[genJitter]);
   useEffect(()=>{ genSeedRef.current=genSeed; },[genSeed]);
@@ -5579,7 +5590,11 @@ export default function SpectraAfter() {
           texSource = dcc;
         }
       }
-    } else if (srcMode === "generator") {
+    } else if (srcMode === "generator" || (srcMode === "camera" && genMixRef.current > 0.001)) {
+      // v1.3.44 — also enter this branch when the user is on the camera
+      // source AND has dialed MIX above zero, so the generator evolves
+      // (it would otherwise sit frozen / empty), and at the end of this
+      // branch we override texSource with a simple cam+gen blend.
       // Lazily allocate generator canvas at output resolution.
       const targetW = canvasRef.current?.width || 720;
       const targetH = canvasRef.current?.height || 720;
@@ -6251,6 +6266,41 @@ export default function SpectraAfter() {
         }
       } else {
         texSource = gc; srcW = gc.width; srcH = gc.height;
+      }
+
+      // v1.3.44 — GEN MIX override. When srcMode is CAMERA but we
+      // entered this branch because MIX > 0, ignore the routing
+      // decisions above (they assumed srcMode === "generator") and
+      // emit a single, predictable blend: the live camera frame as
+      // the base + the generator hard-light blended on top at MIX
+      // alpha. The shader's downstream FX then operate on that
+      // mixed pixel signal — generator is no longer an island.
+      // If camera isn't ready yet, fall back to pure gc so we never
+      // emit a stale or empty texture.
+      if (srcMode === "camera") {
+        if (cameraActiveRef.current && video && video.readyState >= 2 && video.videoWidth > 0) {
+          let cc = genCompositeCanvasRef.current;
+          if (!cc) { cc = document.createElement("canvas"); genCompositeCanvasRef.current = cc; }
+          const cw = video.videoWidth, ch = video.videoHeight;
+          if (cc.width !== cw || cc.height !== ch) { cc.width = cw; cc.height = ch; }
+          const cctx = cc.getContext("2d");
+          if (cctx) {
+            cctx.globalCompositeOperation = "source-over";
+            cctx.globalAlpha = 1;
+            cctx.clearRect(0, 0, cw, ch);
+            cctx.drawImage(video, 0, 0, cw, ch);
+            cctx.globalCompositeOperation = "hard-light";
+            cctx.globalAlpha = Math.max(0, Math.min(1, genMixRef.current));
+            cctx.drawImage(gc, 0, 0, cw, ch);
+            cctx.globalCompositeOperation = "source-over";
+            cctx.globalAlpha = 1;
+            texSource = cc; srcW = cw; srcH = ch;
+          } else {
+            texSource = video; srcW = cw; srcH = ch;
+          }
+        } else {
+          texSource = gc; srcW = gc.width; srcH = gc.height;
+        }
       }
     } else if (cameraActiveRef.current && video && video.readyState >= 2) {
       texSource = video; srcW = video.videoWidth; srcH = video.videoHeight;
@@ -10424,16 +10474,14 @@ export default function SpectraAfter() {
             </SynthPanel>
 
             {/* ── PIXEL SORT RACK ───────────────────────────────────── */}
-            <SynthPanel title="PIXEL SORT" subtitle="REALSORT MASTER · 9 CTRL" accent="rgba(174,255,231,0.95)">
-              {/* v1.2.64 — REALSORT is the master amount for the entire rack.
-                  AMOUNT and the other knobs scale within its envelope, so
-                  REALSORT=0 fully bypasses everything and REALSORT=1
-                  unleashes the true CPU Asendorf sort + the shader sort
-                  combo at full strength. Lives on its own row at the top
-                  so it reads as the headline control. */}
-              <div style={{ display: "flex", justifyContent: "center", marginBottom: 10 }}>
-                <Knob label="REALSORT" value={sortMix}     min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortMix}/>
-              </div>
+            <SynthPanel title="PIXEL SORT" subtitle="SHADER SORT · 9 CTRL" accent="rgba(174,255,231,0.95)">
+              {/* v1.3.44 — REALSORT moved out of this panel (it was a
+                  duplicate of the same knob in ASENDORF / GYSIN, which is
+                  its real home as the CPU Asendorf homage cross-fade).
+                  Per v1.2.68 the shader sort knobs are already decoupled
+                  from REALSORT — AMOUNT directly drives the shader sort
+                  uniform, so each sub-knob produces a visible, independent
+                  change without needing REALSORT lifted at all. */}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
                 <Knob label="AMOUNT"  value={sortAmt}      min={0} max={1}    step={0.01} defaultValue={0.5}  onChange={setSortAmt}/>
                 <Knob label="LOW"     value={sortLow}      min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortLow}/>
@@ -10457,7 +10505,6 @@ export default function SpectraAfter() {
                     setSortAmt(0.5); setSortLow(0.0); setSortHigh(1.0); setSortSegment(0.5);
                     setSortRandom(0.2); setSortWobble(0.0); setScanTear(0.0);
                     setSortMode(0); setSortInterval(0); setSortAngle(0);
-                    setSortMix(0.0);
                   }}
                   style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
                   title="Reset every PIXEL SORT control to default"
@@ -10545,6 +10592,29 @@ export default function SpectraAfter() {
                 <span style={{ fontSize: 8, opacity: 0.6 }}>
                   {`EDITING L${selectedLayer+1}`}
                 </span>
+              </div>
+              {/* v1.3.44 — MIX: pre-FX hard-light blend of generator over the
+                  active source (camera or upload). At 0 the generator only
+                  appears when SOURCE = GEN (legacy). At >0 the generator
+                  pixel-integrates with the camera/upload feed BEFORE the
+                  shader FX run, so PIXEL SORT / DATAMOSH / WARPS act on the
+                  blended pixel signal — generator stops being an island. */}
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "auto 1fr",
+                gap: 10,
+                alignItems: "center",
+                marginBottom: 8,
+                padding: "6px 8px",
+                borderRadius: 6,
+                border: "1px solid rgba(255,210,140,0.25)",
+                background: "linear-gradient(180deg, rgba(255,210,140,0.06), rgba(0,0,0,0.0))",
+              }}>
+                <Knob label="MIX" value={genMix} min={0} max={1} step={0.01} defaultValue={0.0} onChange={setGenMix}/>
+                <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(255,210,140,0.62)", lineHeight: 1.3 }}>
+                  Blend GEN over CAM/UPLD before FX run. 0 = isolated source,
+                  &gt;0 pixel-integrates so SORT/MOSH/WARPS chew on both.
+                </div>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 4, marginBottom: 8 }}>
                 {[0,1,2,3].map((i) => {

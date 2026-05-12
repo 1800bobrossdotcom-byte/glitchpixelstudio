@@ -530,7 +530,10 @@ void main() {
     // Stride scaling: SEGMENT knob now extends sample STRIDE so 64 taps
     // can cover up to ~1024 px of the source line, not just 64. Without
     // this the sort streaks are invisible on 1080p phone screens.
-    float stride = mix(1.0, 16.0, clamp(uSortSegment, 0.0, 1.0)) * (0.6 + uSortAmt * 1.4);
+    // v1.3.44 — bumped max stride 16→24 and amount-multiplier ceiling
+    // 1.4→2.0 so SEGMENT and AMOUNT both produce a much more obvious
+    // change in streak length on the user's phone screen.
+    float stride = mix(1.0, 24.0, clamp(uSortSegment, 0.0, 1.0)) * (0.6 + uSortAmt * 2.0);
     step1 *= stride;
     // 8..64 sample run, scaled by SortAmt and Segment so dialing the
     // amount up creates LONGER streaks (not bigger displacements).
@@ -551,9 +554,11 @@ void main() {
     float pickMaxLine = step(0.5, fract(lineId * 0.5 + hash(lineId * 0.029) * 0.3));
     // Boundary modulation (AE Pixel Sorter Modulation): two-frequency sine wave
     // distorts lo/hi thresholds per scan-line → organic wavy segment edges.
+    // v1.3.44 — bumped modulation depth 0.22→0.45 so NOISE knob produces
+    // visibly wavy segment boundaries instead of a near-imperceptible drift.
     float modWave = sin(lineCoord * 28.0 + uTime * 1.4)
                   + sin(lineCoord * 47.0 + uTime * 0.9) * 0.4;
-    float modShift = modWave * uSortRandom * 0.22;
+    float modShift = modWave * uSortRandom * 0.45;
     lo = clamp(lo + modShift, 0.0, 1.0);
     hi = clamp(hi + modShift * 0.6, lo + 0.01, 1.0);
     // Small scan-start offset tied to modulation (replaces pure random jitter).
@@ -647,22 +652,24 @@ void main() {
     sortedCol = bestCol;
     // Signal phasing (AE Pixel Sorter Signal panel): luma noise, chroma
     // luma-modulation, and tape-error bands on the sorted pixels.
+    // v1.3.44 — bumped all three coefficients ~2x so WOBBLE produces
+    // an obvious VHS signal rather than a polite suggestion.
     if (uSortWobble > 0.001) {
       // Luma noise: per-frame pixel-level brightness jitter.
       float lumaJitter = (rand(uv + vec2(0.0, floor(uTime * 24.0) * 0.137)) - 0.5)
-                        * uSortWobble * 0.12;
+                        * uSortWobble * 0.24;
       sortedCol = clamp(sortedCol + lumaJitter, 0.0, 1.0);
       // Luma modulation: oscillating brightness bands (VHS luma carrier).
-      float lumaMod = sin(uv.y * 565.0 + uTime * 3.8) * uSortWobble * 0.04;
+      float lumaMod = sin(uv.y * 565.0 + uTime * 3.8) * uSortWobble * 0.10;
       sortedCol = clamp(sortedCol + lumaMod, 0.0, 1.0);
       // Tape errors: sporadic horizontal corruption bands.
       float tapeRow = floor(uv.y * uResolution.y / 5.0);
       float tapeNoise = rand(vec2(tapeRow * 0.0031, floor(uTime * 5.0) * 0.017));
-      float tapeThresh = 1.0 - uSortWobble * 0.18;
-      float tapeWeight = clamp((tapeNoise - tapeThresh) / max(uSortWobble * 0.18, 0.001), 0.0, 1.0);
-      float shiftX = tapeWeight * uSortWobble * 0.22;
+      float tapeThresh = 1.0 - uSortWobble * 0.32;
+      float tapeWeight = clamp((tapeNoise - tapeThresh) / max(uSortWobble * 0.32, 0.001), 0.0, 1.0);
+      float shiftX = tapeWeight * uSortWobble * 0.40;
       vec3 tapeSmp = texture2D(uCamera, clamp(uv + vec2(shiftX, 0.0), 0.0, 1.0)).rgb;
-      sortedCol = mix(sortedCol, tapeSmp, tapeWeight * 0.65);
+      sortedCol = mix(sortedCol, tapeSmp, tapeWeight * 0.85);
     }
     // In-band pixels are FULLY replaced with the sorted colour. uSortAmt
     // only gates whether the sort fires at all (and feeds the streak-length
