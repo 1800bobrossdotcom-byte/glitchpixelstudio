@@ -6870,49 +6870,23 @@ export default function SpectraAfter() {
     //      actually warm, firing resize() from inside render() into
     //      undersized camera textures. Cold-start grace makes that
     //      whole class of bug impossible by design.
+    // v1.3.49 — GOVERNOR REMOVED. The unified adaptive governor
+    // (v1.3.40/v1.3.42) was multiplying fxQualityRef into the universal
+    // shader mask and continuously rescaling the GL canvas. Under heavy
+    // FX it drove fxQuality below the smoothstep threshold inside the
+    // pixel-sort block (sortBlend = mask * smoothstep(0, 0.05, uSortAmt))
+    // → sort silently disappeared while renderScale resize() flashed the
+    // canvas. User: "the screen is flashing and then the pixel sorting
+    // goes away, remove the heatsinks that are doing that". fxQuality
+    // and renderScale are now pinned to 1.0 forever; only the EWMA is
+    // still tracked so the FPS readout works.
     if (lastFrameTsRef.current > 0) {
       const dt = now - lastFrameTsRef.current;
-      // EWMA: 0.92 history weight → ~half-life of ~8 frames.
       frametimeAvgRef.current = frametimeAvgRef.current * 0.92 + dt * 0.08;
-      const avg = frametimeAvgRef.current;
       bootFrameRef.current = Math.min(100000, bootFrameRef.current + 1);
-      const warm = bootFrameRef.current > 300;
-      // --- Stage 1: continuous FX quality control --------------------
-      // Target 17 ms (~58 fps).  Error normalized so 33 ms (30 fps)
-      // gives -1, i.e. one full step toward minimum quality per frame
-      // at half framerate.  Asymmetric gain — DECAY faster than RECOVER
-      // so the picture dims quickly under heat and rebuilds gently
-      // (avoids visible up-pulse when load suddenly clears).
-      if (warm) {
-        const TARGET = 17.0;
-        const err = (TARGET - avg) / TARGET;       // > 0 = headroom, < 0 = overrun
-        const stepDown = 0.015;                    // ~67 frames to floor under sustained overrun
-        const stepUp   = 0.004;                    // ~250 frames to ceiling once headroom returns
-        if (err < 0) {
-          fxQualityRef.current = Math.max(0.30, fxQualityRef.current + err * stepDown);
-        } else {
-          fxQualityRef.current = Math.min(1.00, fxQualityRef.current + err * stepUp);
-        }
-      } else {
-        // Cold start: pin to full quality regardless of jank.
-        fxQualityRef.current = 1.0;
-      }
-      // --- Stage 1b: manual LOW POWER + battery-low ceiling ---------
-      // Hard cap at 0.5 when either flag is set. Replaces the v1.3.40
-      // skip-every-other-frame branch that visibly stuttered.
-      if (lowPowerRef.current || batteryLowRef.current) {
-        if (fxQualityRef.current > 0.50) fxQualityRef.current = 0.50;
-      }
-      // --- Stage 2: continuous renderScale --------------------------
-      // Linear map Q∈[0.30,1.00] → scale∈[0.55,1.00], snapped to the
-      // nearest 0.05. resize() only fires on bucket change → typically
-      // a few times per minute under sustained load, never per frame.
-      const Q = fxQualityRef.current;
-      const desiredScale = warm
-        ? Math.round((0.55 + 0.45 * Q) * 20) / 20
-        : 1.0;
-      if (Math.abs(renderScaleRef.current - desiredScale) > 0.001) {
-        renderScaleRef.current = desiredScale;
+      fxQualityRef.current = 1.0;
+      if (renderScaleRef.current !== 1.0) {
+        renderScaleRef.current = 1.0;
         resize();
       }
     }
@@ -10284,7 +10258,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.48 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.49 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
