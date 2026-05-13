@@ -7258,12 +7258,75 @@ export default function SpectraAfter() {
       ];
       choices[Math.floor(r() * choices.length)]();
     };
+    // v1.3.69 — Structural morphs: swap whole genre of look (less often
+    // than per-FX nudges so the picture has time to read).
+    const cycleStructure = () => {
+      const choices: Array<() => void> = [
+        () => setMode(r() < 0.5 ? 7 : 9),
+        () => setGenStyle(GEN_STYLES[Math.floor(r() * GEN_STYLES.length)] as GenStyle),
+        () => setGenScatterMode(Math.floor(r() * 4)),
+        () => setGenGlyphMode(Math.floor(r() * 6)),
+        () => setComboMode(r() < 0.5),
+        () => setGenInvert(r() < 0.35),
+      ];
+      choices[Math.floor(r() * choices.length)]();
+    };
+    // v1.3.69 — Distortion bank cycler.
+    const cycleDistortion = () => {
+      const choices: Array<() => void> = [
+        () => setKaleido(tinyRoll(0.45)),
+        () => setMandala(tinyRoll(0.4)),
+        () => setYantra(tinyRoll(0.4)),
+        () => setRosette(tinyRoll(0.4)),
+        () => setStarfold(tinyRoll(0.4)),
+        () => setHexfold(tinyRoll(0.4)),
+        () => setDroste(tinyRoll(0.35)),
+        () => setSpiral(tinyRoll(0.4)),
+        () => setTile(tinyRoll(0.4)),
+        () => setContour(tinyRoll(0.45)),
+        () => setVenetian(tinyRoll(0.35)),
+        () => setInvertSym(tinyRoll(0.35)),
+        () => setFeedback(tinyRoll(0.5)),
+        () => setDisrupt(tinyRoll(0.5)),
+      ];
+      choices[Math.floor(r() * choices.length)]();
+    };
+    // v1.3.69 — Color / motion / post nudges.
+    const cyclePost = () => {
+      const choices: Array<() => void> = [
+        () => setScanlines(tinyRoll(0.55)),
+        () => setHueShift((r() - 0.5) * 0.6),
+        () => setZoom((r() - 0.5) * 0.4),
+        () => setSpeed(0.4 + r() * 1.4),
+        () => setBrightness(0.85 + r() * 0.4),
+        () => setContrast(0.85 + r() * 0.4),
+        () => setSaturation(0.7 + r() * 0.6),
+        () => setGenWarp(r() * 0.7),
+        () => setGenJitter(r() * 0.5),
+        () => setGenMoshX((r() - 0.5) * 1.0),
+        () => setGenMoshY((r() - 0.5) * 1.0),
+        () => setGenScatter(r() * 0.6),
+      ];
+      choices[Math.floor(r() * choices.length)]();
+    };
     const runCycle = () => {
       cycleArtist();
       if (r() < 0.7) cycleGlitch();
+      // v1.3.69 — additional weighted morph layers so AUTO-VJ truly
+      // reshapes the visual identity over time, not just nudges amounts.
+      if (r() < 0.55) cyclePost();
+      if (r() < 0.45) cycleDistortion();
+      // Structural changes (mode / genStyle / scatterMode etc) fire on
+      // ~1-in-3 cycles so the look has time to read between swaps.
+      if (r() < 0.33) cycleStructure();
       // Occasionally fade an FX back toward zero so we don't pin everything to "max"
-      if (r() < 0.25) {
-        const fades = [setSortAmt, setDatamosh, setLiquid, setVoroSort, setRupture, setHsync];
+      if (r() < 0.30) {
+        const fades = [
+          setSortAmt, setDatamosh, setLiquid, setVoroSort, setRupture, setHsync,
+          setKaleido, setMandala, setYantra, setRosette, setStarfold, setHexfold,
+          setDroste, setSpiral, setTile, setContour, setVenetian, setFeedback,
+          setDisrupt, setScanlines,
+        ];
         fades[Math.floor(r() * fades.length)](0);
       }
     };
@@ -7837,6 +7900,12 @@ export default function SpectraAfter() {
   const startVideoRecording = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    // v1.3.69 — initialize the elapsed-time anchor BEFORE drawLoop starts.
+    // Without this, gifStartTime stayed at its useRef(0) initial value and
+    // the first frame's `elapsed = now - 0` was orders of magnitude greater
+    // than the recording cap, so the recorder fired stop() immediately and
+    // REC produced empty / 0-byte files.
+    gifStartTime.current = performance.now();
     const w = canvas.width;
     const h = canvas.height;
     const maxDim = getExportMaxDim(exportQuality);
@@ -9821,15 +9890,8 @@ export default function SpectraAfter() {
             }}
             title={`FACE FX — ${faceFxMode} (cycle OFF / FACE-ONLY / BG-ONLY)`}
           >{faceFxMode === "OFF" ? "👤" : faceFxMode === "FACE" ? "👤" : "▣"}</button>
-          <button
-            className="sp-btn"
-            onClick={() => setBugOpen(true)}
-            style={{
-              ...topBtnStyle,
-              width: 36, height: 36, padding: 0, fontSize: 14, borderRadius: 9, letterSpacing: 0,
-            }}
-            title="Report a bug"
-          >🐛</button>
+          {/* v1.3.69 — Bug-report button removed; in-app feedback channel
+              moved off-device. */}
           {/* v1.3.30 — UI SKIN cycle: MOOG (walnut/cream) → 808 (Roland) → NEON (glass). */}
           <button
             className="sp-btn"
@@ -10041,12 +10103,13 @@ export default function SpectraAfter() {
               onPointerLeave={() => { touchRef.current.active = false; }}
             />
 
-            {/* v1.3.66 — split-button capture controls.
-                  · PHOTO button (right): one tap = still snapshot, with shutter SFX.
-                  · REC button (left, opposite side): one tap = start MediaRecorder,
-                    glows red + pulses while recording, second tap = stop.
-                Each button is dedicated to one action so glow + label
-                semantics never conflict. */}
+            {/* v1.3.69 — split-button capture controls.
+                  · While the top bar is visible (!uiHidden) the SNAP and REC
+                    buttons live in the menu bar so they don't block the canvas.
+                  · When uiHidden (immersive view) the bar is gone, so we render
+                    a translucent floating pair on the canvas so the user can
+                    still capture without un-hiding the UI. */}
+            {uiHidden && (<>
             <button
               className={"sp-btn sp-photo-btn" + (neonMode ? " sp-photo-btn-neon" : "")}
               onClick={() => {
@@ -10059,12 +10122,16 @@ export default function SpectraAfter() {
                 right: 10,
                 bottom: 10,
                 zIndex: 6,
-                width: 66,
-                height: 44,
-                fontSize: 13,
-                borderRadius: 22,
-                letterSpacing: "0.8px",
+                width: 56,
+                height: 38,
+                fontSize: 11,
+                borderRadius: 19,
+                letterSpacing: "0.6px",
                 fontWeight: 800,
+                opacity: 0.42,
+                background: "rgba(10,2,36,0.32)",
+                backdropFilter: "blur(6px)",
+                boxShadow: "none",
               }}
               title="Snap a still"
             >○ SNAP</button>
@@ -10080,22 +10147,25 @@ export default function SpectraAfter() {
                 left: 10,
                 bottom: 10,
                 zIndex: 6,
-                width: 66,
-                height: 44,
-                fontSize: 13,
-                borderRadius: 22,
-                letterSpacing: "0.8px",
+                width: 56,
+                height: 38,
+                fontSize: 11,
+                borderRadius: 19,
+                letterSpacing: "0.6px",
                 fontWeight: 800,
-                background: recording ? "rgba(224,61,61,0.92)" : (topBtnStyle.background as string | undefined),
+                background: recording ? "rgba(224,61,61,0.92)" : "rgba(10,2,36,0.32)",
                 borderColor: recording ? "#E03D3D" : (topBtnStyle.borderColor as string | undefined),
                 boxShadow: recording
                   ? "0 0 22px rgba(224,61,61,1.0), 0 0 44px rgba(224,61,61,0.55)"
-                  : topBtnStyle.boxShadow,
+                  : "none",
                 color: recording ? "#fff" : undefined,
+                opacity: recording ? 0.96 : 0.42,
+                backdropFilter: "blur(6px)",
                 animation: recording ? "spRecPulse 1.05s ease-in-out infinite" : undefined,
               }}
               title={recording ? "Stop recording" : "Start recording"}
             >{recording ? "■ STOP" : "● REC"}</button>
+            </>)}
             {/* v1.3.66 — capture-mode toggle removed; PHOTO and REC are
                 now distinct buttons on opposite sides of the canvas. */}
             {/* v1.2.76 — floating eye toggle, always over the canvas, so
@@ -10307,7 +10377,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.68 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.69 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
