@@ -4516,6 +4516,11 @@ export default function SpectraAfter() {
 
   // ── Export
   const [recording, setRecording] = useState(false);
+  // v1.3.65 — capture-mode toggle. PHOTO = shutter button takes still,
+  // VIDEO = shutter button starts/stops MediaRecorder. Replaces the old
+  // "tap = photo · hold = record" gesture with two explicit controls so
+  // the on-screen button can also visibly glow during recording.
+  const [captureMode, setCaptureMode] = useState<"photo" | "video">("photo");
   // (v1.3.57 — entire DRAW / PAINT / pxCanvas / drawCrash infrastructure
   // removed. The artist-pioneer GLITCH_PRESETS palette is now exposed
   // globally via FX Panel 2 ("GLITCH PALETTE · ARTIST FX") instead of
@@ -4634,9 +4639,12 @@ export default function SpectraAfter() {
   // everywhere so a stuck recorder never balloons memory.
   const MAX_RECORD_MS = 60_000;
 
-  // Gesture detection (hold = video GIF)
+  // Gesture detection (v1.3.65 — kept declared but unused; the
+  // tap-vs-hold combo on the PHOTO button was replaced by an explicit
+  // MODE toggle + glowing SHUTTER button on the canvas overlay.)
   const holdTimerRef = useRef<ReturnType<typeof setTimeout>|null>(null);
   const holdFiredRef = useRef(false);
+  void holdTimerRef; void holdFiredRef;
   const projectFileInputRef = useRef<HTMLInputElement>(null);
   const [flashVisible, setFlashVisible] = useState(false);
   const [pullDistance, setPullDistance] = useState(0);
@@ -8615,6 +8623,11 @@ export default function SpectraAfter() {
           60%  { transform: translateY(1px)  scaleY(1.02); opacity: 1; filter: blur(0); }
           100% { transform: translateY(0)    scaleY(1);    opacity: 1; filter: blur(0); }
         }
+        /* v1.3.65 — recording shutter button glow pulse */
+        @keyframes spRecPulse {
+          0%, 100% { box-shadow: 0 0 18px rgba(224,61,61,0.85), 0 0 36px rgba(224,61,61,0.40); }
+          50%      { box-shadow: 0 0 28px rgba(224,61,61,1.00), 0 0 60px rgba(224,61,61,0.65); }
+        }
         .sp-rack-inner {
           transform-origin: top center;
           animation: sp-rack-pop 220ms cubic-bezier(.22,1.2,.36,1) both;
@@ -9494,42 +9507,34 @@ export default function SpectraAfter() {
               : handsFreeCountdown.phase === "in"
                 ? `${handsFreeCountdown.n}…`
                 : `●${handsFreeCountdown.n}`}</button>
-          {/* v1.2.73 — FULLSCREEN toggle. v1.2.76 — also hides the top
-              bar + controls pane (immersive viewing) and uses Capacitor
-              StatusBar to actually hide the Android system chrome. */}
+          {/* v1.3.65 — RANDOMIZE FX (replaces the v1.2.73 fullscreen
+              toggle). Tap to roll fresh values + family variants on the
+              9 ARTIST FX. Fun, instant, fully reversible via ALL OFF. */}
           <button
             className="sp-btn"
             onClick={() => {
-              const doc = document as Document & {
-                webkitFullscreenElement?: Element | null;
-                webkitExitFullscreen?: () => Promise<void>;
-              };
-              const el = document.documentElement as HTMLElement & {
-                webkitRequestFullscreen?: () => Promise<void>;
-              };
-              const isFs = !!(document.fullscreenElement || doc.webkitFullscreenElement);
-              if (isFs) {
-                (document.exitFullscreen?.() || doc.webkitExitFullscreen?.())?.catch(() => {});
-              } else {
-                (el.requestFullscreen?.() || el.webkitRequestFullscreen?.())?.catch(() => {});
-              }
-              setUiHidden(v => {
-                const next = !v;
-                if (Capacitor.isNativePlatform()) {
-                  import("@capacitor/status-bar").then(({ StatusBar }) => {
-                    if (next) { StatusBar.hide().catch(() => {}); StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {}); }
-                    else { StatusBar.show().catch(() => {}); StatusBar.setOverlaysWebView({ overlay: false }).catch(() => {}); }
-                  }).catch(() => {});
-                }
-                return next;
-              });
+              const r = () => Math.random();
+              // Sparse roll: ~55% chance each FX fires, biased toward
+              // mid-range so the picture doesn't get crushed.
+              const roll = () => (r() < 0.55 ? Math.min(1, 0.25 + r() * 0.65) : 0);
+              const fam = () => Math.floor(r() * 3);
+              setMenkmanFX(roll());  setMenkmanFam(fam());
+              setMolnarFX(roll());   setMolnarFam(fam());
+              setUcnvFX(roll());     setUcnvFam(fam());
+              setGysinFX(roll());    setGysinFam(fam());
+              setAsendorfFX(roll()); setAsendorfFam(fam());
+              setJodiFX(roll());     setJodiFam(fam());
+              setArcangelFX(roll()); setArcangelFam(fam());
+              setPaikFX(roll());     setPaikFam(fam());
+              setFentonFX(roll());   setFentonFam(fam());
             }}
             style={{
               ...topBtnStyle,
-              width: 36, height: 36, padding: 0, fontSize: 16, borderRadius: 9, letterSpacing: 0,
+              width: 36, height: 36, padding: 0, fontSize: 18, borderRadius: 9, letterSpacing: 0,
+              fontWeight: 800,
             }}
-            title="Fullscreen / hide UI to view work"
-          >⛶</button>
+            title="RANDOMIZE — roll fresh ARTIST FX values + families"
+          >?</button>
           {/* v1.3.3 — CLOSE: hard-shutdown for Android. Stops camera/audio,
               clears the WebView, then asks Capacitor App to exit so the
               process is fully torn down (next launch is a cold start). */}
@@ -9631,31 +9636,43 @@ export default function SpectraAfter() {
               onPointerLeave={() => { touchRef.current.active = false; }}
             />
 
+            {/* v1.3.65 — split the old "tap=photo / hold=rec" combo into
+                two explicit on-screen controls:
+                  · MODE button (top): toggles PHOTO ↔ VIDEO
+                  · SHUTTER button (bottom): triggers capture
+                    - PHOTO mode → still snapshot
+                    - VIDEO mode → start/stop MediaRecorder; glows red while recording
+                Layout: stacked vertically in the bottom-right corner. */}
             <button
               className={"sp-btn sp-photo-btn" + (neonMode ? " sp-photo-btn-neon" : "")}
-              onPointerDown={(e) => {
-                e.preventDefault();
-                holdFiredRef.current = false;
-                if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
-                holdTimerRef.current = setTimeout(() => {
-                  holdFiredRef.current = true;
-                  startRecordingRef.current();
-                }, 350);
+              onClick={() => {
+                if (recording) return; // don't allow mode flip mid-record
+                setCaptureMode(m => (m === "photo" ? "video" : "photo"));
               }}
-              onPointerUp={(e) => {
-                e.preventDefault();
-                if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
-                if (holdFiredRef.current) {
-                  // Hold released — stop the recording (gif/video).
-                  stopRecordingRef.current();
-                } else {
-                  // Quick tap — still photo.
-                  captureStill();
+              style={{
+                ...topBtnStyle,
+                position: "absolute",
+                right: 10,
+                bottom: 58,
+                zIndex: 6,
+                width: 66,
+                height: 30,
+                fontSize: 10,
+                borderRadius: 8,
+                letterSpacing: "1.2px",
+                opacity: recording ? 0.45 : 1,
+              }}
+              title={`Mode: ${captureMode.toUpperCase()} — tap to switch`}
+            >{captureMode === "photo" ? "PHOTO" : "VIDEO"}</button>
+            <button
+              className={"sp-btn sp-photo-btn" + (neonMode ? " sp-photo-btn-neon" : "")}
+              onClick={() => {
+                if (captureMode === "photo") {
+                  captureStillRef.current();
+                  return;
                 }
-              }}
-              onPointerLeave={() => {
-                if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
-                if (holdFiredRef.current) { stopRecordingRef.current(); holdFiredRef.current = false; }
+                if (recording) stopRecordingRef.current();
+                else startRecordingRef.current();
               }}
               style={{
                 ...topBtnStyle,
@@ -9664,30 +9681,23 @@ export default function SpectraAfter() {
                 bottom: 10,
                 zIndex: 6,
                 width: 66,
-                height: 40,
-                fontSize: 11,
-                borderRadius: 10,
+                height: 44,
+                fontSize: 13,
+                borderRadius: 22,
                 letterSpacing: "0.8px",
-                background: recording ? "rgba(224,61,61,0.85)" : (topBtnStyle.background as string | undefined),
+                fontWeight: 800,
+                background: recording ? "rgba(224,61,61,0.92)" : (topBtnStyle.background as string | undefined),
                 borderColor: recording ? "#E03D3D" : (topBtnStyle.borderColor as string | undefined),
-                boxShadow: recording ? "0 0 18px rgba(224,61,61,0.85)" : topBtnStyle.boxShadow,
+                boxShadow: recording
+                  ? "0 0 22px rgba(224,61,61,1.0), 0 0 44px rgba(224,61,61,0.55)"
+                  : topBtnStyle.boxShadow,
+                color: recording ? "#fff" : undefined,
+                animation: recording ? "spRecPulse 1.05s ease-in-out infinite" : undefined,
               }}
-              title="Tap = photo · Hold = record video (release to stop)"
-            >{recording ? "REC●" : "PHOTO"}</button>
-            {/* v1.2.76 — inline hint so users discover the press-and-hold
-                gesture without reading docs. Sits under the PHOTO button,
-                fades when actively recording so it doesn't fight the REC pip. */}
-            <div style={{
-              position: "absolute", right: 10, bottom: 54, zIndex: 6,
-              width: 66, textAlign: "center",
-              fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
-              fontSize: 7.5, letterSpacing: "1px",
-              color: "rgba(231,174,255,0.78)",
-              textShadow: "0 0 4px rgba(0,0,0,0.85)",
-              pointerEvents: "none",
-              opacity: recording ? 0.0 : 0.92,
-              transition: "opacity 180ms ease",
-            }}>TAP · HOLD=REC</div>
+              title={captureMode === "photo" ? "Snap a still" : (recording ? "Stop recording" : "Start recording")}
+            >{captureMode === "photo" ? "● SNAP" : (recording ? "■ STOP" : "● REC")}</button>
+            {/* v1.3.65 — old "TAP · HOLD=REC" hint removed; the on-screen
+                MODE + SHUTTER buttons are self-explanatory. */}
             {/* v1.2.76 — floating eye toggle, always over the canvas, so
                 even when the chrome is hidden the user can bring it back. */}
             <button
@@ -9897,7 +9907,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.64 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.65 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
