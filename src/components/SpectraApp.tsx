@@ -4427,13 +4427,11 @@ export default function SpectraAfter() {
   }, []);
   // DRAW is currently only safe over static image uploads (live camera + generator
   // share the live render path with the FX mask, which the draw overlay corrupts).
-  // v1.2.78 — DRAW feature disabled (user request: kept conflicting with
-  // upload pipeline + obscured glitch FX). All draw-related state, refs,
-  // pointer handlers and the bake-in compositor remain in the file but
-  // gated off by this single flag, so they're unreachable from the UI.
-  // Re-enable by removing the literal `false` and restoring the original
-  // condition: sourceMode === "upload" && (uploadKind === "image" || uploadKind === "video")
-  const drawAvailable = false;
+  // v1.3.53 — RE-ENABLED for uploads (image OR video) per user request.
+  // The shader's uMask sampler is gated by uTouchActive; touchRef.current.active
+  // is driven by drawActive in the renderDrawOverlay effect, so the FX gate
+  // automatically restricts to where the user paints.
+  const drawAvailable = sourceMode === "upload" && (uploadKind === "image" || uploadKind === "video");
   // Auto-bail out of DRAW the moment the source stops being an image upload.
   useEffect(() => {
     if (!drawAvailable && drawActive) {
@@ -9535,7 +9533,29 @@ export default function SpectraAfter() {
             }}
             title={cameraActive ? `Camera ON — tap to FLIP (now ${cameraFacing === "environment" ? "REAR" : "FRONT"})` : "Tap to START camera"}
           >{cameraActive ? (cameraFacing === "user" ? "FLIP" : "FLIP") : "CAM"}</button>
-          {/* v1.2.78 — DRAW button removed (feature disabled). */}
+          {/* v1.3.53 — DRAW button restored (re-enabled over uploads). */}
+          <button
+            className="sp-btn"
+            onClick={() => {
+              if (!drawAvailable) {
+                alert("DRAW FX is for image/video uploads. Tap the upload icon to load a photo first.");
+                return;
+              }
+              setDrawActive(d => !d);
+            }}
+            disabled={!drawAvailable}
+            style={{
+              ...topBtnStyle,
+              width: 44, height: 36, padding: 0, fontSize: 11, borderRadius: 9, letterSpacing: "0.4px",
+              opacity: drawAvailable ? 1 : 0.45,
+              color: drawActive ? T.ochre : undefined,
+              borderColor: drawActive ? T.amber : undefined,
+              boxShadow: drawActive ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
+            }}
+            title={drawAvailable
+              ? (drawActive ? "DRAW ON — paint where FX appear" : "DRAW — paint where FX appear (upload only)")
+              : "DRAW — load an image/video first"}
+          >DRAW</button>
           <button
             className="sp-btn"
             onClick={() => setAudioActive(a => !a)}
@@ -10102,7 +10122,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.52 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.53 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
