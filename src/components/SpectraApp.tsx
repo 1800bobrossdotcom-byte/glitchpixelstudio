@@ -4227,6 +4227,7 @@ export default function SpectraAfter() {
   // delta. The previous PIXEL slot was dropped — v1.3.55 made the single-
   // pixel pen the only paint mode, so every palette cell now drives FX.
   type UniformBoostKey =
+    | "uDatamosh"
     | "uMoshIFrame" | "uMoshBleed" | "uMoshMotion" | "uMoshDistort"
     | "uSortAmt" | "uSortWobble" | "uSortRandom"
     | "uChrash" | "uLiquid" | "uKaleido" | "uSpiral"
@@ -4305,6 +4306,7 @@ export default function SpectraAfter() {
         const c = _ss(2.0, 3.0, tier);                    // tier 2 → 3
         const breath = 0.5 + 0.5 * Math.sin(t * 0.6 * TAU);
         return {
+          uDatamosh:    0.40 + a * 0.30 + breath * 0.15,  // open mosh gate
           uMoshBleed:   0.30 + a * 0.40 + breath * 0.15,
           uMoshDistort: 0.20 + b * 0.45,
           uContour:     0.35 + c * 0.30,
@@ -4333,6 +4335,7 @@ export default function SpectraAfter() {
           uContour:    0.85 + 0.10 * phiSub,             // breathing skeleton
           uTile:       0.38 + slow * 0.30,
           uVoroSort:   0.30 + gauss * 0.55,
+          uSortAmt:    0.45 + gauss * 0.30,              // open sort gate
           uSortRandom: 0.18 + gauss * 0.40,
         };
       },
@@ -4348,6 +4351,7 @@ export default function SpectraAfter() {
         const cross   = 0.5 + 0.5 * Math.sin(t * 0.13 * TAU + 2.3);
         const env     = _ss(0.15, 0.85, carrier);         // soft envelope
         return {
+          uDatamosh:    0.55 + env * 0.45,                // open mosh gate
           uMoshIFrame:  0.35 + env   * 0.45,
           uMoshBleed:   0.40 + lfo   * 0.40,
           uMoshMotion:  0.45 + cross * 0.45,
@@ -4368,6 +4372,7 @@ export default function SpectraAfter() {
         return {
           uGlyph:     0.40 + alpha * 0.45,
           uContour:   0.30 + braid * 0.35,
+          uDatamosh:  0.35 + cut   * 0.30,                // open mosh gate
           uMoshBleed: 0.25 + cut   * 0.35,
           uVoroSort:  0.20 + alpha * braid * 0.45,
         };
@@ -4442,6 +4447,7 @@ export default function SpectraAfter() {
         return {
           uFeedback:   0.45 + fx * 0.45,
           uLiquid:     0.30 + fy * 0.40,
+          uDatamosh:   0.40 + fx * fy * 0.45,             // open mosh gate
           uMoshBleed:  0.25 + (1 - fx) * 0.35,
           uMoshMotion: 0.30 + fx * fy * 0.50,
         };
@@ -4459,6 +4465,7 @@ export default function SpectraAfter() {
         const c = 0.5 + 0.5 * Math.sin(t * 0.79 * TAU + 3.1);
         return {
           uSortAmt:    0.40 + a * 0.40,
+          uDatamosh:   0.45 + b * 0.35,                   // open mosh gate
           uMoshMotion: 0.35 + b * 0.45,
           uMoshBleed:  0.30 + c * 0.40,
           uVoroSort:   0.25 + (a + b) * 0.22,
@@ -6643,7 +6650,7 @@ export default function SpectraAfter() {
     // mic stream even when the slider is partway down. Capped at the
     // HARD ceiling so we don't push past what the shader was tuned for.
     dmMapped = Math.min(5.5, dmMapped * (1 + _aGate * 0.55) + _aGate * 0.22);
-    setF1(u.uDatamosh, dmMapped * _mI);
+    setF1(u.uDatamosh, dmMapped * _mI + PB("uDatamosh"));
     setF1(u.uChrash, chrashRef.current * _mB + PB("uChrash"));
     setF1(u.uLiquid, liquidRef.current * _mI + PB("uLiquid"));
     // v1.2.58 — Asendorf / Gysin homage rack uniform writes (v1.2.59: streak/hilbert removed)
@@ -9762,7 +9769,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.59 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.60 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
