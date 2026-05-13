@@ -9816,7 +9816,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.62 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.63 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
@@ -10072,7 +10072,7 @@ export default function SpectraAfter() {
                 <Knob label="TEAR"    value={scanTear}     min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setScanTear}/>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
-                <SynthSelector label="MODE" options={["LINE","SPIRAL","BLOCK","SLICE","HILBERT"]} value={Math.round(sortMode)} onChange={(v) => setSortMode(v)}/>
+                <SynthSelector label="MODE" options={["LINE","SPIRAL","BLOCK","SLICE","HILBERT","ASENDORF"]} value={Math.round(sortMode)} onChange={(v) => setSortMode(v)}/>
                 <SynthSelector label="INTERVAL" options={["BAND","BRIGHT","DARK","RAND","WAVE","EDGE","NONE"]} value={Math.round(sortInterval)} onChange={(v) => setSortInterval(v)}/>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
