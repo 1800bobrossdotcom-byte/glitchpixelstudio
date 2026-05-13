@@ -4534,6 +4534,112 @@ export default function SpectraAfter() {
   const [vjMode, setVjMode] = useState(false);
   const vjModeRef = useRef(false);
   useEffect(() => { vjModeRef.current = vjMode; }, [vjMode]);
+  // v1.3.68 — beat-matched cycling.
+  // Render loop watches audioBeatRef rising-edge over BEAT_THRESH and
+  // increments vjBeatCountRef. Every BEATS_PER_CYCLE beats it sets
+  // vjPendingCycleRef = true, which the Auto-VJ effect polls on a short
+  // interval and consumes by firing a fresh cycle. Falls back to a hard
+  // CYCLE_TIMEOUT_MS so silent passages still evolve.
+  const vjBeatCountRef = useRef(0);
+  const vjLastBeatHighRef = useRef(false);
+  const vjLastCycleAtRef = useRef(0);
+  const vjPendingCycleRef = useRef(false);
+  const vjBeatPulseRef = useRef(0); // last detected beat strength (0..1) for FX kicks
+  // Hardcoded musical defaults — most house/techno/pop sits 100-130 bpm,
+  // so 4 beats ≈ 1.8-2.4s per cycle which reads well visually.
+  const VJ_BEATS_PER_CYCLE = 4;
+  const VJ_BEAT_THRESH = 0.55;
+  const VJ_BEAT_REFRACTORY_MS = 220;
+  const VJ_CYCLE_TIMEOUT_MS = 4500;
+
+  // ── v1.3.68 Local-track loader for real audio reactivity ───────
+  // User picks an audio file from device. We pipe it through a single
+  // <audio> element → MediaElementAudioSourceNode → the existing
+  // audioAnalyserRef so AUTO-VJ's beat detector sees the real waveform.
+  // Also routed to actx.destination so it actually plays out loud.
+  const trackFileInputRef = useRef<HTMLInputElement | null>(null);
+  const trackAudioElRef = useRef<HTMLAudioElement | null>(null);
+  const trackCtxRef = useRef<AudioContext | null>(null);
+  const trackSrcNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const trackAnalyserRef = useRef<AnalyserNode | null>(null);
+  const trackObjectUrlRef = useRef<string | null>(null);
+  const [trackName, setTrackName] = useState<string | null>(null);
+  const [trackPlaying, setTrackPlaying] = useState(false);
+
+  const stopTrack = useCallback(() => {
+    try { trackAudioElRef.current?.pause(); } catch { /* ignore */ }
+    try { audioAnalyserRef.current = null; } catch { /* ignore */ }
+    try { audioDataArrayRef.current = null; } catch { /* ignore */ }
+    try { trackSrcNodeRef.current?.disconnect(); } catch { /* ignore */ }
+    try { trackAnalyserRef.current?.disconnect(); } catch { /* ignore */ }
+    try { trackCtxRef.current?.close(); } catch { /* ignore */ }
+    if (trackObjectUrlRef.current) {
+      try { URL.revokeObjectURL(trackObjectUrlRef.current); } catch { /* ignore */ }
+      trackObjectUrlRef.current = null;
+    }
+    trackSrcNodeRef.current = null;
+    trackAnalyserRef.current = null;
+    trackCtxRef.current = null;
+    if (trackAudioElRef.current) {
+      try { trackAudioElRef.current.src = ""; } catch { /* ignore */ }
+    }
+    setTrackPlaying(false);
+    setTrackName(null);
+  }, []);
+
+  const handleTrackFile = useCallback(async (file: File) => {
+    try {
+      // Tear down any prior track first.
+      stopTrack();
+      const url = URL.createObjectURL(file);
+      trackObjectUrlRef.current = url;
+      let el = trackAudioElRef.current;
+      if (!el) {
+        el = document.createElement("audio");
+        el.crossOrigin = "anonymous";
+        el.loop = true;
+        el.preload = "auto";
+        trackAudioElRef.current = el;
+      }
+      el.src = url;
+      const Ctor = (window.AudioContext
+        || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext);
+      const actx = new Ctor();
+      try { await actx.resume(); } catch { /* ignore */ }
+      const src = actx.createMediaElementSource(el);
+      const analyser = actx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.55;
+      src.connect(analyser);
+      // Branch to speakers so the user actually hears the track.
+      analyser.connect(actx.destination);
+      trackCtxRef.current = actx;
+      trackSrcNodeRef.current = src;
+      trackAnalyserRef.current = analyser;
+      // Hand to render loop's existing real-audio path.
+      audioAnalyserRef.current = analyser;
+      audioDataArrayRef.current = new Uint8Array(analyser.fftSize);
+      setTrackName(file.name.replace(/\.[^.]+$/, "").slice(0, 28));
+      try { await el.play(); setTrackPlaying(true); } catch { setTrackPlaying(false); }
+    } catch {
+      stopTrack();
+    }
+  }, [stopTrack]);
+
+  const toggleTrackPlayback = useCallback(async () => {
+    const el = trackAudioElRef.current;
+    if (!el || !el.src) {
+      trackFileInputRef.current?.click();
+      return;
+    }
+    if (el.paused) {
+      try { await trackCtxRef.current?.resume(); } catch { /* ignore */ }
+      try { await el.play(); setTrackPlaying(true); } catch { /* ignore */ }
+    } else {
+      try { el.pause(); } catch { /* ignore */ }
+      setTrackPlaying(false);
+    }
+  }, []);
 
   // ── v1.3.66 SFX engine ───────────────────────────────────────────
   // Tiny synth-only sound effect bank (no assets). Lazy-creates a single
@@ -5655,15 +5761,21 @@ export default function SpectraAfter() {
         // v1.3.66 Auto-VJ — synthesize audio reactivity from LFOs so all
         // existing uAudio/uABass/uATreb/uABeat reactivity machinery still
         // animates without needing a microphone.
+        // v1.3.68 — amplitude bumped + faster sub-LFOs layered in so the
+        // shader uniforms swing harder and feel more obviously "reacting".
         const _t = performance.now() * 0.001;
-        const lvl  = 0.55 + 0.38 * Math.sin(_t * 0.93) * Math.cos(_t * 0.31);
-        const bass = 0.55 + 0.45 * Math.sin(_t * 1.71);
-        const treb = 0.50 + 0.45 * Math.sin(_t * 2.93 + 1.3);
-        audioLevelRef.current  = audioLevelRef.current  * 0.7 + Math.abs(lvl)  * 0.3;
-        audioBassRef.current   = audioBassRef.current   * 0.7 + Math.abs(bass) * 0.3;
-        audioTrebleRef.current = audioTrebleRef.current * 0.7 + Math.abs(treb) * 0.3;
-        // Synthetic beat ~ every ~1.5s.
-        const beatPhase = (_t * 0.65) % 1;
+        const lvl  = 0.55 + 0.42 * Math.sin(_t * 0.93) * Math.cos(_t * 0.31)
+                          + 0.18 * Math.sin(_t * 4.7);
+        const bass = 0.55 + 0.50 * Math.sin(_t * 1.71)
+                          + 0.20 * Math.sin(_t * 5.3 + 0.7);
+        const treb = 0.50 + 0.50 * Math.sin(_t * 2.93 + 1.3)
+                          + 0.22 * Math.sin(_t * 7.1);
+        audioLevelRef.current  = audioLevelRef.current  * 0.55 + Math.min(1, Math.abs(lvl))  * 0.45;
+        audioBassRef.current   = audioBassRef.current   * 0.55 + Math.min(1, Math.abs(bass)) * 0.45;
+        audioTrebleRef.current = audioTrebleRef.current * 0.55 + Math.min(1, Math.abs(treb)) * 0.45;
+        // Synthetic beat ~ every ~0.93s (~ 65 bpm) — slower than mic-driven
+        // beats but predictable so the cycle counter still ticks.
+        const beatPhase = (_t * 1.07) % 1;
         const beatTarget = beatPhase < 0.05 ? 1.0 : 0.0;
         if (beatTarget > audioBeatRef.current) audioBeatRef.current = beatTarget;
         else audioBeatRef.current *= 0.88;
@@ -5673,6 +5785,32 @@ export default function SpectraAfter() {
         audioBassRef.current   *= 0.92;
         audioTrebleRef.current *= 0.92;
         audioBeatRef.current   *= 0.88;
+      }
+    }
+
+    // ── v1.3.68 Auto-VJ beat-matched cycle trigger ───────────────
+    // Rising-edge detection on audioBeatRef. Every BEATS_PER_CYCLE
+    // beats (or after CYCLE_TIMEOUT_MS of silence) request a cycle.
+    if (vjModeRef.current) {
+      const nowMs = performance.now();
+      const beatNow = audioBeatRef.current >= VJ_BEAT_THRESH;
+      const sinceLastCycle = nowMs - vjLastCycleAtRef.current;
+      if (beatNow && !vjLastBeatHighRef.current && sinceLastCycle > VJ_BEAT_REFRACTORY_MS) {
+        vjBeatCountRef.current += 1;
+        vjBeatPulseRef.current = audioBeatRef.current;
+        if (vjBeatCountRef.current >= VJ_BEATS_PER_CYCLE) {
+          vjBeatCountRef.current = 0;
+          vjPendingCycleRef.current = true;
+          vjLastCycleAtRef.current = nowMs;
+        }
+      }
+      vjLastBeatHighRef.current = beatNow;
+      // Watchdog: if no beat-driven cycle has fired in a while, force one
+      // so silent passages / quiet ambient still evolves.
+      if (sinceLastCycle > VJ_CYCLE_TIMEOUT_MS) {
+        vjPendingCycleRef.current = true;
+        vjLastCycleAtRef.current = nowMs;
+        vjBeatCountRef.current = 0;
       }
     }
 
@@ -7071,11 +7209,16 @@ export default function SpectraAfter() {
     return () => { /* nothing to tear down */ };
   }, [audioActive]);
 
-  // ── v1.3.66 Auto-VJ engine ──────────────────────────────
-  // While vjMode is on, every ~7 seconds re-roll a small subset of
-  // FX values + an artist family. Smooth blending lives in the audio
-  // uniforms (synthetic LFOs in the render loop); this loop adds
-  // mid-range structural change so the picture keeps evolving.
+  // ── v1.3.68 Auto-VJ engine ──────────────────────────────
+  // While vjMode is on:
+  //   1. Try to capture mic so the existing real-audio analyser path in
+  //      the render loop drives uAudio/uABass/uATreb/uABeat from actual
+  //      music in the room. On denial / failure, fall back to the
+  //      synthetic LFO bank in the render loop's no-analyser branch.
+  //   2. Watch vjPendingCycleRef (set by the render loop on every Nth
+  //      detected beat or on the watchdog timeout) and consume it by
+  //      firing a cycle — this makes structural FX changes land ON the
+  //      beat instead of on a fixed 7-second wall-clock interval.
   useEffect(() => {
     if (!vjMode) return;
     const r = () => Math.random();
@@ -7115,9 +7258,7 @@ export default function SpectraAfter() {
       ];
       choices[Math.floor(r() * choices.length)]();
     };
-    // Fire one immediate cycle so the user sees movement instantly.
-    cycleArtist(); cycleGlitch();
-    const id = window.setInterval(() => {
+    const runCycle = () => {
       cycleArtist();
       if (r() < 0.7) cycleGlitch();
       // Occasionally fade an FX back toward zero so we don't pin everything to "max"
@@ -7125,8 +7266,81 @@ export default function SpectraAfter() {
         const fades = [setSortAmt, setDatamosh, setLiquid, setVoroSort, setRupture, setHsync];
         fades[Math.floor(r() * fades.length)](0);
       }
-    }, 7000);
-    return () => { window.clearInterval(id); };
+    };
+    // Fire one immediate cycle so the user sees movement instantly.
+    runCycle();
+    // Reset beat-tracking state so cycles count from "now".
+    vjBeatCountRef.current = 0;
+    vjLastBeatHighRef.current = false;
+    vjLastCycleAtRef.current = performance.now();
+    vjPendingCycleRef.current = false;
+    // Poll the pending-cycle flag set by the render loop's beat detector.
+    // 80 ms is fast enough to feel "on-beat" without thrashing React state.
+    const pollId = window.setInterval(() => {
+      if (vjPendingCycleRef.current) {
+        vjPendingCycleRef.current = false;
+        runCycle();
+      }
+    }, 80);
+
+    // ── Best-effort mic capture for real audio reactivity ──
+    // Wrapped in try/catch + permission probe; on any failure we silently
+    // fall back to the render loop's synthetic LFO branch.
+    let cancelled = false;
+    let stream: MediaStream | null = null;
+    let actx: AudioContext | null = null;
+    let src: MediaStreamAudioSourceNode | null = null;
+    let analyser: AnalyserNode | null = null;
+    (async () => {
+      try {
+        // If a local track is already feeding the analyser, leave it alone.
+        if (trackAnalyserRef.current) return;
+        if (!navigator.mediaDevices?.getUserMedia) return;
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
+        });
+        if (cancelled) {
+          stream.getTracks().forEach(t => t.stop());
+          return;
+        }
+        const Ctor = (window.AudioContext
+          || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext);
+        actx = new Ctor();
+        try { await actx.resume(); } catch { /* ignore */ }
+        src = actx.createMediaStreamSource(stream);
+        analyser = actx.createAnalyser();
+        analyser.fftSize = 1024;
+        analyser.smoothingTimeConstant = 0.55;
+        src.connect(analyser);
+        // Hand the analyser to the render loop's existing real-audio branch.
+        audioAnalyserRef.current = analyser;
+        audioDataArrayRef.current = new Uint8Array(analyser.fftSize);
+        audioStreamRef.current = stream;
+        setAudioActive(true);
+      } catch {
+        // Permission denied / unsupported / WebView quirks — silent fallback.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(pollId);
+      // Don't tear down the analyser if the local-track loader installed it.
+      if (!trackAnalyserRef.current) {
+        try { audioAnalyserRef.current = null; } catch { /* ignore */ }
+        try { audioDataArrayRef.current = null; } catch { /* ignore */ }
+      }
+      try { src?.disconnect(); } catch { /* ignore */ }
+      try { analyser?.disconnect(); } catch { /* ignore */ }
+      try { actx?.close(); } catch { /* ignore */ }
+      try { stream?.getTracks().forEach(t => t.stop()); } catch { /* ignore */ }
+      try { audioStreamRef.current = null; } catch { /* ignore */ }
+      setAudioActive(false);
+    };
   }, [vjMode]);
 
   // ── (v1.3.57 — entire DRAW overlay rendering + paint pixel stamping +
@@ -9558,6 +9772,43 @@ export default function SpectraAfter() {
             }}
             title={vjMode ? "AUTO-VJ ON — autonomous FX blending + synthetic audio-react. Tap to stop." : "AUTO-VJ — autonomous visualizer mode (no mic needed)"}
           >{vjMode ? "◉" : "○"}</button>
+          {/* v1.3.68 — LOAD TRACK / PLAY-PAUSE.
+              Long-press / second tap once a track is loaded toggles play state.
+              Audio routes through MediaElementSource → AnalyserNode → destination,
+              and the analyser is handed to AUTO-VJ for true beat-matched FX cycling. */}
+          <button
+            className="sp-btn"
+            onClick={() => {
+              if (trackName) { toggleTrackPlayback(); playSfx("click"); }
+              else { trackFileInputRef.current?.click(); playSfx("open"); }
+            }}
+            onContextMenu={(e) => { e.preventDefault(); stopTrack(); playSfx("close"); }}
+            style={{
+              ...topBtnStyle,
+              width: 36, height: 36, padding: 0, fontSize: 12, borderRadius: 9, letterSpacing: 0,
+              color: trackName ? T.ochre : undefined,
+              borderColor: trackName ? T.amber : undefined,
+              boxShadow: trackName ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
+              ...(trackPlaying ? { animation: "activeGlow 1.6s ease-in-out infinite" } : {}),
+            }}
+            title={
+              trackName
+                ? `Track: ${trackName} — tap to ${trackPlaying ? "PAUSE" : "PLAY"} · long-press to UNLOAD`
+                : "Load audio track from device for true beat-matched AUTO-VJ"
+            }
+          >{trackName ? (trackPlaying ? "▮▮" : "▶") : "♪"}</button>
+          <input
+            ref={trackFileInputRef}
+            type="file"
+            accept="audio/*"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) handleTrackFile(f);
+              // Reset so picking the same file again still fires onChange.
+              e.target.value = "";
+            }}
+          />
           <button
             className="sp-btn"
             onClick={cycleFaceFx}
@@ -10056,7 +10307,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.67 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.68 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
