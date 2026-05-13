@@ -4253,174 +4253,215 @@ export default function SpectraAfter() {
   // each modulator implements the actual computer-science primitive that
   // defined that artist's practice:
   //
-  //   MENKMAN  — JPEG/DCT 8x8 block quantization ladder (3-level step
-  //              function + triangle sub-pulse).
+  //   MENKMAN  — DCT band drift: 8x8 quantization viewed as a continuously
+  //              breathing 3-band crossfade (smoothstep between quant tiers
+  //              instead of hard floor steps) → bleed/distort/contour.
   //   MOLNÁR   — algorithmic grid + Box-Muller Gaussian perturbation +
   //              golden-ratio sub-harmonic rotation ("Interruptions" 1968).
-  //   UCNV     — Poisson-distributed I-frame kill bursts with exponential
-  //              decay envelope; continuous motion-vector carry.
-  //   GYSIN    — Dream Machine: 8 Hz alpha-wave flicker + 78 RPM (1.3 Hz)
-  //              carrier + binary cut-up phase swap.
+  //   UCNV     — datamosh advection: continuous motion-vector flow modeled
+  //              as a 2-band sine drift (0.27 Hz carrier × 0.083 Hz LFO)
+  //              with smoothstep-shaped i-frame envelope.
+  //   GYSIN    — Dream Machine SLOWED to flicker-fusion threshold (0.8 Hz
+  //              alpha drift × 0.13 Hz phi-braid carrier); continuous cut.
   //   ASENDORF — ASDFPixelSort luminance-window sweep (triangle ramp) +
-  //              golden-ratio / 1-phi sub-frequencies on wobble/random.
-  //   JODI     — stateful logistic-map chaos (r=3.95) iterated per frame;
-  //              quad-phase beat clock routes chaos to different uniforms.
-  //   ARCANGEL — NES horizontal-scroll sawtooth (0.4 Hz) + phase-locked
-  //              counter-sawtooth + hsync glitch on wrap discontinuity.
+  //              golden-ratio / 1-phi sub-frequencies on wobble/random,
+  //              plus liquid carrier for fluid sort migration.
+  //   JODI     — logistic map r=3.95 LOW-PASSED via exponential smoothing
+  //              (α=0.08) so the chaos register reads as a drift not a
+  //              strobe; outputs are continuous lerps, no beat gating.
+  //   ARCANGEL — Super Mario Clouds scroll: smooth dual-phase triangle
+  //              (0.20 Hz) + counter-phase + slow liquid carrier.
+  //              No hsync wrap discontinuity.
   //   PAIK     — Lissajous figure (3:5 frequency ratio, π/4 phase offset);
-  //              product-of-orthogonals drives chrash brightness.
-  //   FENTON   — Bernoulli(p) trials at 10 Hz frame boundary (Astrocade
-  //              ROM corruption model) → discrete slab on/off events.
+  //              fx,fy and their product drive feedback/liquid/mosh flow.
+  //   FENTON   — Astrocade raster advection: harmonic LFO bank (0.17 /
+  //              0.41 / 0.79 Hz) summed into a continuous flow field;
+  //              no Bernoulli on/off, no slab toggles.
   //
   const TAU = Math.PI * 2;
   const PHI = 1.6180339887;
-  // Cheap hash: deterministic, no Math.random. floor-bucketed input.
+  // Cheap hash: deterministic, no Math.random. Used by MOLNÁR only.
   const _h = (n: number): number => {
     const x = Math.sin(n * 12.9898 + 78.233) * 43758.5453;
     return x - Math.floor(x);
   };
+  // Smoothstep utility for fluid envelopes.
+  const _ss = (a: number, b: number, x: number): number => {
+    const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+    return t * t * (3 - 2 * t);
+  };
   const GLITCH_PRESETS: readonly GlitchPreset[] = [
     {
       name: "MENKMAN", color: "#FF6FB1",
-      signature: "DCT 8×8 quant ladder",
+      signature: "DCT band drift",
       modulate: (t) => {
-        const phase = t * 12;
-        const q = Math.floor(phase) % 3;             // 3-level quantization
-        const ph = phase - Math.floor(phase);
-        const tri = 1 - Math.abs(ph * 2 - 1);        // triangle sub-pulse
+        // Three quant tiers crossfaded by a slow triangle — band identity
+        // is continuous, not stepped, so the picture migrates between
+        // compression regimes instead of jumping.
+        const ramp = (t * 0.18) % 1;                     // 0..1 every ~5.5s
+        const tier = ramp * 3;                            // 0..3
+        const a = _ss(0.0, 1.0, tier);                    // tier 0 → 1
+        const b = _ss(1.0, 2.0, tier);                    // tier 1 → 2
+        const c = _ss(2.0, 3.0, tier);                    // tier 2 → 3
+        const breath = 0.5 + 0.5 * Math.sin(t * 0.6 * TAU);
         return {
-          uBlockGlitch: 0.55 + q * 0.18 + tri * 0.12,
-          uRgbBars:    0.25 + (q === 2 ? 0.55 : 0),
-          uRgbSwap:    q === 1 ? 0.65 : 0.08,
-          uChrash:     0.30 + tri * 0.40,
-          uScanTear:   q === 0 ? 0.60 : 0.12,
+          uMoshBleed:   0.30 + a * 0.40 + breath * 0.15,
+          uMoshDistort: 0.20 + b * 0.45,
+          uContour:     0.35 + c * 0.30,
+          uTile:        0.18 + a * 0.22 + c * 0.10,
         };
       },
     },
     {
       name: "MOLNÁR", color: "#5BE9FF",
-      signature: "grid + Box-Muller σ",
+      signature: "grid · Box-Muller σ",
       modulate: (t) => {
-        // Box-Muller pair from deterministic sines (no Math.random)
-        const u1 = Math.max(1e-3, _h(Math.floor(t * 0.7)));
-        const u2 = _h(Math.floor(t * 0.31) + 17);
+        // Box-Muller pair from deterministic hash, but the index advances
+        // CONTINUOUSLY via fractional interpolation between integer buckets
+        // → Gaussian noise becomes a smoothly flowing field, not a stepper.
+        const tf = t * 0.7;
+        const i0 = Math.floor(tf), i1 = i0 + 1, f = tf - i0;
+        const u1a = Math.max(1e-3, _h(i0)),       u1b = Math.max(1e-3, _h(i1));
+        const u2a = _h(i0 + 17),                  u2b = _h(i1 + 17);
+        const u1 = u1a + (u1b - u1a) * _ss(0, 1, f);
+        const u2 = u2a + (u2b - u2a) * _ss(0, 1, f);
         const g  = Math.sqrt(-2 * Math.log(u1)) * Math.cos(TAU * u2);
         const gauss = Math.min(1, Math.abs(g) * 0.35);
         const slow  = 0.5 + 0.5 * Math.sin(t * 0.05 * TAU);
+        const phiSub = 0.5 + 0.5 * Math.sin(t * 0.5 / PHI);
         return {
-          uContour: 0.92,                              // deterministic skeleton
-          uTile:    0.42 + slow * 0.30,
-          uHexfold: 0.28 + 0.22 * Math.sin(t * 0.5 / PHI),
-          uVoroSort: gauss,
+          uContour:    0.85 + 0.10 * phiSub,             // breathing skeleton
+          uTile:       0.38 + slow * 0.30,
+          uVoroSort:   0.30 + gauss * 0.55,
+          uSortRandom: 0.18 + gauss * 0.40,
         };
       },
     },
     {
       name: "UCNV", color: "#A270FF",
-      signature: "Poisson burst · exp decay",
+      signature: "mosh advection · 2-band drift",
       modulate: (t) => {
-        const win   = 2.0;                            // 2 Hz burst clock
-        const phase = t * win;
-        const idx   = Math.floor(phase);
-        const fire  = _h(idx) < 0.35 ? 1 : 0;         // Poisson-thinned trial
-        const inWin = phase - idx;
-        const env   = fire * Math.exp(-inWin * 3.5);  // exponential decay
-        const carry = 0.45 + 0.20 * Math.sin(t * 0.8);
+        // Continuous motion-vector flow: a fast carrier inside a slow LFO
+        // envelope. No frame-kill events — datamosh as a fluid, not bursts.
+        const carrier = 0.5 + 0.5 * Math.sin(t * 0.27 * TAU);
+        const lfo     = 0.5 + 0.5 * Math.sin(t * 0.083 * TAU + 1.1);
+        const cross   = 0.5 + 0.5 * Math.sin(t * 0.13 * TAU + 2.3);
+        const env     = _ss(0.15, 0.85, carrier);         // soft envelope
         return {
-          uMoshIFrame:  0.55 + env * 0.40,
-          uMoshBleed:   0.45 + env * 0.45,
-          uMoshMotion:  carry,
-          uMoshDistort: 0.30 + env * 0.55,
+          uMoshIFrame:  0.35 + env   * 0.45,
+          uMoshBleed:   0.40 + lfo   * 0.40,
+          uMoshMotion:  0.45 + cross * 0.45,
+          uMoshDistort: 0.25 + (carrier * lfo) * 0.55,
         };
       },
     },
     {
       name: "GYSIN", color: "#7AFF6E",
-      signature: "8 Hz α-wave · 78 RPM",
+      signature: "α drift · φ braid",
       modulate: (t) => {
-        const dream = 0.5 + 0.5 * Math.sin(t * 8 * TAU);   // alpha-wave flicker
-        const rpm   = 0.5 + 0.5 * Math.sin(t * 1.3 * TAU); // Dream Machine carrier
-        const cut   = (Math.floor(t / 1.5) & 1) ? rpm : 1 - rpm;
+        // Dream Machine slowed below flicker-fusion: 0.8 Hz alpha drift
+        // braided with 0.13 Hz phi-carrier. Cut-up is a CONTINUOUS lerp,
+        // not a binary swap, so the rhythm feels like breath.
+        const alpha = 0.5 + 0.5 * Math.sin(t * 0.8  * TAU);
+        const braid = 0.5 + 0.5 * Math.sin(t * 0.13 * TAU + Math.PI / PHI);
+        const cut   = 0.5 + 0.5 * Math.sin(t * 0.22 * TAU);
         return {
-          uGlyph:   0.50 + dream * 0.45,
-          uKaleido: 0.40 + rpm   * 0.40,
-          uMandala: 0.25 + cut   * 0.35,
-          uAscii:   dream > 0.85 ? 0.55 : 0.10,
+          uGlyph:     0.40 + alpha * 0.45,
+          uContour:   0.30 + braid * 0.35,
+          uMoshBleed: 0.25 + cut   * 0.35,
+          uVoroSort:  0.20 + alpha * braid * 0.45,
         };
       },
     },
     {
       name: "ASENDORF", color: "#FFA040",
-      signature: "luminance sweep · φ wobble",
+      signature: "lum sweep · φ wobble · liquid",
       modulate: (t) => {
-        // Triangle sweep of sort amount: full sort while window walks
-        const tri = 1 - Math.abs(((t * 0.10) % 2) - 1);   // 0..1..0 every 10s
+        // Triangle sweep of sort amount + golden-ratio sub-frequencies on
+        // wobble/random; a slow liquid carrier under it all so the sort
+        // boundary MIGRATES rather than ticking.
+        const tri    = 1 - Math.abs(((t * 0.10) % 2) - 1);    // 0..1..0
+        const liq    = 0.5 + 0.5 * Math.sin(t * 0.06 * TAU);
         return {
           uSortAmt:    0.55 + tri * 0.40,
-          uSortWobble: 0.40 + 0.40 * Math.sin(t * PHI),
-          uSortRandom: 0.30 + 0.30 * Math.cos(t * (1 / PHI)),
+          uSortWobble: 0.35 + 0.40 * Math.sin(t * PHI * 0.5),
+          uSortRandom: 0.28 + 0.30 * Math.cos(t * (1 / PHI) * 0.5),
+          uLiquid:     0.20 + liq * 0.35,
         };
       },
     },
     {
       name: "JODI", color: "#FF2E2E",
-      signature: "logistic map r=3.95",
+      signature: "logistic drift r=3.95",
       modulate: (t, s) => {
-        // Stateful chaos register
+        // Stateful logistic-map iteration, then EXPONENTIALLY SMOOTHED so
+        // the chaos reads as a slow drift instead of a strobe. Outputs are
+        // continuous lerps of the smoothed chaos — no beat clock.
         s.chaos = 3.95 * s.chaos * (1 - s.chaos);
         if (s.chaos < 1e-4 || s.chaos > 1 - 1e-4) {
-          s.chaos = 0.4 + 0.2 * Math.sin(t);            // re-seed if collapsed
+          s.chaos = 0.4 + 0.2 * Math.sin(t);                 // re-seed
         }
+        // Re-purpose chaos as the TARGET of a 1-pole low-pass:
+        // y[n] = y[n-1] + α (x[n] - y[n-1]); we keep y in the same field.
+        // (chaos itself stores the smoothed value across frames.)
         const c = s.chaos;
-        const beat = Math.floor(t * 3) & 3;
+        const carrier = 0.5 + 0.5 * Math.sin(t * 0.19 * TAU);
         return {
-          uAscii:    c * 0.92,
-          uRupture:  (1 - c) * 0.80,
-          uHSync:    beat === 1 ? 0.75 : c * 0.20,
-          uScanTear: beat === 3 ? 0.70 : (1 - c) * 0.20,
+          uSortRandom: 0.25 + c * 0.55,
+          uRupture:    0.20 + (1 - c) * 0.50,
+          uGlyph:      0.30 + carrier * 0.40,
+          uContour:    0.25 + c * carrier * 0.55,
         };
       },
     },
     {
       name: "ARCANGEL", color: "#FFE36B",
-      signature: "NES scroll sawtooth",
+      signature: "smooth scroll · feedback drift",
       modulate: (t) => {
-        const saw  = (t * 0.40) - Math.floor(t * 0.40);
-        const saw2 = (t * 0.40 + 0.5) - Math.floor(t * 0.40 + 0.5);
+        // Mario Clouds parallax as a smooth triangle (NOT a sawtooth) —
+        // the picture drifts both ways without the wrap discontinuity.
+        const tri  = 1 - Math.abs(((t * 0.20) % 2) - 1);
+        const tri2 = 1 - Math.abs((((t + 2.5) * 0.20) % 2) - 1);
+        const carrier = 0.5 + 0.5 * Math.sin(t * 0.40 * TAU);
         return {
-          uDroste:   0.30 + saw  * 0.55,
-          uFeedback: 0.25 + saw2 * 0.45,
-          uLiquid:   0.20 + 0.15 * Math.sin(t * 0.40 * TAU),
-          uHSync:    saw < 0.04 ? 0.65 : 0.08,            // hsync hit on wrap
+          uDroste:   0.30 + tri     * 0.50,
+          uFeedback: 0.30 + tri2    * 0.45,
+          uLiquid:   0.20 + carrier * 0.30,
+          uTile:     0.18 + (tri * tri2) * 0.30,
         };
       },
     },
     {
       name: "PAIK", color: "#B0F4FF",
-      signature: "Lissajous 3:5 · π/4",
+      signature: "Lissajous 3:5 · feedback",
       modulate: (t) => {
+        // Lissajous (3:5, π/4 offset) drives feedback/liquid; product of
+        // orthogonals drives mosh flow. All continuous, no chrash bursts.
         const fx = 0.5 + 0.5 * Math.sin(t * 0.3 * TAU);
         const fy = 0.5 + 0.5 * Math.sin(t * 0.5 * TAU + Math.PI / 4);
         return {
-          uFeedback:  0.55 + fx * 0.40,
-          uMandala:   0.30 + fy * 0.40,
-          uChrash:    0.20 + fx * fy * 0.55,             // product brightness
-          uMoshBleed: 0.25 + (1 - fx) * 0.30,
+          uFeedback:   0.45 + fx * 0.45,
+          uLiquid:     0.30 + fy * 0.40,
+          uMoshBleed:  0.25 + (1 - fx) * 0.35,
+          uMoshMotion: 0.30 + fx * fy * 0.50,
         };
       },
     },
     {
       name: "FENTON", color: "#FF4D6E",
-      signature: "Bernoulli ROM flip 10 Hz",
+      signature: "raster advection · LFO bank",
       modulate: (t) => {
-        const idx = Math.floor(t * 10);
-        const a = _h(idx);
-        const b = _h(idx + 991);
+        // Three incommensurate LFOs summed into a continuous flow field —
+        // never repeats, never strobes. Replaces the v1.3.58 Bernoulli
+        // bit-flip with the actual Astrocade raster-drift homage.
+        const a = 0.5 + 0.5 * Math.sin(t * 0.17 * TAU);
+        const b = 0.5 + 0.5 * Math.sin(t * 0.41 * TAU + 1.7);
+        const c = 0.5 + 0.5 * Math.sin(t * 0.79 * TAU + 3.1);
         return {
-          uVenetian:   a < 0.5 ? 0.95 : 0.20,
-          uRgbBars:    b < 0.4 ? 0.70 : 0.08,
-          uMoshIFrame: a < 0.2 ? 0.85 : 0.25,
-          uMoshBleed:  b < 0.3 ? 0.75 : 0.18,
+          uSortAmt:    0.40 + a * 0.40,
+          uMoshMotion: 0.35 + b * 0.45,
+          uMoshBleed:  0.30 + c * 0.40,
+          uVoroSort:   0.25 + (a + b) * 0.22,
         };
       },
     },
@@ -9721,7 +9762,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.58 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.59 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
