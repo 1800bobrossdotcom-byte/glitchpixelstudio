@@ -4520,7 +4520,81 @@ export default function SpectraAfter() {
   // VIDEO = shutter button starts/stops MediaRecorder. Replaces the old
   // "tap = photo · hold = record" gesture with two explicit controls so
   // the on-screen button can also visibly glow during recording.
+  // (v1.3.66: canvas overlay now has TWO permanent buttons — PHOTO right,
+  //  REC left — so this state only survives for the export panel preset.)
   const [captureMode, setCaptureMode] = useState<"photo" | "video">("photo");
+
+  // ── v1.3.66 Auto-VJ (visualizer) mode ────────────────────────────
+  // The old 🔊/🔈 mic toggle is replaced by an autonomous VJ engine that
+  // (a) drives the existing uAudio/uABass/uATreb/uABeat shader uniforms
+  //     from synthetic LFOs so all audio-react paths animate without a mic,
+  // (b) periodically re-rolls a subset of FX values + family variants for
+  //     a continuously-shifting auto-VJ feel suitable for phone / DJ /
+  //     projector ambient use.
+  const [vjMode, setVjMode] = useState(false);
+  const vjModeRef = useRef(false);
+  useEffect(() => { vjModeRef.current = vjMode; }, [vjMode]);
+
+  // ── v1.3.66 SFX engine ───────────────────────────────────────────
+  // Tiny synth-only sound effect bank (no assets). Lazy-creates a single
+  // shared AudioContext on first call. Sounds are short percussive blips
+  // so they never compete with whatever audio the user is monitoring.
+  const sfxCtxRef = useRef<AudioContext | null>(null);
+  const sfxLastRef = useRef(0);
+  const playSfx = useCallback((kind: "shutter" | "recStart" | "recStop" | "click" | "toggle" | "open" | "close") => {
+    try {
+      // Throttle to avoid overlap on rapid taps.
+      const now = performance.now();
+      if (now - sfxLastRef.current < 18) return;
+      sfxLastRef.current = now;
+      let ctx = sfxCtxRef.current;
+      if (!ctx) {
+        const Ctor = (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext);
+        ctx = new Ctor();
+        sfxCtxRef.current = ctx;
+      }
+      if (ctx.state === "suspended") { ctx.resume().catch(() => {}); }
+      const t0 = ctx.currentTime;
+      const beep = (freq: number, dur: number, vol: number, type: OscillatorType = "sine", glide?: number) => {
+        const osc = ctx!.createOscillator();
+        const g = ctx!.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, t0);
+        if (glide != null) osc.frequency.exponentialRampToValueAtTime(Math.max(40, glide), t0 + dur);
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(vol, t0 + 0.005);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+        osc.connect(g); g.connect(ctx!.destination);
+        osc.start(t0); osc.stop(t0 + dur + 0.02);
+      };
+      const noise = (dur: number, vol: number, hpf?: number) => {
+        const buf = ctx!.createBuffer(1, Math.floor(ctx!.sampleRate * dur), ctx!.sampleRate);
+        const d = buf.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1);
+        const src = ctx!.createBufferSource(); src.buffer = buf;
+        const g = ctx!.createGain();
+        g.gain.setValueAtTime(vol, t0);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+        if (hpf) {
+          const f = ctx!.createBiquadFilter(); f.type = "highpass"; f.frequency.value = hpf;
+          src.connect(f); f.connect(g);
+        } else { src.connect(g); }
+        g.connect(ctx!.destination);
+        src.start(t0); src.stop(t0 + dur + 0.02);
+      };
+      switch (kind) {
+        case "shutter":  noise(0.05, 0.18, 1800); beep(2400, 0.04, 0.10, "square", 1200); break;
+        case "recStart": beep(620, 0.10, 0.14, "sine", 880); beep(880, 0.08, 0.10, "sine"); break;
+        case "recStop":  beep(880, 0.08, 0.12, "sine", 440); beep(440, 0.10, 0.10, "sine"); break;
+        case "click":    beep(1800, 0.022, 0.06, "square"); break;
+        case "toggle":   beep(1400, 0.05, 0.09, "triangle", 1900); break;
+        case "open":     beep(700, 0.06, 0.08, "triangle", 1500); break;
+        case "close":    beep(1500, 0.06, 0.08, "triangle", 700); break;
+      }
+    } catch { /* ignore */ }
+  }, []);
+  const playSfxRef = useRef(playSfx);
+  useEffect(() => { playSfxRef.current = playSfx; }, [playSfx]);
   // (v1.3.57 — entire DRAW / PAINT / pxCanvas / drawCrash infrastructure
   // removed. The artist-pioneer GLITCH_PRESETS palette is now exposed
   // globally via FX Panel 2 ("GLITCH PALETTE · ARTIST FX") instead of
@@ -5577,13 +5651,29 @@ export default function SpectraAfter() {
       if (beatTarget > audioBeatRef.current) audioBeatRef.current = beatTarget;
       else audioBeatRef.current *= 0.90;
     } else if (!audioAnalyserRef.current) {
-      // Decay everything when audio is off so generator returns to ambient.
-      // (We only enter this branch when audio is genuinely off — not on
-      // the half-rate skip frames, which leave the cached refs intact.)
-      audioLevelRef.current  *= 0.92;
-      audioBassRef.current   *= 0.92;
-      audioTrebleRef.current *= 0.92;
-      audioBeatRef.current   *= 0.88;
+      if (vjModeRef.current) {
+        // v1.3.66 Auto-VJ — synthesize audio reactivity from LFOs so all
+        // existing uAudio/uABass/uATreb/uABeat reactivity machinery still
+        // animates without needing a microphone.
+        const _t = performance.now() * 0.001;
+        const lvl  = 0.55 + 0.38 * Math.sin(_t * 0.93) * Math.cos(_t * 0.31);
+        const bass = 0.55 + 0.45 * Math.sin(_t * 1.71);
+        const treb = 0.50 + 0.45 * Math.sin(_t * 2.93 + 1.3);
+        audioLevelRef.current  = audioLevelRef.current  * 0.7 + Math.abs(lvl)  * 0.3;
+        audioBassRef.current   = audioBassRef.current   * 0.7 + Math.abs(bass) * 0.3;
+        audioTrebleRef.current = audioTrebleRef.current * 0.7 + Math.abs(treb) * 0.3;
+        // Synthetic beat ~ every ~1.5s.
+        const beatPhase = (_t * 0.65) % 1;
+        const beatTarget = beatPhase < 0.05 ? 1.0 : 0.0;
+        if (beatTarget > audioBeatRef.current) audioBeatRef.current = beatTarget;
+        else audioBeatRef.current *= 0.88;
+      } else {
+        // Decay everything when audio is off so generator returns to ambient.
+        audioLevelRef.current  *= 0.92;
+        audioBassRef.current   *= 0.92;
+        audioTrebleRef.current *= 0.92;
+        audioBeatRef.current   *= 0.88;
+      }
     }
 
     rafRef.current = requestAnimationFrame(render);
@@ -6969,69 +7059,75 @@ export default function SpectraAfter() {
       fpsTime.current = now;
     }
   }, []);
-  // ── Audio input setup ──────────────────────────────────
+  // ── v1.3.66 — Mic capture removed.
+  // The previous getUserMedia / AudioContext / analyser pipeline was
+  // never reliable across Android WebView builds. The audio-react
+  // shader uniforms are now driven by the Auto-VJ synthetic LFO bank
+  // (see render loop, search "vjModeRef"). The audioActive boolean is
+  // retained only as a no-op shim so any external references keep
+  // compiling; the user-facing top-bar button now toggles vjMode.
   useEffect(() => {
     if (!audioActive) return;
-    let audioCtx: AudioContext | null = null;
-    let analyser: AnalyserNode | null = null;
-    let dataArray: Uint8Array | null = null;
-    let stream: MediaStream | null = null;
-    let source: MediaStreamAudioSourceNode | null = null;
-
-    (async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-          video: false,
-        });
-        audioStreamRef.current = stream;
-        audioCtx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-        // Android Chrome / Capacitor WebView starts contexts suspended until
-        // an explicit user-gesture resume — without this the analyser reads
-        // all-zeros and audio reactivity appears dead.
-        if (audioCtx.state === "suspended") {
-          try { await audioCtx.resume(); } catch { /* ignore */ }
-        }
-        analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 1024;
-        analyser.smoothingTimeConstant = 0.4;
-        // Use correct Uint8Array type for Web Audio API
-        dataArray = new Uint8Array(analyser.fftSize);
-        source = audioCtx.createMediaStreamSource(stream);
-        source.connect(analyser);
-        audioAnalyserRef.current = analyser;
-        audioDataArrayRef.current = dataArray;
-        // Some devices flip the context back to suspended after the source
-        // is connected. Poll once shortly after to nudge it back to running.
-        setTimeout(() => {
-          if (audioCtx && audioCtx.state === "suspended") {
-            audioCtx.resume().catch(() => { /* ignore */ });
-          }
-        }, 250);
-      } catch (err) {
-        console.error("[audio] getUserMedia failed:", err);
-        setAudioActive(false);
-        audioAnalyserRef.current = null;
-        audioDataArrayRef.current = null;
-        audioStreamRef.current = null;
-      }
-    })();
-
-    return () => {
-      if (audioStreamRef.current) {
-        audioStreamRef.current.getTracks().forEach(t => t.stop());
-        audioStreamRef.current = null;
-      }
-      if (audioAnalyserRef.current) {
-        audioAnalyserRef.current.disconnect();
-        audioAnalyserRef.current = null;
-      }
-      if (audioCtx) {
-        audioCtx.close();
-      }
-      audioDataArrayRef.current = null;
-    };
+    return () => { /* nothing to tear down */ };
   }, [audioActive]);
+
+  // ── v1.3.66 Auto-VJ engine ──────────────────────────────
+  // While vjMode is on, every ~7 seconds re-roll a small subset of
+  // FX values + an artist family. Smooth blending lives in the audio
+  // uniforms (synthetic LFOs in the render loop); this loop adds
+  // mid-range structural change so the picture keeps evolving.
+  useEffect(() => {
+    if (!vjMode) return;
+    const r = () => Math.random();
+    const tinyRoll = (max = 0.5) => (r() < 0.5 ? r() * max : 0);
+    const fam = (n = 3) => Math.floor(r() * n);
+    const cycleArtist = () => {
+      // Pick one artist FX at a time and nudge it.
+      const set: Array<[(v: number) => void, (v: number) => void]> = [
+        [setMenkmanFX, setMenkmanFam],
+        [setMolnarFX,  setMolnarFam],
+        [setUcnvFX,    setUcnvFam],
+        [setGysinFX,   setGysinFam],
+        [setAsendorfFX,setAsendorfFam],
+        [setJodiFX,    setJodiFam],
+        [setArcangelFX,setArcangelFam],
+        [setPaikFX,    setPaikFam],
+        [setFentonFX,  setFentonFam],
+      ];
+      const i = Math.floor(r() * set.length);
+      set[i][0](Math.min(1, 0.30 + r() * 0.55));
+      set[i][1](fam());
+    };
+    const cycleGlitch = () => {
+      const choices: Array<() => void> = [
+        () => setSortAmt(0.3 + r() * 0.5),
+        () => setDatamosh(0.3 + r() * 0.5),
+        () => setRgbR((r() - 0.5) * 0.5),
+        () => setRgbG((r() - 0.5) * 0.5),
+        () => setRgbB((r() - 0.5) * 0.5),
+        () => setLiquid(tinyRoll(0.5)),
+        () => setVoroSort(tinyRoll(0.5)),
+        () => setRupture(tinyRoll(0.5)),
+        () => setHsync(tinyRoll(0.5)),
+        () => setKaleido(tinyRoll(0.4)),
+        () => setSpiral(tinyRoll(0.4)),
+        () => setMoshFamily(fam(4)),
+      ];
+      choices[Math.floor(r() * choices.length)]();
+    };
+    // Fire one immediate cycle so the user sees movement instantly.
+    cycleArtist(); cycleGlitch();
+    const id = window.setInterval(() => {
+      cycleArtist();
+      if (r() < 0.7) cycleGlitch();
+      // Occasionally fade an FX back toward zero so we don't pin everything to "max"
+      if (r() < 0.25) {
+        const fades = [setSortAmt, setDatamosh, setLiquid, setVoroSort, setRupture, setHsync];
+        fades[Math.floor(r() * fades.length)](0);
+      }
+    }, 7000);
+    return () => { window.clearInterval(id); };
+  }, [vjMode]);
 
   // ── (v1.3.57 — entire DRAW overlay rendering + paint pixel stamping +
   // pointer handler block removed.) ─────────────────────────────────
@@ -9444,18 +9540,24 @@ export default function SpectraAfter() {
             title={cameraActive ? `Camera ON — tap to FLIP (now ${cameraFacing === "environment" ? "REAR" : "FRONT"})` : "Tap to START camera"}
           >{cameraActive ? (cameraFacing === "user" ? "FLIP" : "FLIP") : "CAM"}</button>
           {/* (v1.3.57 — DRAW button removed; GLITCH PALETTE moved to FX Panel 2.) */}
+          {/* v1.3.66 — Auto-VJ (visualizer) toggle. Replaces the old
+              mic toggle. When ON: synthetic LFOs drive the audio-react
+              shader uniforms AND a periodic engine re-rolls FX values
+              for autonomous "auto-VJ" blending suitable for projector,
+              DJ booth, or phone-as-visualizer use. */}
           <button
             className="sp-btn"
-            onClick={() => setAudioActive(a => !a)}
+            onClick={() => { setVjMode(a => !a); playSfx("toggle"); }}
             style={{
               ...topBtnStyle,
               width: 36, height: 36, padding: 0, fontSize: 14, borderRadius: 9, letterSpacing: 0,
-              color: audioActive ? T.ochre : undefined,
-              borderColor: audioActive ? T.amber : undefined,
-              boxShadow: audioActive ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
+              color: vjMode ? T.ochre : undefined,
+              borderColor: vjMode ? T.amber : undefined,
+              boxShadow: vjMode ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
+              ...(vjMode ? { animation: "activeGlow 1.6s ease-in-out infinite" } : {}),
             }}
-            title="Audio-Reactive FX"
-          >{audioActive ? "🔊" : "🔈"}</button>
+            title={vjMode ? "AUTO-VJ ON — autonomous FX blending + synthetic audio-react. Tap to stop." : "AUTO-VJ — autonomous visualizer mode (no mic needed)"}
+          >{vjMode ? "◉" : "○"}</button>
           <button
             className="sp-btn"
             onClick={cycleFaceFx}
@@ -9507,17 +9609,22 @@ export default function SpectraAfter() {
               : handsFreeCountdown.phase === "in"
                 ? `${handsFreeCountdown.n}…`
                 : `●${handsFreeCountdown.n}`}</button>
-          {/* v1.3.65 — RANDOMIZE FX (replaces the v1.2.73 fullscreen
-              toggle). Tap to roll fresh values + family variants on the
-              9 ARTIST FX. Fun, instant, fully reversible via ALL OFF. */}
+          {/* v1.3.66 — RANDOMIZE FX (replaces the v1.2.73 fullscreen
+              toggle). Tap to roll fresh values across ALL FX panels:
+              ARTIST FX (9 families + variants), GLITCH rack, DATAMOSH
+              rack, PIXEL SORT, RGB shift, distortion bank, generator
+              motion, and post-process. Fun, instant, fully reversible. */}
           <button
             className="sp-btn"
             onClick={() => {
+              playSfx("click");
               const r = () => Math.random();
-              // Sparse roll: ~55% chance each FX fires, biased toward
+              // Sparse roll: ~50% chance each FX fires, biased toward
               // mid-range so the picture doesn't get crushed.
-              const roll = () => (r() < 0.55 ? Math.min(1, 0.25 + r() * 0.65) : 0);
-              const fam = () => Math.floor(r() * 3);
+              const roll = (max = 0.9, lo = 0.25) => (r() < 0.5 ? Math.min(1, lo + r() * (max - lo)) : 0);
+              const fam = (n = 3) => Math.floor(r() * n);
+              const tinyRoll = (max = 0.5) => (r() < 0.4 ? r() * max : 0);
+              // ARTIST FX (9 × amount + family)
               setMenkmanFX(roll());  setMenkmanFam(fam());
               setMolnarFX(roll());   setMolnarFam(fam());
               setUcnvFX(roll());     setUcnvFam(fam());
@@ -9527,13 +9634,60 @@ export default function SpectraAfter() {
               setArcangelFX(roll()); setArcangelFam(fam());
               setPaikFX(roll());     setPaikFam(fam());
               setFentonFX(roll());   setFentonFam(fam());
+              // GLITCH rack
+              setSortAmt(roll(0.85));
+              setScanTear(tinyRoll(0.6));
+              setBlockGlitch(tinyRoll(0.6));
+              setChrash(tinyRoll(0.4));
+              setLiquid(tinyRoll(0.5));
+              setGlyph(tinyRoll(0.4));
+              setAscii(tinyRoll(0.35));
+              setRupture(tinyRoll(0.5));
+              setHsync(tinyRoll(0.5));
+              setVoroSort(tinyRoll(0.5));
+              setReactD(0.4 + r() * 0.5);
+              // RGB shift
+              setRgbR((r() - 0.5) * 0.6);
+              setRgbG((r() - 0.5) * 0.6);
+              setRgbB((r() - 0.5) * 0.6);
+              setRgbBars(tinyRoll(0.4));
+              // DATAMOSH rack
+              setDatamosh(roll(0.85));
+              setMoshIFrame(r() * 0.7);
+              setMoshMotion(r() * 0.7);
+              setMoshBleed(r() * 0.6);
+              setMoshDistort(tinyRoll(0.5));
+              setMoshFamily(fam(4));
+              // DISTORTION bank (sparse; these can dominate the frame)
+              setFeedback(tinyRoll(0.5));
+              setContour(tinyRoll(0.4));
+              setVenetian(tinyRoll(0.35));
+              setKaleido(tinyRoll(0.35));
+              setTile(tinyRoll(0.35));
+              setInvertSym(tinyRoll(0.3));
+              setDroste(tinyRoll(0.3));
+              setSpiral(tinyRoll(0.35));
+              setYantra(tinyRoll(0.3));
+              setMandala(tinyRoll(0.3));
+              setRosette(tinyRoll(0.3));
+              setStarfold(tinyRoll(0.3));
+              setHexfold(tinyRoll(0.3));
+              setDisrupt(tinyRoll(0.5));
+              // GENERATOR motion (don't touch source/style/colors)
+              setGenWarp(r() * 0.7);
+              setGenJitter(r() * 0.5);
+              setGenMoshX((r() - 0.5) * 1.0);
+              setGenMoshY((r() - 0.5) * 1.0);
+              setGenScatter(r() * 0.6);
+              // POST
+              setScanlines(tinyRoll(0.5));
             }}
             style={{
               ...topBtnStyle,
               width: 36, height: 36, padding: 0, fontSize: 18, borderRadius: 9, letterSpacing: 0,
               fontWeight: 800,
             }}
-            title="RANDOMIZE — roll fresh ARTIST FX values + families"
+            title="RANDOMIZE — roll fresh values across ALL FX panels"
           >?</button>
           {/* v1.3.3 — CLOSE: hard-shutdown for Android. Stops camera/audio,
               clears the WebView, then asks Capacitor App to exit so the
@@ -9636,48 +9790,43 @@ export default function SpectraAfter() {
               onPointerLeave={() => { touchRef.current.active = false; }}
             />
 
-            {/* v1.3.65 — split the old "tap=photo / hold=rec" combo into
-                two explicit on-screen controls:
-                  · MODE button (top): toggles PHOTO ↔ VIDEO
-                  · SHUTTER button (bottom): triggers capture
-                    - PHOTO mode → still snapshot
-                    - VIDEO mode → start/stop MediaRecorder; glows red while recording
-                Layout: stacked vertically in the bottom-right corner. */}
+            {/* v1.3.66 — split-button capture controls.
+                  · PHOTO button (right): one tap = still snapshot, with shutter SFX.
+                  · REC button (left, opposite side): one tap = start MediaRecorder,
+                    glows red + pulses while recording, second tap = stop.
+                Each button is dedicated to one action so glow + label
+                semantics never conflict. */}
             <button
               className={"sp-btn sp-photo-btn" + (neonMode ? " sp-photo-btn-neon" : "")}
               onClick={() => {
-                if (recording) return; // don't allow mode flip mid-record
-                setCaptureMode(m => (m === "photo" ? "video" : "photo"));
+                playSfx("shutter");
+                captureStillRef.current();
               }}
               style={{
                 ...topBtnStyle,
                 position: "absolute",
                 right: 10,
-                bottom: 58,
+                bottom: 10,
                 zIndex: 6,
                 width: 66,
-                height: 30,
-                fontSize: 10,
-                borderRadius: 8,
-                letterSpacing: "1.2px",
-                opacity: recording ? 0.45 : 1,
+                height: 44,
+                fontSize: 13,
+                borderRadius: 22,
+                letterSpacing: "0.8px",
+                fontWeight: 800,
               }}
-              title={`Mode: ${captureMode.toUpperCase()} — tap to switch`}
-            >{captureMode === "photo" ? "PHOTO" : "VIDEO"}</button>
+              title="Snap a still"
+            >○ SNAP</button>
             <button
               className={"sp-btn sp-photo-btn" + (neonMode ? " sp-photo-btn-neon" : "")}
               onClick={() => {
-                if (captureMode === "photo") {
-                  captureStillRef.current();
-                  return;
-                }
-                if (recording) stopRecordingRef.current();
-                else startRecordingRef.current();
+                if (recording) { playSfx("recStop"); stopRecordingRef.current(); }
+                else { playSfx("recStart"); startRecordingRef.current(); }
               }}
               style={{
                 ...topBtnStyle,
                 position: "absolute",
-                right: 10,
+                left: 10,
                 bottom: 10,
                 zIndex: 6,
                 width: 66,
@@ -9694,10 +9843,10 @@ export default function SpectraAfter() {
                 color: recording ? "#fff" : undefined,
                 animation: recording ? "spRecPulse 1.05s ease-in-out infinite" : undefined,
               }}
-              title={captureMode === "photo" ? "Snap a still" : (recording ? "Stop recording" : "Start recording")}
-            >{captureMode === "photo" ? "● SNAP" : (recording ? "■ STOP" : "● REC")}</button>
-            {/* v1.3.65 — old "TAP · HOLD=REC" hint removed; the on-screen
-                MODE + SHUTTER buttons are self-explanatory. */}
+              title={recording ? "Stop recording" : "Start recording"}
+            >{recording ? "■ STOP" : "● REC"}</button>
+            {/* v1.3.66 — capture-mode toggle removed; PHOTO and REC are
+                now distinct buttons on opposite sides of the canvas. */}
             {/* v1.2.76 — floating eye toggle, always over the canvas, so
                 even when the chrome is hidden the user can bring it back. */}
             <button
@@ -9907,7 +10056,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.65 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.66 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
