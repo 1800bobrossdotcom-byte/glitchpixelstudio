@@ -4259,27 +4259,50 @@ export default function SpectraAfter() {
   // render loop while ANY strokes are painted, so the painted region picks
   // up that preset's character on top of whatever the user has dialed in.
   // Preset 8 (PIXEL) spawns animated cells via the existing pxSpawnAt path.
+  // v1.3.56 — preset grid remapped to match Luca Grillo's "Glitch!" Android
+  // app gallery (GLITCH / RUBIK / DATAMOSH / HACKER / SORT / BURN / WARP /
+  // GHOST / DRIP). Boosts are tuned much harder than v1.3.55 so each cell
+  // produces a fully-finished aesthetic at any pressure rather than a subtle
+  // delta. The previous PIXEL slot was dropped — v1.3.55 made the single-
+  // pixel pen the only paint mode, so every palette cell now drives FX.
   type GlitchPreset = {
     name: string;
     color: string;
     boosts: Partial<Record<
-      "uMoshIFrame" | "uMoshBleed" | "uSortAmt" | "uChrash" | "uLiquid" |
-      "uKaleido" | "uSpiral" | "uAscii" | "uVenetian" | "uScanTear" |
-      "uHSync" | "uFeedback" | "uRgbBars" | "uContour",
+      "uMoshIFrame" | "uMoshBleed" | "uMoshMotion" | "uMoshDistort" |
+      "uSortAmt" | "uSortWobble" | "uSortRandom" |
+      "uChrash" | "uLiquid" | "uKaleido" | "uSpiral" |
+      "uAscii" | "uVenetian" | "uScanTear" |
+      "uHSync" | "uFeedback" | "uRgbBars" | "uContour" |
+      "uBlockGlitch" | "uVoroSort" | "uRupture" |
+      "uRgbSwap" | "uGlyph" | "uMandala" | "uYantra" |
+      "uTile" | "uHexfold" | "uStarfold" |
+      "uDroste" | "uReact",
       number
     >>;
-    pixel?: boolean;
   };
+  // Each cell is named after a pioneer of glitch / computer / video art
+  // whose practice maps to the FX rack it drives. Boost stacks are tuned
+  // so each cell embodies its namesake's signature aesthetic:
+  //   MENKMAN  — Rosa Menkman, JPEG/DCT block destruction + channel swap.
+  //   MOLNÁR   — Vera Molnár, ordered algorithmic geometry: contour+tile+hex.
+  //   UCNV     — ucnv, pure datamosh: i-frame kill + motion-vector carry.
+  //   GYSIN    — Brion Gysin, cut-up + Dream Machine: glyph atlas + kaleido.
+  //   ASENDORF — Kim Asendorf, the canonical pixel-sort + signal wobble.
+  //   JODI     — jodi.org net.art system-destroy: ascii flood + rupture.
+  //   ARCANGEL — Cory Arcangel, Super Mario Clouds: slow droste + feedback.
+  //   PAIK     — Nam June Paik, CRT magnet feedback tunnel + mandala flicker.
+  //   FENTON   — Jamie Fenton, "Digital TV Dinner" (1978) venetian slab mosh.
   const GLITCH_PRESETS: readonly GlitchPreset[] = [
-    { name: "SMEAR",  color: "#FF6FB1", boosts: { uMoshIFrame: 0.65, uMoshBleed: 0.55, uFeedback: 0.25 } },
-    { name: "SHRED",  color: "#FFA040", boosts: { uSortAmt: 0.75 } },
-    { name: "SHIFT",  color: "#5BE9FF", boosts: { uChrash: 0.65, uRgbBars: 0.40 } },
-    { name: "WARP",   color: "#A270FF", boosts: { uLiquid: 0.70 } },
-    { name: "RIPPLE", color: "#7AFF6E", boosts: { uKaleido: 0.50, uSpiral: 0.45 } },
-    { name: "ASCII",  color: "#FFE36B", boosts: { uAscii: 0.75, uContour: 0.30 } },
-    { name: "BANDS",  color: "#FF4D6E", boosts: { uVenetian: 0.60, uScanTear: 0.45 } },
-    { name: "BURN",   color: "#FF2E2E", boosts: { uHSync: 0.55, uChrash: 0.30 } },
-    { name: "PIXEL",  color: "#B0F4FF", boosts: {}, pixel: true },
+    { name: "MENKMAN",  color: "#FF6FB1", boosts: { uBlockGlitch: 0.95, uRgbBars: 0.60, uRgbSwap: 0.50, uChrash: 0.55, uScanTear: 0.45 } },
+    { name: "MOLNÁR",   color: "#5BE9FF", boosts: { uContour: 0.85, uTile: 0.55, uHexfold: 0.45, uVoroSort: 0.30 } },
+    { name: "UCNV",     color: "#A270FF", boosts: { uMoshIFrame: 0.95, uMoshBleed: 0.80, uMoshMotion: 0.70, uMoshDistort: 0.50 } },
+    { name: "GYSIN",    color: "#7AFF6E", boosts: { uGlyph: 0.90, uKaleido: 0.70, uMandala: 0.45, uAscii: 0.35 } },
+    { name: "ASENDORF", color: "#FFA040", boosts: { uSortAmt: 0.95, uSortWobble: 0.70, uSortRandom: 0.55 } },
+    { name: "JODI",     color: "#FF2E2E", boosts: { uAscii: 0.85, uRupture: 0.65, uHSync: 0.55, uScanTear: 0.45 } },
+    { name: "ARCANGEL", color: "#FFE36B", boosts: { uDroste: 0.70, uFeedback: 0.55, uLiquid: 0.35, uHSync: 0.25 } },
+    { name: "PAIK",     color: "#B0F4FF", boosts: { uFeedback: 0.95, uMandala: 0.55, uChrash: 0.40, uMoshBleed: 0.35 } },
+    { name: "FENTON",   color: "#FF4D6E", boosts: { uVenetian: 0.95, uRgbBars: 0.50, uMoshIFrame: 0.55, uMoshBleed: 0.40 } },
   ];
   const [glitchPreset, setGlitchPreset] = useState(0);
   const glitchPresetRef = useRef(0);
@@ -6725,7 +6748,7 @@ export default function SpectraAfter() {
     // sub-knob produces a visible, independent change.
     setF1(u.uSortAmt, _sortAudio * _mI + PB("uSortAmt"));
     setF1(u.uScanTear, scanTearRef.current * _mB + PB("uScanTear"));
-    setF1(u.uBlockGlitch, blockGlitchRef.current * _mB);
+    setF1(u.uBlockGlitch, blockGlitchRef.current * _mB + PB("uBlockGlitch"));
     // Datamosh INTENS slider is 0..2. v1.3.37 — the MOSH HARD toggle is
     // gone; hardness now derives smoothly from slider position so cranking
     // the knob naturally enters the old HARD territory. Below the
@@ -6745,24 +6768,24 @@ export default function SpectraAfter() {
     setF1(u.uChrash, chrashRef.current * _mB + PB("uChrash"));
     setF1(u.uLiquid, liquidRef.current * _mI + PB("uLiquid"));
     // v1.2.58 — Asendorf / Gysin homage rack uniform writes (v1.2.59: streak/hilbert removed)
-    setF1(u.uGlyph, glyphRef.current * _mI);
+    setF1(u.uGlyph, glyphRef.current * _mI + PB("uGlyph"));
     setF1(u.uSortMix, sortMixRef.current * _mI);
-    setF1(u.uReact, reactDRef.current * _mI);
-    setF1(u.uVoroSort, voroSortRef.current * _mI);
+    setF1(u.uReact, reactDRef.current * _mI + PB("uReact"));
+    setF1(u.uVoroSort, voroSortRef.current * _mI + PB("uVoroSort"));
     setF1(u.uFeedback, feedbackRef.current * _mB + PB("uFeedback"));
     setF1(u.uContour, contourRef.current * _mI + PB("uContour"));
     setF1(u.uAscii, asciiRef.current * _mI + PB("uAscii"));
     setF1(u.uVenetian, venetianRef.current * _mI + PB("uVenetian"));
     setF1(u.uKaleido, kaleidoRef.current * _mI + PB("uKaleido"));
-    setF1(u.uTile, tileRef.current * _mI);
+    setF1(u.uTile, tileRef.current * _mI + PB("uTile"));
     setF1(u.uInvert, invertSymRef.current * _mI);
-    setF1(u.uDroste, drosteRef.current * _mI);
+    setF1(u.uDroste, drosteRef.current * _mI + PB("uDroste"));
     setF1(u.uSpiral, spiralRef.current * _mI + PB("uSpiral"));
-    setF1(u.uYantra, yantraRef.current * _mI);
-    setF1(u.uMandala, mandalaRef.current * _mI);
+    setF1(u.uYantra, yantraRef.current * _mI + PB("uYantra"));
+    setF1(u.uMandala, mandalaRef.current * _mI + PB("uMandala"));
     setF1(u.uRosette, rosetteRef.current * _mI);
-    setF1(u.uStarfold, starfoldRef.current * _mI);
-    setF1(u.uHexfold, hexfoldRef.current * _mI);
+    setF1(u.uStarfold, starfoldRef.current * _mI + PB("uStarfold"));
+    setF1(u.uHexfold, hexfoldRef.current * _mI + PB("uHexfold"));
     setF1(u.uDisrupt, disruptRef.current * _mB);
     setF1(u.uDisruptCount, disruptCountRef.current);
     setF1(u.uDisruptSize, disruptSizeRef.current);
@@ -6773,22 +6796,22 @@ export default function SpectraAfter() {
     setF1(u.uSortHigh, sortHighRef.current);
     setF1(u.uSortMode, sortModeRef.current);
     setF1(u.uSortSegment, sortSegmentRef.current);
-    setF1(u.uSortRandom, sortRandomRef.current * _mB);
-    setF1(u.uSortWobble, sortWobbleRef.current * _mM);
+    setF1(u.uSortRandom, sortRandomRef.current * _mB + PB("uSortRandom"));
+    setF1(u.uSortWobble, sortWobbleRef.current * _mM + PB("uSortWobble"));
     setF1(u.uSortInterval, sortIntervalRef.current);
     setF1(u.uSortAngle, sortAngleRef.current);
     setF1(u.uRgbR, rgbRRef.current * _mB);
     setF1(u.uRgbG, rgbGRef.current * _mB);
     setF1(u.uRgbB, rgbBRef.current * _mB);
     setF1(u.uRgbBars, rgbBarsRef.current * _mB + PB("uRgbBars"));
-    setF1(u.uRgbSwap, rgbSwapRef.current * _mB);
-    setF1(u.uRupture, ruptureRef.current * _mB);
+    setF1(u.uRgbSwap, rgbSwapRef.current * _mB + PB("uRgbSwap"));
+    setF1(u.uRupture, ruptureRef.current * _mB + PB("uRupture"));
     setF1(u.uHSync, hsyncRef.current * _mB + PB("uHSync"));
     setF1(u.uMoshIFrame, moshIFrameRef.current * _mM + PB("uMoshIFrame"));
-    setF1(u.uMoshMotion, moshMotionRef.current * _mM);
+    setF1(u.uMoshMotion, moshMotionRef.current * _mM + PB("uMoshMotion"));
     setF1(u.uMoshBleed, moshBleedRef.current * _mM + PB("uMoshBleed"));
     setF1(u.uMoshMap, moshMapRef.current * _mB);
-    setF1(u.uMoshDistort, moshDistortRef.current * _mB);
+    setF1(u.uMoshDistort, moshDistortRef.current * _mB + PB("uMoshDistort"));
     // Face FX universal mask uniforms (driven by faceFxMode + segmentation loop).
     setF1(u.uFaceActive, faceFxRef.current.active ? 1.0 : 0.0);
     setF1(u.uFaceTexValid, faceFxRef.current.texValid ? 1.0 : 0.0);
@@ -7161,12 +7184,6 @@ export default function SpectraAfter() {
       if (sourceModeRef.current === "paint" && paintBrushModeRef.current === "color") {
         stampPaintPixel(pos.x, pos.y);
       }
-      // PIXEL preset: spawn animated cells along the stroke.
-      const preset = GLITCH_PRESETS[glitchPresetRef.current];
-      if (preset && preset.pixel) {
-        pxActiveRef.current = true;
-        pxSpawnAt(pos.x, pos.y);
-      }
       // Always seed a stroke so the FX mask gets stamped via renderDrawOverlay.
       currentStrokeRef.current = { points: [{ ...pos, pressure }], color: brushColorRef.current, width: PIXEL_SIZE, opacity: 1, brush: "pixel" };
       renderDrawOverlay();
@@ -7194,7 +7211,6 @@ export default function SpectraAfter() {
       // v1.3.55 — interpolate hard pixel stamps along the move path so fast
       // drags don't leave gaps. Step is one pixel-size so squares tile cleanly.
       const isPaintColor = sourceModeRef.current === "paint" && paintBrushModeRef.current === "color";
-      const preset = GLITCH_PRESETS[glitchPresetRef.current];
       const dist = Math.hypot(pos.x - last.x, pos.y - last.y);
       const pc = paintCanvasRef.current;
       const pcW = pc?.width ?? 1024;
@@ -7205,7 +7221,6 @@ export default function SpectraAfter() {
         const ix = last.x + (pos.x - last.x) * t;
         const iy = last.y + (pos.y - last.y) * t;
         if (isPaintColor) stampPaintPixel(ix, iy);
-        if (preset && preset.pixel) pxSpawnAt(ix, iy);
       }
       renderDrawOverlay();
     } catch (err) {
@@ -9958,7 +9973,7 @@ export default function SpectraAfter() {
                 display:
                   drawActive && drawAvailable &&
                   paintBrushMode === "glitch" &&
-                  GLITCH_PRESETS[glitchPreset]?.pixel
+                  false
                     ? "block"
                     : "none",
               }}
@@ -10286,7 +10301,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.55 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.56 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
