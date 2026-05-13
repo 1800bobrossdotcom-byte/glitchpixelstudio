@@ -4184,7 +4184,11 @@ export default function SpectraAfter() {
   const [fentonFam,   setFentonFam]   = useState(0);
   // v1.3.64 — when true, ARTIST knobs map to family index (0–1–2)
   // instead of intensity. Toggle button on the panel switches the meaning.
-  const [artistFamilyMode, setArtistFamilyMode] = useState(false);
+  // v1.3.70 — toggle removed; AMT and FAM now have separate knobs.
+  // State kept (no setter destructured) only because legacy preset blobs
+  // may carry the field; it has no UI surface anymore.
+  const [artistFamilyMode] = useState(false);
+  void artistFamilyMode;
   // v1.3.64 — ARTIST FX touch-bend strength + live touch position. The
   // live x/y is fed into the existing uTouch uniform; uArtistTouch scales
   // how hard each FX bends toward the finger.
@@ -7248,6 +7252,7 @@ export default function SpectraAfter() {
         () => setRgbR((r() - 0.5) * 0.5),
         () => setRgbG((r() - 0.5) * 0.5),
         () => setRgbB((r() - 0.5) * 0.5),
+        () => setRgbBars(tinyRoll(0.4)),
         () => setLiquid(tinyRoll(0.5)),
         () => setVoroSort(tinyRoll(0.5)),
         () => setRupture(tinyRoll(0.5)),
@@ -7255,6 +7260,18 @@ export default function SpectraAfter() {
         () => setKaleido(tinyRoll(0.4)),
         () => setSpiral(tinyRoll(0.4)),
         () => setMoshFamily(fam(4)),
+        // v1.3.70 — broaden the glitch pool with the rest of the rack
+        // so AUTO-VJ touches the full FX surface, not just artist + sort.
+        () => setScanTear(tinyRoll(0.55)),
+        () => setBlockGlitch(tinyRoll(0.55)),
+        () => setChrash(tinyRoll(0.4)),
+        () => setGlyph(tinyRoll(0.4)),
+        () => setAscii(tinyRoll(0.35)),
+        () => setMoshIFrame(r() * 0.7),
+        () => setMoshMotion(r() * 0.7),
+        () => setMoshBleed(r() * 0.6),
+        () => setMoshDistort(tinyRoll(0.5)),
+        () => setReactD(0.4 + r() * 0.5),
       ];
       choices[Math.floor(r() * choices.length)]();
     };
@@ -7310,24 +7327,38 @@ export default function SpectraAfter() {
       choices[Math.floor(r() * choices.length)]();
     };
     const runCycle = () => {
+      // v1.3.70 — sweep WIDER per cycle. Previous versions touched ~2-3
+      // knobs per beat trigger which read as "artist-only morph" because
+      // cycleArtist always fired and others picked a single item from
+      // their pool. Now each helper fires multiple picks so a beat
+      // visibly nudges across rack/post/distortion/structure together.
+      // Pick 2 different artists per cycle.
       cycleArtist();
-      if (r() < 0.7) cycleGlitch();
-      // v1.3.69 — additional weighted morph layers so AUTO-VJ truly
-      // reshapes the visual identity over time, not just nudges amounts.
-      if (r() < 0.55) cyclePost();
-      if (r() < 0.45) cycleDistortion();
-      // Structural changes (mode / genStyle / scatterMode etc) fire on
-      // ~1-in-3 cycles so the look has time to read between swaps.
-      if (r() < 0.33) cycleStructure();
-      // Occasionally fade an FX back toward zero so we don't pin everything to "max"
-      if (r() < 0.30) {
+      cycleArtist();
+      // Glitch: 1-3 picks per cycle.
+      cycleGlitch();
+      if (r() < 0.85) cycleGlitch();
+      if (r() < 0.55) cycleGlitch();
+      // Post (color / motion / scanlines / generator motion): 2 picks.
+      cyclePost();
+      if (r() < 0.75) cyclePost();
+      // Distortion: 1-2 picks.
+      cycleDistortion();
+      if (r() < 0.55) cycleDistortion();
+      // Structure (mode / genStyle / combo) — bumped to ~1 in 2 so the
+      // visual identity actually shifts noticeably between bars.
+      if (r() < 0.50) cycleStructure();
+      // Occasionally fade an FX back toward zero so values don't peg max.
+      if (r() < 0.35) {
         const fades = [
           setSortAmt, setDatamosh, setLiquid, setVoroSort, setRupture, setHsync,
           setKaleido, setMandala, setYantra, setRosette, setStarfold, setHexfold,
           setDroste, setSpiral, setTile, setContour, setVenetian, setFeedback,
-          setDisrupt, setScanlines,
+          setDisrupt, setScanlines, setGenWarp, setGenJitter, setGenScatter,
         ];
         fades[Math.floor(r() * fades.length)](0);
+        // 50% chance to fade a SECOND knob so the picture breathes.
+        if (r() < 0.5) fades[Math.floor(r() * fades.length)](0);
       }
     };
     // Fire one immediate cycle so the user sees movement instantly.
@@ -9892,6 +9923,36 @@ export default function SpectraAfter() {
           >{faceFxMode === "OFF" ? "👤" : faceFxMode === "FACE" ? "👤" : "▣"}</button>
           {/* v1.3.69 — Bug-report button removed; in-app feedback channel
               moved off-device. */}
+          {/* v1.3.70 — inline SNAP / REC capture buttons. Live in the top
+              menu bar so they're never blocking the canvas. The translucent
+              floating pair (rendered only when uiHidden) below the canvas
+              is still available for immersive-mode capture. */}
+          <button
+            className="sp-btn"
+            onClick={() => { playSfx("shutter"); captureStillRef.current(); }}
+            style={{
+              ...topBtnStyle,
+              width: 46, height: 36, padding: 0, fontSize: 10, borderRadius: 9, letterSpacing: "0.4px",
+            }}
+            title="SNAP — capture a still"
+          >○ SNAP</button>
+          <button
+            className="sp-btn"
+            onClick={() => {
+              if (recording) { playSfx("recStop"); stopRecordingRef.current(); }
+              else { playSfx("recStart"); startRecordingRef.current(); }
+            }}
+            style={{
+              ...topBtnStyle,
+              width: 46, height: 36, padding: 0, fontSize: 10, borderRadius: 9, letterSpacing: "0.4px",
+              background: recording ? "rgba(224,61,61,0.92)" : (topBtnStyle.background as string | undefined),
+              borderColor: recording ? "#E03D3D" : (topBtnStyle.borderColor as string | undefined),
+              boxShadow: recording ? "0 0 14px rgba(224,61,61,0.85)" : topBtnStyle.boxShadow,
+              color: recording ? "#fff" : undefined,
+              animation: recording ? "spRecPulse 1.05s ease-in-out infinite" : undefined,
+            }}
+            title={recording ? "Stop video recording" : "Start video recording"}
+          >{recording ? "■ STOP" : "● REC"}</button>
           {/* v1.3.30 — UI SKIN cycle: MOOG (walnut/cream) → 808 (Roland) → NEON (glass). */}
           <button
             className="sp-btn"
@@ -11106,35 +11167,34 @@ export default function SpectraAfter() {
                 Composes with everything else; runs at the very tail of
                 main(). v1.3.62+ will add rotary detents per knob to cycle
                 3-5 sub-variants per family. */}
-            <SynthPanel title="ARTIST FX" subtitle="9 NOVEL CS PRIMITIVES · FAMILY MODE · TOUCH-BEND" accent="rgba(255,180,255,0.95)">
-              {/* v1.3.64 — MODE toggle. AMT = knob sets intensity 0..1 (default).
-                  FAMILY = knob picks one of 3 sub-variants per FX. Knob value
-                  is reused for both meanings via the routing below. */}
-              <div style={{ display: "flex", justifyContent: "center", gap: 10, marginBottom: 8 }}>
-                <button
-                  onClick={() => setArtistFamilyMode(v => !v)}
-                  style={{
-                    padding: "6px 18px", fontSize: 10, letterSpacing: "1.6px", fontWeight: 800,
-                    background: artistFamilyMode ? "rgba(255,180,255,0.32)" : "rgba(255,180,255,0.06)",
-                    border: "1px solid rgba(255,180,255,0.65)",
-                    color: artistFamilyMode ? "#fff" : "rgba(255,210,255,0.85)",
-                    cursor: "pointer", borderRadius: 4,
-                    fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
-                  }}
-                  title="Toggle knob meaning between AMT (intensity) and FAMILY (variant 0/1/2)"
-                >MODE: {artistFamilyMode ? "FAMILY" : "AMT"}</button>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginTop: 6, justifyItems: "center" }}>
-                <Knob label="MENKMAN"  value={artistFamilyMode ? menkmanFam/2  : menkmanFX}  min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setMenkmanFam(Math.round(v*2))  : setMenkmanFX(v)} />
-                <Knob label="MOLNÁR"   value={artistFamilyMode ? molnarFam/2   : molnarFX}   min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setMolnarFam(Math.round(v*2))   : setMolnarFX(v)} />
-                <Knob label="UCNV"     value={artistFamilyMode ? ucnvFam/2     : ucnvFX}     min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setUcnvFam(Math.round(v*2))     : setUcnvFX(v)} />
-                <Knob label="GYSIN"    value={artistFamilyMode ? gysinFam/2    : gysinFX}    min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setGysinFam(Math.round(v*2))    : setGysinFX(v)} />
-                <Knob label="ASENDORF" value={artistFamilyMode ? asendorfFam/2 : asendorfFX} min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setAsendorfFam(Math.round(v*2)) : setAsendorfFX(v)} />
-                <Knob label="JODI"     value={artistFamilyMode ? jodiFam/2     : jodiFX}     min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setJodiFam(Math.round(v*2))     : setJodiFX(v)} />
-                <Knob label="ARCANGEL" value={artistFamilyMode ? arcangelFam/2 : arcangelFX} min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setArcangelFam(Math.round(v*2)) : setArcangelFX(v)} />
-                <Knob label="PAIK"     value={artistFamilyMode ? paikFam/2     : paikFX}     min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setPaikFam(Math.round(v*2))     : setPaikFX(v)} />
-                <Knob label="FENTON"   value={artistFamilyMode ? fentonFam/2   : fentonFX}   min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setFentonFam(Math.round(v*2))   : setFentonFX(v)} />
-              </div>
+            <SynthPanel title="ARTIST FX" subtitle="9 NOVEL CS PRIMITIVES · AMT + FAM PER ARTIST · TOUCH-BEND" accent="rgba(255,180,255,0.95)">
+              {/* v1.3.70 — panel redesign. The old AMT/FAMILY mode toggle
+                  is gone; each artist now exposes BOTH a big AMT knob
+                  (intensity 0..1) AND a small FAM knob (variant 0/1/2)
+                  side-by-side. AUTO-VJ + RANDOMIZE pull from both ends. */}
+              {(() => {
+                const artistRows: Array<{ label: string; amt: number; setAmt: (v: number) => void; fam: number; setFam: (v: number) => void }> = [
+                  { label: "MENKMAN",  amt: menkmanFX,  setAmt: setMenkmanFX,  fam: menkmanFam,  setFam: setMenkmanFam  },
+                  { label: "MOLNÁR",   amt: molnarFX,   setAmt: setMolnarFX,   fam: molnarFam,   setFam: setMolnarFam   },
+                  { label: "UCNV",     amt: ucnvFX,     setAmt: setUcnvFX,     fam: ucnvFam,     setFam: setUcnvFam     },
+                  { label: "GYSIN",    amt: gysinFX,    setAmt: setGysinFX,    fam: gysinFam,    setFam: setGysinFam    },
+                  { label: "ASENDORF", amt: asendorfFX, setAmt: setAsendorfFX, fam: asendorfFam, setFam: setAsendorfFam },
+                  { label: "JODI",     amt: jodiFX,     setAmt: setJodiFX,     fam: jodiFam,     setFam: setJodiFam     },
+                  { label: "ARCANGEL", amt: arcangelFX, setAmt: setArcangelFX, fam: arcangelFam, setFam: setArcangelFam },
+                  { label: "PAIK",     amt: paikFX,     setAmt: setPaikFX,     fam: paikFam,     setFam: setPaikFam     },
+                  { label: "FENTON",   amt: fentonFX,   setAmt: setFentonFX,   fam: fentonFam,   setFam: setFentonFam   },
+                ];
+                return (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginTop: 4, justifyItems: "center" }}>
+                    {artistRows.map(row => (
+                      <div key={row.label} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                        <Knob label={row.label} value={row.amt} min={0} max={1} step={0.01} defaultValue={0} onChange={row.setAmt} size={46} />
+                        <Knob label="FAM"        value={row.fam} min={0} max={2} step={1}    defaultValue={0} onChange={row.setFam} size={26} />
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
               {/* v1.3.64 — touch-bend strength scales how hard ARTIST FX warp toward the finger */}
               <div style={{ marginTop: 10, display: "flex", justifyContent: "center" }}>
                 <Knob label="TOUCH" value={artistTouchStr} min={0} max={1} step={0.01} defaultValue={0.7} onChange={setArtistTouchStr} size={48} />
@@ -11158,7 +11218,7 @@ export default function SpectraAfter() {
                 >ALL OFF</button>
               </div>
               <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(255,180,255,0.55)", textAlign: "center" }}>
-                MODE toggles knob meaning · swipe live camera to bend FX · v1.3.64
+                AMT = intensity · FAM = variant 0/1/2 · swipe live camera to bend FX · v1.3.70
               </div>
             </SynthPanel>
 
