@@ -4244,12 +4244,17 @@ export default function SpectraAfter() {
   // v1.3.54 — ref mirror so the per-frame render loop (outside React state)
   // can read drawActive without re-binding the giant render callback.
   const drawActiveRef = useRef(false);
+  // v1.3.55 — single-square pixel pen (MS-Paint pencil). No round brush, no
+  // size slider. PIXEL_SIZE is in DEVICE PIXELS on the draw/mask canvas; the
+  // paint-canvas uses its own scale. touchPressureRef carries the latest
+  // PointerEvent.pressure so the render-loop PB() scales preset boost with
+  // how hard the user is pressing.
+  const PIXEL_SIZE = 22;
+  const touchPressureRef = useRef(1);
   const [strokes, setStrokes] = useState<DrawStroke[]>([]);
   const [brushColor, setBrushColor] = useState("#ff00ff");
-  // v1.3.54 — pressure-only brush (no SIZE slider). Base width 80 px scales
-  // by per-sample pressure (slow drag = thick, fast drag = thin).
-  const brushSize = 80;
-  const [brushOpacity, setBrushOpacity] = useState(0.85);
+  const brushSize = PIXEL_SIZE;
+  const [brushOpacity, setBrushOpacity] = useState(1);
   // v1.3.54 — GLITCH PALETTE. Each preset boosts a small uniform set in the
   // render loop while ANY strokes are painted, so the painted region picks
   // up that preset's character on top of whatever the user has dialed in.
@@ -6686,7 +6691,11 @@ export default function SpectraAfter() {
     const _pbActive = drawActiveRef.current && touchRef.current.active;
     const _preset = _pbActive ? GLITCH_PRESETS[glitchPresetRef.current] : null;
     const _pb = _preset ? _preset.boosts : undefined;
-    const PB = (k: keyof NonNullable<typeof _pb>): number => (_pb && _pb[k]) || 0;
+    // v1.3.55 — preset boost is scaled by current touch pressure so harder
+    // press = more FX, lighter press = subtle. Floor 0.15 so a featherlight
+    // touch still registers; ceiling 1.4 lets pen-pressure devices over-drive.
+    const _press = _pbActive ? Math.max(0.15, Math.min(1.4, touchPressureRef.current)) : 0;
+    const PB = (k: keyof NonNullable<typeof _pb>): number => ((_pb && _pb[k]) || 0) * _press;
     setF1(u.uBrightness, 1 + (brightnessRef.current - 1) * _mC);
     setF1(u.uContrast,   1 + (contrastRef.current   - 1) * _mC);
     setF1(u.uSaturation, 1 + (saturationRef.current - 1) * _mC);
@@ -7022,42 +7031,32 @@ export default function SpectraAfter() {
     const ctx = dc.getContext("2d");
     if (!ctx) return;
     ctx.clearRect(0, 0, dc.width, dc.height);
+    ctx.imageSmoothingEnabled = false;
 
-    // Visible indicator: low-alpha white fill + thin outline. Width and
-    // path geometry still come from the user's stroke, but colour/brush
-    // styling is intentionally ignored — this is a region marker, not a
-    // painted line. Keeps the UI from looking like a pen tool.
+    // v1.3.55 \u2014 hard pixel squares (MS-Paint pencil). Each stroke point is a
+    // single fillRect of PIXEL_SIZE on both the visible overlay (translucent
+    // white outline so the user sees where the FX mask is active) and the
+    // mask canvas (full white = full FX gate).
+    const dcW = dc.width || 1;
+    const stampPx = (cx: number, cy: number, c2: CanvasRenderingContext2D, w: number, h: number, scale: number, alpha: number) => {
+      const s = Math.max(1, Math.round(PIXEL_SIZE * scale));
+      const x = Math.round(cx * w - s / 2);
+      const y = Math.round(cy * h - s / 2);
+      c2.globalAlpha = alpha;
+      c2.fillRect(x, y, s, s);
+    };
+
     const drawSingleStroke = (stroke: DrawStroke) => {
-      if (stroke.points.length < 2) return;
-      const w = stroke.width;
+      if (stroke.points.length < 1) return;
       ctx.save();
-      ctx.lineCap = "round"; ctx.lineJoin = "round";
-
-      // Soft translucent fill (the FX-active region).
-      ctx.globalAlpha = 0.22 * (stroke.opacity ?? 1);
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = w;
-      ctx.beginPath();
-      ctx.moveTo(stroke.points[0].x * dc.width, stroke.points[0].y * dc.height);
-      for (let i = 1; i < stroke.points.length; i++) {
-        const mx = (stroke.points[i-1].x + stroke.points[i].x) / 2 * dc.width;
-        const my = (stroke.points[i-1].y + stroke.points[i].y) / 2 * dc.height;
-        ctx.quadraticCurveTo(stroke.points[i-1].x*dc.width, stroke.points[i-1].y*dc.height, mx, my);
-      }
-      ctx.stroke();
-
-      // Thin crisp outline so the boundary is readable on busy images.
-      ctx.globalAlpha = 0.55 * (stroke.opacity ?? 1);
-      ctx.strokeStyle = "rgba(231,174,255,0.9)";
-      ctx.lineWidth = Math.max(1, w * 0.08);
-      ctx.stroke();
-
+      ctx.fillStyle = "#ffffff";
+      for (const p of stroke.points) stampPx(p.x, p.y, ctx, dc.width, dc.height, 1, 0.25);
       ctx.restore();
     };
 
     for (const stroke of strokes) { drawSingleStroke(stroke); }
     const cs = currentStrokeRef.current;
-    if (cs && cs.points.length > 1) { drawSingleStroke(cs); }
+    if (cs) { drawSingleStroke(cs); }
 
     // --- Draw to mask canvas (grayscale, 0=off, 1=full FX) ---
     const maskCanvas = maskCanvasRef.current;
@@ -7065,36 +7064,15 @@ export default function SpectraAfter() {
     const mctx = maskCanvas.getContext("2d");
     if (!mctx) return;
     mctx.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
+    mctx.imageSmoothingEnabled = false;
     mctx.save();
-    mctx.lineCap = "round"; mctx.lineJoin = "round";
-    // Draw all strokes as white, opacity = stroke.opacity
-    const dcW = dc.width || 1;
+    mctx.fillStyle = "#fff";
+    const maskScale = maskCanvas.width / dcW;
     for (const stroke of strokes) {
-      if (stroke.points.length < 2) continue;
-      mctx.globalAlpha = stroke.opacity;
-      mctx.strokeStyle = "#fff";
-      mctx.lineWidth = Math.max(0.5, (stroke.width / dcW) * maskCanvas.width);
-      mctx.beginPath();
-      mctx.moveTo(stroke.points[0].x * maskCanvas.width, stroke.points[0].y * maskCanvas.height);
-      for (let i = 1; i < stroke.points.length; i++) {
-        const mx = (stroke.points[i-1].x + stroke.points[i].x) / 2 * maskCanvas.width;
-        const my = (stroke.points[i-1].y + stroke.points[i].y) / 2 * maskCanvas.height;
-        mctx.quadraticCurveTo(stroke.points[i-1].x*maskCanvas.width, stroke.points[i-1].y*maskCanvas.height, mx, my);
-      }
-      mctx.stroke();
+      for (const p of stroke.points) stampPx(p.x, p.y, mctx, maskCanvas.width, maskCanvas.height, maskScale, 1);
     }
-    if (cs && cs.points.length > 1) {
-      mctx.globalAlpha = cs.opacity;
-      mctx.strokeStyle = "#fff";
-      mctx.lineWidth = Math.max(0.5, (cs.width / dcW) * maskCanvas.width);
-      mctx.beginPath();
-      mctx.moveTo(cs.points[0].x * maskCanvas.width, cs.points[0].y * maskCanvas.height);
-      for (let i = 1; i < cs.points.length; i++) {
-        const mx = (cs.points[i-1].x + cs.points[i].x) / 2 * maskCanvas.width;
-        const my = (cs.points[i-1].y + cs.points[i].y) / 2 * maskCanvas.height;
-        mctx.quadraticCurveTo(cs.points[i-1].x*maskCanvas.width, cs.points[i-1].y*maskCanvas.height, mx, my);
-      }
-      mctx.stroke();
+    if (cs) {
+      for (const p of cs.points) stampPx(p.x, p.y, mctx, maskCanvas.width, maskCanvas.height, maskScale, 1);
     }
     mctx.restore();
 
@@ -7140,6 +7118,24 @@ export default function SpectraAfter() {
     const rect = canvas.getBoundingClientRect();
     return { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height };
   };
+  // v1.3.55 — Hard-pixel pen helper. Stamps a single SQUARE pixel block at
+  // (nx, ny) ∈ [0,1] into the paint canvas with imageSmoothingEnabled=false.
+  // No round brush, no interpolated radius — MS-Paint pencil tool behavior.
+  const stampPaintPixel = useCallback((nx: number, ny: number) => {
+    const pc = ensurePaintCanvas();
+    const pctx = pc.getContext("2d");
+    if (!pctx) return;
+    pctx.imageSmoothingEnabled = false;
+    pctx.fillStyle = brushColorRef.current;
+    // Pen size scales with paint-canvas resolution so it reads as a chunky
+    // pixel regardless of source size. PIXEL_SIZE is the on-screen size; the
+    // paint canvas is 1024² so 24 device-pixels ≈ 24 paint-pixels.
+    const s = PIXEL_SIZE;
+    const px = Math.round(nx * pc.width  - s / 2);
+    const py = Math.round(ny * pc.height - s / 2);
+    pctx.fillRect(px, py, s, s);
+  }, [ensurePaintCanvas]);
+
   const onPointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!drawActive || !drawAvailable) {
       // Gesture only — do NOT touch touchRef so the shader FX flow is uninterrupted
@@ -7153,32 +7149,31 @@ export default function SpectraAfter() {
     try {
       try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported on some Android WebViews */ }
       const pos = getCanvasNorm(e, e.currentTarget);
-      // v1.3.54 — COLOR brush mode in PAINT source: write directly into the
-      // persistent paint canvas (MS-Paint behavior). FX mask is left alone.
+      // v1.3.55 — pressure: prefer hardware (stylus, force-touch), else 1.
+      const pressure = e.pressure && e.pressure > 0 ? e.pressure : 1;
+      touchPressureRef.current = pressure;
+      // Touch position drives shader uTouch; the shader gates FX by uMask
+      // wherever we've stamped on the mask canvas.
+      touchRef.current.x = pos.x;
+      touchRef.current.y = pos.y;
+      touchRef.current.active = true;
+      // PAINT source + COLOR mode: stamp a hard pixel square into paint canvas.
       if (sourceModeRef.current === "paint" && paintBrushModeRef.current === "color") {
-        const pc = ensurePaintCanvas();
-        const pctx = pc.getContext("2d");
-        if (pctx) {
-          pctx.fillStyle = brushColorRef.current;
-          pctx.beginPath();
-          pctx.arc(pos.x * pc.width, pos.y * pc.height, brushSize * 0.45, 0, Math.PI * 2);
-          pctx.fill();
-        }
-        currentStrokeRef.current = { points: [{ ...pos, pressure: 1 }], color: brushColorRef.current, width: brushSize, opacity: brushOpacity, brush: "color-paint" };
-        return;
+        stampPaintPixel(pos.x, pos.y);
       }
-      // v1.3.54 — PIXEL preset: spawn animated cells along the stroke.
+      // PIXEL preset: spawn animated cells along the stroke.
       const preset = GLITCH_PRESETS[glitchPresetRef.current];
       if (preset && preset.pixel) {
         pxActiveRef.current = true;
         pxSpawnAt(pos.x, pos.y);
       }
-      currentStrokeRef.current = { points: [{ ...pos, pressure: 1 }], color: brushColorRef.current, width: brushSize, opacity: brushOpacity, brush: brushTypeRef.current };
+      // Always seed a stroke so the FX mask gets stamped via renderDrawOverlay.
+      currentStrokeRef.current = { points: [{ ...pos, pressure }], color: brushColorRef.current, width: PIXEL_SIZE, opacity: 1, brush: "pixel" };
       renderDrawOverlay();
     } catch (err) {
       reportDrawCrash("onPointerDown", err);
     }
-  }, [drawActive, drawAvailable, brushOpacity, ensurePaintCanvas, pxSpawnAt, renderDrawOverlay, reportDrawCrash, GLITCH_PRESETS]);
+  }, [drawActive, drawAvailable, stampPaintPixel, pxSpawnAt, renderDrawOverlay, reportDrawCrash, GLITCH_PRESETS]);
 
   const onPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!drawActive || !drawAvailable) {
@@ -7190,42 +7185,33 @@ export default function SpectraAfter() {
       const pts = currentStrokeRef.current.points;
       const last = pts.length > 0 ? pts[pts.length - 1] : null;
       if (!last) return;
-      const speed = Math.hypot(pos.x - last.x, pos.y - last.y) * 500;
-      const pressure = Math.max(0.25, Math.min(1.2, 1 - speed * 1.2));
+      const pressure = e.pressure && e.pressure > 0 ? e.pressure : 1;
+      touchPressureRef.current = pressure;
+      touchRef.current.x = pos.x;
+      touchRef.current.y = pos.y;
+      touchRef.current.active = true;
       pts.push({ ...pos, pressure });
-      currentStrokeRef.current.width = brushSize * pressure;
-      // v1.3.54 — COLOR brush in PAINT mode: stroke directly onto the paint
-      // canvas with pressure-scaled radius. Linear interpolation between
-      // last and current point so fast drags don't dot.
-      if (sourceModeRef.current === "paint" && paintBrushModeRef.current === "color") {
-        const pc = ensurePaintCanvas();
-        const pctx = pc.getContext("2d");
-        if (pctx) {
-          pctx.fillStyle = brushColorRef.current;
-          const radius = Math.max(2, brushSize * pressure * 0.45);
-          const dist = Math.hypot(pos.x - last.x, pos.y - last.y);
-          const steps = Math.max(1, Math.floor(dist * pc.width / Math.max(2, radius * 0.6)));
-          for (let i = 1; i <= steps; i++) {
-            const t = i / steps;
-            const ix = (last.x + (pos.x - last.x) * t) * pc.width;
-            const iy = (last.y + (pos.y - last.y) * t) * pc.height;
-            pctx.beginPath();
-            pctx.arc(ix, iy, radius, 0, Math.PI * 2);
-            pctx.fill();
-          }
-        }
-        return;
-      }
-      // v1.3.54 — PIXEL preset spawns cells along the move path.
+      // v1.3.55 — interpolate hard pixel stamps along the move path so fast
+      // drags don't leave gaps. Step is one pixel-size so squares tile cleanly.
+      const isPaintColor = sourceModeRef.current === "paint" && paintBrushModeRef.current === "color";
       const preset = GLITCH_PRESETS[glitchPresetRef.current];
-      if (preset && preset.pixel) {
-        pxSpawnAt(pos.x, pos.y);
+      const dist = Math.hypot(pos.x - last.x, pos.y - last.y);
+      const pc = paintCanvasRef.current;
+      const pcW = pc?.width ?? 1024;
+      const stepNorm = Math.max(0.001, (PIXEL_SIZE * 0.85) / pcW);
+      const steps = Math.max(1, Math.ceil(dist / stepNorm));
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const ix = last.x + (pos.x - last.x) * t;
+        const iy = last.y + (pos.y - last.y) * t;
+        if (isPaintColor) stampPaintPixel(ix, iy);
+        if (preset && preset.pixel) pxSpawnAt(ix, iy);
       }
       renderDrawOverlay();
     } catch (err) {
       reportDrawCrash("onPointerMove", err);
     }
-  }, [drawActive, drawAvailable, ensurePaintCanvas, pxSpawnAt, renderDrawOverlay, reportDrawCrash, GLITCH_PRESETS]);
+  }, [drawActive, drawAvailable, stampPaintPixel, pxSpawnAt, renderDrawOverlay, reportDrawCrash, GLITCH_PRESETS]);
 
   const onPointerUp = useCallback(() => {
     if (!drawActive || !drawAvailable) {
@@ -10300,7 +10286,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.54 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.55 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
