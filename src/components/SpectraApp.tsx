@@ -3291,21 +3291,37 @@ export default function SpectraAfter() {
   const cameraIntentRef = useRef(false);
 
   // ── Upload source (image / gif / short video) — feeds the same texture path
-  type SourceMode = "camera" | "upload" | "generator";
-  // v1.3.47 — boot in CAMERA mode with all FX nulled and generator layers
-  // disabled. Pixel-sorter is the lightest GPU rack to leave armed-but-idle
-  // (knobs at 0 means no work in the shader). Generator is OFF until the
-  // user enables a layer or dials MIX up — that path is now a true per-pixel
-  // hash mosaic, not a translucent overlay.
+  // v1.3.54 — added "paint" source mode: a blank persistent canvas that the
+  // user fingerpaints into (MS-Paint emulator). Runs the same shader stack so
+  // the GLITCH PALETTE smears the user's drawing.
+  type SourceMode = "camera" | "upload" | "generator" | "paint";
   const [sourceMode, setSourceMode] = useState<SourceMode>("camera");
   const [uploadName, setUploadName] = useState<string | null>(null);
   const [uploadKind, setUploadKind] = useState<"image" | "video" | null>(null);
-  // v1.3.47 — ref default tracks state default (now "camera").
   const sourceModeRef = useRef<SourceMode>("camera");
   const uploadImgRef = useRef<HTMLImageElement | null>(null);
   const uploadVideoRef = useRef<HTMLVideoElement | null>(null);
   const uploadObjectUrlRef = useRef<string | null>(null);
   const sourceFileInputRef = useRef<HTMLInputElement>(null);
+  // v1.3.54 — PAINT mode: a 1024x1024 persistent canvas serves as the source
+  // texture for the shader. Created lazily on first paint-mode entry so we
+  // don't allocate it for users who never tap PAINT.
+  const paintCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const ensurePaintCanvas = useCallback(() => {
+    let pc = paintCanvasRef.current;
+    if (!pc) {
+      pc = document.createElement("canvas");
+      pc.width = 1024; pc.height = 1024;
+      const ctx = pc.getContext("2d");
+      if (ctx) {
+        // Fill with a dark canvas so something shows on first entry.
+        ctx.fillStyle = "#0a0a14";
+        ctx.fillRect(0, 0, pc.width, pc.height);
+      }
+      paintCanvasRef.current = pc;
+    }
+    return pc;
+  }, []);
 
   // ── Pixel generator (procedural texture source) — feeds shader → pxl/mosh
   const GEN_STYLES = [
@@ -4225,10 +4241,50 @@ export default function SpectraAfter() {
 
   // ── Draw overlay
   const [drawActive, setDrawActive] = useState(false);
+  // v1.3.54 — ref mirror so the per-frame render loop (outside React state)
+  // can read drawActive without re-binding the giant render callback.
+  const drawActiveRef = useRef(false);
   const [strokes, setStrokes] = useState<DrawStroke[]>([]);
   const [brushColor, setBrushColor] = useState("#ff00ff");
-  const [brushSize, setBrushSize] = useState(8);
+  // v1.3.54 — pressure-only brush (no SIZE slider). Base width 80 px scales
+  // by per-sample pressure (slow drag = thick, fast drag = thin).
+  const brushSize = 80;
   const [brushOpacity, setBrushOpacity] = useState(0.85);
+  // v1.3.54 — GLITCH PALETTE. Each preset boosts a small uniform set in the
+  // render loop while ANY strokes are painted, so the painted region picks
+  // up that preset's character on top of whatever the user has dialed in.
+  // Preset 8 (PIXEL) spawns animated cells via the existing pxSpawnAt path.
+  type GlitchPreset = {
+    name: string;
+    color: string;
+    boosts: Partial<Record<
+      "uMoshIFrame" | "uMoshBleed" | "uSortAmt" | "uChrash" | "uLiquid" |
+      "uKaleido" | "uSpiral" | "uAscii" | "uVenetian" | "uScanTear" |
+      "uHSync" | "uFeedback" | "uRgbBars" | "uContour",
+      number
+    >>;
+    pixel?: boolean;
+  };
+  const GLITCH_PRESETS: readonly GlitchPreset[] = [
+    { name: "SMEAR",  color: "#FF6FB1", boosts: { uMoshIFrame: 0.65, uMoshBleed: 0.55, uFeedback: 0.25 } },
+    { name: "SHRED",  color: "#FFA040", boosts: { uSortAmt: 0.75 } },
+    { name: "SHIFT",  color: "#5BE9FF", boosts: { uChrash: 0.65, uRgbBars: 0.40 } },
+    { name: "WARP",   color: "#A270FF", boosts: { uLiquid: 0.70 } },
+    { name: "RIPPLE", color: "#7AFF6E", boosts: { uKaleido: 0.50, uSpiral: 0.45 } },
+    { name: "ASCII",  color: "#FFE36B", boosts: { uAscii: 0.75, uContour: 0.30 } },
+    { name: "BANDS",  color: "#FF4D6E", boosts: { uVenetian: 0.60, uScanTear: 0.45 } },
+    { name: "BURN",   color: "#FF2E2E", boosts: { uHSync: 0.55, uChrash: 0.30 } },
+    { name: "PIXEL",  color: "#B0F4FF", boosts: {}, pixel: true },
+  ];
+  const [glitchPreset, setGlitchPreset] = useState(0);
+  const glitchPresetRef = useRef(0);
+  useEffect(() => { glitchPresetRef.current = glitchPreset; }, [glitchPreset]);
+  // v1.3.54 — paint brush mode toggle (only meaningful in PAINT source).
+  // "color" = strokes draw colored pixels into paintCanvas (MS-Paint).
+  // "glitch" = strokes paint into FX mask (existing DRAW behavior).
+  const [paintBrushMode, setPaintBrushMode] = useState<"color" | "glitch">("glitch");
+  const paintBrushModeRef = useRef<"color" | "glitch">("glitch");
+  useEffect(() => { paintBrushModeRef.current = paintBrushMode; }, [paintBrushMode]);
   // v1.3.37 — colorCycle/colorCycleSpeed/colorCycleHueRef/colorCycleRef
   // dropped: DRAW feature is gated off (drawAvailable=false) and the cycle
   // UI never shipped, so the state, refs, and the rainbow-cycle interval
@@ -4425,13 +4481,12 @@ export default function SpectraAfter() {
     currentStrokeRef.current = null;
     setStrokes([]);
   }, []);
-  // DRAW is currently only safe over static image uploads (live camera + generator
-  // share the live render path with the FX mask, which the draw overlay corrupts).
-  // v1.3.53 — RE-ENABLED for uploads (image OR video) per user request.
-  // The shader's uMask sampler is gated by uTouchActive; touchRef.current.active
-  // is driven by drawActive in the renderDrawOverlay effect, so the FX gate
-  // automatically restricts to where the user paints.
-  const drawAvailable = sourceMode === "upload" && (uploadKind === "image" || uploadKind === "video");
+  // v1.3.54 — DRAW now also available in PAINT source mode (the new MS-Paint
+  // emulator: blank canvas → fingerpaint → GLITCH PALETTE smears it). The
+  // existing upload (image/video) gating remains.
+  const drawAvailable =
+    sourceMode === "paint" ||
+    (sourceMode === "upload" && (uploadKind === "image" || uploadKind === "video"));
   // Auto-bail out of DRAW the moment the source stops being an image upload.
   useEffect(() => {
     if (!drawAvailable && drawActive) {
@@ -5389,6 +5444,7 @@ export default function SpectraAfter() {
   useEffect(()=>{ moshDistortRef.current=moshDistort; },[moshDistort]);
   useEffect(()=>{ brushColorRef.current=brushColor; },[brushColor]);
   useEffect(()=>{ brushTypeRef.current=brushType; },[brushType]);
+  useEffect(()=>{ drawActiveRef.current=drawActive; },[drawActive]);
 
   // ── Collapsible panel sections ────────────────────────────
   const [openSections, setOpenSections] = useState<Set<string>>(() => new Set<string>(["modes", "user"]));
@@ -5539,7 +5595,16 @@ export default function SpectraAfter() {
     let texSource: TexImageSource | null = null;
     let srcW = 0;
     let srcH = 0;
-    if (srcMode === "upload") {
+    if (srcMode === "paint") {
+      // v1.3.54 — PAINT source: feed the persistent paint canvas as the
+      // shader's input texture. Color strokes are already drawn into it by
+      // the pointer handlers; the GLITCH PALETTE then operates on top via
+      // the existing uMask gate.
+      const pc = paintCanvasRef.current;
+      if (pc && pc.width > 0 && pc.height > 0) {
+        texSource = pc; srcW = pc.width; srcH = pc.height;
+      }
+    } else if (srcMode === "upload") {
       const upV = uploadVideoRef.current;
       const upI = uploadImgRef.current;
       if (upV && upV.readyState >= 2 && upV.videoWidth > 0) {
@@ -6614,6 +6679,14 @@ export default function SpectraAfter() {
     const _mM = motionMacroRef.current;
     const _mC = colorMacroRef.current;
     const _mB = breakMacroRef.current;
+    // v1.3.54 \u2014 GLITCH PALETTE preset boost. Active only when DRAW is on,
+    // there are painted strokes (so the mask gates the boost spatially via
+    // uMask), and the selected preset has uniform deltas. Pixel preset has
+    // empty boosts \u2014 it acts via pxSpawnAt instead.
+    const _pbActive = drawActiveRef.current && touchRef.current.active;
+    const _preset = _pbActive ? GLITCH_PRESETS[glitchPresetRef.current] : null;
+    const _pb = _preset ? _preset.boosts : undefined;
+    const PB = (k: keyof NonNullable<typeof _pb>): number => (_pb && _pb[k]) || 0;
     setF1(u.uBrightness, 1 + (brightnessRef.current - 1) * _mC);
     setF1(u.uContrast,   1 + (contrastRef.current   - 1) * _mC);
     setF1(u.uSaturation, 1 + (saturationRef.current - 1) * _mC);
@@ -6641,8 +6714,8 @@ export default function SpectraAfter() {
     // nothing. Now REALSORT only controls the CPU Asendorf cross-fade
     // (uSortMix); AMOUNT directly drives the shader sort uniform so each
     // sub-knob produces a visible, independent change.
-    setF1(u.uSortAmt, _sortAudio * _mI);
-    setF1(u.uScanTear, scanTearRef.current * _mB);
+    setF1(u.uSortAmt, _sortAudio * _mI + PB("uSortAmt"));
+    setF1(u.uScanTear, scanTearRef.current * _mB + PB("uScanTear"));
     setF1(u.uBlockGlitch, blockGlitchRef.current * _mB);
     // Datamosh INTENS slider is 0..2. v1.3.37 — the MOSH HARD toggle is
     // gone; hardness now derives smoothly from slider position so cranking
@@ -6660,22 +6733,22 @@ export default function SpectraAfter() {
     // HARD ceiling so we don't push past what the shader was tuned for.
     dmMapped = Math.min(5.5, dmMapped * (1 + _aGate * 0.55) + _aGate * 0.22);
     setF1(u.uDatamosh, dmMapped * _mI);
-    setF1(u.uChrash, chrashRef.current * _mB);
-    setF1(u.uLiquid, liquidRef.current * _mI);
+    setF1(u.uChrash, chrashRef.current * _mB + PB("uChrash"));
+    setF1(u.uLiquid, liquidRef.current * _mI + PB("uLiquid"));
     // v1.2.58 — Asendorf / Gysin homage rack uniform writes (v1.2.59: streak/hilbert removed)
     setF1(u.uGlyph, glyphRef.current * _mI);
     setF1(u.uSortMix, sortMixRef.current * _mI);
     setF1(u.uReact, reactDRef.current * _mI);
     setF1(u.uVoroSort, voroSortRef.current * _mI);
-    setF1(u.uFeedback, feedbackRef.current * _mB);
-    setF1(u.uContour, contourRef.current * _mI);
-    setF1(u.uAscii, asciiRef.current * _mI);
-    setF1(u.uVenetian, venetianRef.current * _mI);
-    setF1(u.uKaleido, kaleidoRef.current * _mI);
+    setF1(u.uFeedback, feedbackRef.current * _mB + PB("uFeedback"));
+    setF1(u.uContour, contourRef.current * _mI + PB("uContour"));
+    setF1(u.uAscii, asciiRef.current * _mI + PB("uAscii"));
+    setF1(u.uVenetian, venetianRef.current * _mI + PB("uVenetian"));
+    setF1(u.uKaleido, kaleidoRef.current * _mI + PB("uKaleido"));
     setF1(u.uTile, tileRef.current * _mI);
     setF1(u.uInvert, invertSymRef.current * _mI);
     setF1(u.uDroste, drosteRef.current * _mI);
-    setF1(u.uSpiral, spiralRef.current * _mI);
+    setF1(u.uSpiral, spiralRef.current * _mI + PB("uSpiral"));
     setF1(u.uYantra, yantraRef.current * _mI);
     setF1(u.uMandala, mandalaRef.current * _mI);
     setF1(u.uRosette, rosetteRef.current * _mI);
@@ -6698,13 +6771,13 @@ export default function SpectraAfter() {
     setF1(u.uRgbR, rgbRRef.current * _mB);
     setF1(u.uRgbG, rgbGRef.current * _mB);
     setF1(u.uRgbB, rgbBRef.current * _mB);
-    setF1(u.uRgbBars, rgbBarsRef.current * _mB);
+    setF1(u.uRgbBars, rgbBarsRef.current * _mB + PB("uRgbBars"));
     setF1(u.uRgbSwap, rgbSwapRef.current * _mB);
     setF1(u.uRupture, ruptureRef.current * _mB);
-    setF1(u.uHSync, hsyncRef.current * _mB);
-    setF1(u.uMoshIFrame, moshIFrameRef.current * _mM);
+    setF1(u.uHSync, hsyncRef.current * _mB + PB("uHSync"));
+    setF1(u.uMoshIFrame, moshIFrameRef.current * _mM + PB("uMoshIFrame"));
     setF1(u.uMoshMotion, moshMotionRef.current * _mM);
-    setF1(u.uMoshBleed, moshBleedRef.current * _mM);
+    setF1(u.uMoshBleed, moshBleedRef.current * _mM + PB("uMoshBleed"));
     setF1(u.uMoshMap, moshMapRef.current * _mB);
     setF1(u.uMoshDistort, moshDistortRef.current * _mB);
     // Face FX universal mask uniforms (driven by faceFxMode + segmentation loop).
@@ -7080,12 +7153,32 @@ export default function SpectraAfter() {
     try {
       try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported on some Android WebViews */ }
       const pos = getCanvasNorm(e, e.currentTarget);
+      // v1.3.54 — COLOR brush mode in PAINT source: write directly into the
+      // persistent paint canvas (MS-Paint behavior). FX mask is left alone.
+      if (sourceModeRef.current === "paint" && paintBrushModeRef.current === "color") {
+        const pc = ensurePaintCanvas();
+        const pctx = pc.getContext("2d");
+        if (pctx) {
+          pctx.fillStyle = brushColorRef.current;
+          pctx.beginPath();
+          pctx.arc(pos.x * pc.width, pos.y * pc.height, brushSize * 0.45, 0, Math.PI * 2);
+          pctx.fill();
+        }
+        currentStrokeRef.current = { points: [{ ...pos, pressure: 1 }], color: brushColorRef.current, width: brushSize, opacity: brushOpacity, brush: "color-paint" };
+        return;
+      }
+      // v1.3.54 — PIXEL preset: spawn animated cells along the stroke.
+      const preset = GLITCH_PRESETS[glitchPresetRef.current];
+      if (preset && preset.pixel) {
+        pxActiveRef.current = true;
+        pxSpawnAt(pos.x, pos.y);
+      }
       currentStrokeRef.current = { points: [{ ...pos, pressure: 1 }], color: brushColorRef.current, width: brushSize, opacity: brushOpacity, brush: brushTypeRef.current };
       renderDrawOverlay();
     } catch (err) {
       reportDrawCrash("onPointerDown", err);
     }
-  }, [drawActive, drawAvailable, brushSize, brushOpacity, renderDrawOverlay, reportDrawCrash]);
+  }, [drawActive, drawAvailable, brushOpacity, ensurePaintCanvas, pxSpawnAt, renderDrawOverlay, reportDrawCrash, GLITCH_PRESETS]);
 
   const onPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!drawActive || !drawAvailable) {
@@ -7101,11 +7194,38 @@ export default function SpectraAfter() {
       const pressure = Math.max(0.25, Math.min(1.2, 1 - speed * 1.2));
       pts.push({ ...pos, pressure });
       currentStrokeRef.current.width = brushSize * pressure;
+      // v1.3.54 — COLOR brush in PAINT mode: stroke directly onto the paint
+      // canvas with pressure-scaled radius. Linear interpolation between
+      // last and current point so fast drags don't dot.
+      if (sourceModeRef.current === "paint" && paintBrushModeRef.current === "color") {
+        const pc = ensurePaintCanvas();
+        const pctx = pc.getContext("2d");
+        if (pctx) {
+          pctx.fillStyle = brushColorRef.current;
+          const radius = Math.max(2, brushSize * pressure * 0.45);
+          const dist = Math.hypot(pos.x - last.x, pos.y - last.y);
+          const steps = Math.max(1, Math.floor(dist * pc.width / Math.max(2, radius * 0.6)));
+          for (let i = 1; i <= steps; i++) {
+            const t = i / steps;
+            const ix = (last.x + (pos.x - last.x) * t) * pc.width;
+            const iy = (last.y + (pos.y - last.y) * t) * pc.height;
+            pctx.beginPath();
+            pctx.arc(ix, iy, radius, 0, Math.PI * 2);
+            pctx.fill();
+          }
+        }
+        return;
+      }
+      // v1.3.54 — PIXEL preset spawns cells along the move path.
+      const preset = GLITCH_PRESETS[glitchPresetRef.current];
+      if (preset && preset.pixel) {
+        pxSpawnAt(pos.x, pos.y);
+      }
       renderDrawOverlay();
     } catch (err) {
       reportDrawCrash("onPointerMove", err);
     }
-  }, [drawActive, drawAvailable, brushSize, renderDrawOverlay, reportDrawCrash]);
+  }, [drawActive, drawAvailable, ensurePaintCanvas, pxSpawnAt, renderDrawOverlay, reportDrawCrash, GLITCH_PRESETS]);
 
   const onPointerUp = useCallback(() => {
     if (!drawActive || !drawAvailable) {
@@ -9835,13 +9955,35 @@ export default function SpectraAfter() {
             {/* Hidden mask canvas for FX mask */}
             <canvas ref={maskCanvasRef} style={{ display: "none" }} width={256} height={256} />
 
-            {/* v1.2.73 — PIXEL DRAWER overlay removed (the rack itself
-                was also removed from the synth view). The pxCanvasRef is
-                still allocated below as a hidden 1x1 stub so any code
-                paths that touch it are no-ops. */}
-            <canvas ref={pxCanvasRef} style={{ display: "none" }} width={1} height={1} />
+            {/* v1.3.54 — PIXEL DRAWER overlay re-enabled, gated to PIXEL preset
+                in glitch brush mode while DRAW is on. Otherwise stays out of
+                the way (display:none keeps the canvas allocated but invisible
+                so the existing pxSpawnAt / animation loop don't break). */}
+            <canvas
+              ref={pxCanvasRef}
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                zIndex: 4,
+                mixBlendMode: "screen",
+                pointerEvents: "none",
+                display:
+                  drawActive && drawAvailable &&
+                  paintBrushMode === "glitch" &&
+                  GLITCH_PRESETS[glitchPreset]?.pixel
+                    ? "block"
+                    : "none",
+              }}
+              width={1}
+              height={1}
+            />
 
-            {/* ── Floating DRAW toolbar (Glitch! style) — only over static image uploads */}
+            {/* ── v1.3.54 — GLITCH PALETTE (replaces old DRAW FX toolbar).
+                  Animated preset tiles smear/interact when painted over.
+                  In PAINT source mode an extra COLOR/GLITCH brush toggle
+                  flips between MS-Paint coloring and FX painting. */}
             {drawActive && drawAvailable && (
               <div
                 style={{
@@ -9849,16 +9991,16 @@ export default function SpectraAfter() {
                   display: "flex", flexDirection: "column", gap: 6,
                   padding: "8px 10px",
                   background: "linear-gradient(180deg, rgba(14,26,62,0.92) 0%, rgba(10,20,48,0.88) 100%)",
-                  border: "1px solid rgba(255,133,0,0.55)",
+                  border: "1px solid rgba(176,20,240,0.55)",
                   borderRadius: 8,
-                  boxShadow: "0 0 14px rgba(255,133,0,0.35), inset 0 0 6px rgba(0,0,0,0.6)",
+                  boxShadow: "0 0 14px rgba(176,20,240,0.4), inset 0 0 6px rgba(0,0,0,0.6)",
                   fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                   color: "#F4F6FF",
-                  minWidth: 138, maxWidth: 170,
+                  width: 200,
                 }}
               >
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 10, letterSpacing: "2px", color: "#FF8500" }}>✎ DRAW FX</span>
+                  <span style={{ fontSize: 10, letterSpacing: "2px", color: "#E7AEFF" }}>◆ GLITCH PALETTE</span>
                   <button
                     onClick={() => setDrawActive(false)}
                     title="Close draw mode"
@@ -9869,31 +10011,71 @@ export default function SpectraAfter() {
                     }}
                   >✕</button>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontSize: 8, letterSpacing: "1.4px", color: "rgba(244,246,255,0.6)", width: 28 }}>SIZE</span>
-                  <input
-                    type="range" min={3} max={80} step={1} value={brushSize}
-                    onChange={e => setBrushSize(parseInt(e.target.value, 10))}
-                    style={{ flex: 1, accentColor: "#FF8500" }}
-                  />
-                  <span style={{ fontSize: 9, color: "#FF8500", width: 18, textAlign: "right" }}>{brushSize}</span>
-                </div>
-                <div style={{ display: "flex", gap: 4 }}>
-                  {(["round","wide","spray","neon"] as const).map(b => (
-                    <button
-                      key={b}
-                      onClick={() => setBrushType(b)}
-                      title={`Brush: ${b}`}
-                      style={{
-                        flex: 1, fontSize: 8, letterSpacing: "1px", padding: "3px 0",
-                        background: brushType === b ? "rgba(255,133,0,0.22)" : "transparent",
-                        border: `1px solid ${brushType === b ? "#FF8500" : "rgba(244,246,255,0.25)"}`,
-                        color: brushType === b ? "#FF8500" : "rgba(244,246,255,0.85)",
-                        cursor: "pointer", borderRadius: 3, textTransform: "uppercase",
-                      }}
-                    >{b}</button>
-                  ))}
-                </div>
+
+                {/* Brush mode toggle — only meaningful in PAINT source */}
+                {sourceMode === "paint" && (
+                  <div style={{ display: "flex", gap: 4 }}>
+                    {(["color", "glitch"] as const).map(m => (
+                      <button
+                        key={m}
+                        onClick={() => setPaintBrushMode(m)}
+                        title={m === "color" ? "Paint colored pixels (MS-Paint)" : "Paint glitch FX presets"}
+                        style={{
+                          flex: 1, fontSize: 9, letterSpacing: "1.2px", padding: "4px 0",
+                          background: paintBrushMode === m ? "rgba(176,20,240,0.28)" : "transparent",
+                          border: `1px solid ${paintBrushMode === m ? "#B014F0" : "rgba(244,246,255,0.25)"}`,
+                          color: paintBrushMode === m ? "#E7AEFF" : "rgba(244,246,255,0.8)",
+                          cursor: "pointer", borderRadius: 4, textTransform: "uppercase", fontWeight: 700,
+                        }}
+                      >{m === "color" ? "🎨 COLOR" : "⚡ GLITCH"}</button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Color picker — only when COLOR brush in PAINT mode */}
+                {sourceMode === "paint" && paintBrushMode === "color" && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ fontSize: 8, letterSpacing: "1.4px", color: "rgba(244,246,255,0.65)", width: 38 }}>COLOR</span>
+                    <input
+                      type="color"
+                      value={brushColor}
+                      onChange={e => setBrushColor(e.target.value)}
+                      style={{ flex: 1, height: 24, background: "transparent", border: "1px solid rgba(244,246,255,0.25)", borderRadius: 3, cursor: "pointer" }}
+                    />
+                  </div>
+                )}
+
+                {/* Preset palette — 3x3 grid. Greyed out in COLOR brush mode. */}
+                {(sourceMode !== "paint" || paintBrushMode === "glitch") && (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 4 }}>
+                      {GLITCH_PRESETS.map((p, i) => {
+                        const active = glitchPreset === i;
+                        return (
+                          <button
+                            key={p.name}
+                            onClick={() => setGlitchPreset(i)}
+                            title={p.name}
+                            style={{
+                              padding: "8px 0", fontSize: 9, letterSpacing: "1px",
+                              background: active ? `${p.color}44` : "rgba(255,255,255,0.04)",
+                              border: `1px solid ${active ? p.color : "rgba(244,246,255,0.18)"}`,
+                              color: active ? p.color : "rgba(244,246,255,0.78)",
+                              cursor: "pointer", borderRadius: 4, textTransform: "uppercase", fontWeight: 700,
+                              boxShadow: active ? `0 0 10px ${p.color}77, inset 0 0 6px ${p.color}33` : "none",
+                              transition: "all 0.15s ease",
+                            }}
+                          >{p.name}</button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ fontSize: 8, lineHeight: 1.35, letterSpacing: "0.6px", color: "rgba(244,246,255,0.55)", marginTop: 1, textAlign: "center" }}>
+                      pressure-sensitive · faster=thinner
+                    </div>
+                  </>
+                )}
+
+                {/* Undo + Clear */}
                 <div style={{ display: "flex", gap: 4 }}>
                   <button
                     onClick={undoStroke}
@@ -9910,20 +10092,16 @@ export default function SpectraAfter() {
                   >↶ UNDO</button>
                   <button
                     onClick={clearStrokes}
-                    disabled={strokes.length === 0}
                     title="Clear all strokes"
                     style={{
                       flex: 1, fontSize: 9, letterSpacing: "1px", padding: "4px 0",
                       background: "transparent",
                       border: "1px solid rgba(255,77,77,0.55)",
-                      color: strokes.length === 0 ? "rgba(244,246,255,0.3)" : "#FF4D4D",
-                      cursor: strokes.length === 0 ? "not-allowed" : "pointer",
+                      color: "#FF4D4D",
+                      cursor: "pointer",
                       borderRadius: 3,
                     }}
                   >✕ CLEAR</button>
-                </div>
-                <div style={{ fontSize: 8, lineHeight: 1.35, letterSpacing: "0.6px", color: "rgba(244,246,255,0.55)", marginTop: 2 }}>
-                  Paint where the glitch FX appear. Untouched areas stay clean cam.
                 </div>
               </div>
             )}
@@ -10118,23 +10296,26 @@ export default function SpectraAfter() {
                 // v1.3.7 — diagnostic subtitle: literal state vars +
                 // segmenter health (texValid). Any "looks like nothing
                 // happened" report can now be triaged at a glance.
-                const sm = sourceMode === "generator" ? "GEN" : sourceMode === "upload" ? "UPLD" : "CAM";
+                const sm = sourceMode === "generator" ? "GEN" : sourceMode === "upload" ? "UPLD" : sourceMode === "paint" ? "PAINT" : "CAM";
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.53 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.54 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
               {/* Row 1 — BASE FEED */}
               <div style={{ fontSize: 8, letterSpacing: "1.4px", color: "rgba(255,210,140,0.7)", marginBottom: 4 }}>BASE</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 6, marginBottom: 8 }}>
-                {(["camera","upload"] as const).map((sm) => {
-                  const lbl = sm === "camera" ? "CAM" : "UPLD";
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6, marginBottom: 8 }}>
+                {(["camera","upload","paint"] as const).map((sm) => {
+                  const lbl = sm === "camera" ? "CAM" : sm === "upload" ? "UPLD" : "PAINT";
                   // Active = the renderer is actually consuming this feed.
                   // CAM is "active" whenever the camera is live (covers
                   // both pure CAM and any GEN-overlay-on-camera combo).
-                  const active = sm === "camera" ? cameraActive : sourceMode === "upload";
+                  const active =
+                    sm === "camera" ? cameraActive :
+                    sm === "upload" ? sourceMode === "upload" :
+                    sourceMode === "paint";
                   return (
                     <button
                       key={sm}
@@ -10152,11 +10333,23 @@ export default function SpectraAfter() {
                           // Drop face FX so plain CAM = plain CAM.
                           setFaceFxMode("OFF");
                           if (!cameraActive) void startCamera();
-                        } else {
+                        } else if (sm === "upload") {
                           // UPLD: open file picker; on pick, the file
                           // handler sets sourceMode="upload" and clears
                           // GEN. Don't pre-flip state in case user cancels.
                           sourceFileInputRef.current?.click();
+                        } else {
+                          // v1.3.54 — PAINT: enter MS-Paint emulator mode.
+                          // Allocate the persistent paint canvas, drop
+                          // upload + camera + GEN so the shader feeds
+                          // strictly off the paint canvas, and arm DRAW
+                          // automatically so the GLITCH PALETTE shows up.
+                          clearUploadSource();
+                          ensurePaintCanvas();
+                          setSourceMode("paint");
+                          setFaceFxMode("OFF");
+                          if (cameraActive) stopCamera();
+                          setDrawActive(true);
                         }
                       }}
                       style={{
