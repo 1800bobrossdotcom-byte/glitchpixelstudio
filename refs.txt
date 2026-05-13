@@ -1,0 +1,46 @@
+﻿2549: // (v1.3.57 — DrawPoint / DrawStroke types removed; draw mode deleted.)
+3292: // (v1.3.57 — "paint" source mode removed; draw/paint surface deleted.)
+4222: // Preset 8 (PIXEL) spawns animated cells via the existing pxSpawnAt path.
+4280: // (v1.3.57 — entire DRAW / PAINT / pxCanvas / drawCrash infrastructure
+7040: currentStrokeRef.current = null;
+7041: setStrokes([]);
+7042: setDrawActive(false);
+9128: if (!drawAvailable) {
+9132: setDrawActive(d => !d);
+9134: disabled={!drawAvailable}
+9138: opacity: drawAvailable ? 1 : 0.45,
+9139: color: drawActive ? T.ochre : undefined,
+9140: borderColor: drawActive ? T.amber : undefined,
+9141: boxShadow: drawActive ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
+9143: title={drawAvailable
+9144: ? (drawActive ? "DRAW ON — paint where FX appear" : "DRAW — paint where FX appear (upload only)")
+9409: ref={drawCanvasRef}
+9412: cursor: drawActive && drawAvailable ? "crosshair" : "default", zIndex: 3,
+9414: opacity: drawActive && drawAvailable ? 0.32 : 0,
+9429: so the existing pxSpawnAt / animation loop don't break). */}
+9431: ref={pxCanvasRef}
+9441: drawActive && drawAvailable &&
+9442: paintBrushMode === "glitch" &&
+9455: {drawActive && drawAvailable && (
+9473: onClick={() => setDrawActive(false)}
+9484: {sourceMode === "paint" && (
+9489: onClick={() => setPaintBrushMode(m)}
+9493: background: paintBrushMode === m ? "rgba(176,20,240,0.28)" : "transparent",
+9494: border: `1px solid ${paintBrushMode === m ? "#B014F0" : "rgba(244,246,255,0.25)"}`,
+9495: color: paintBrushMode === m ? "#E7AEFF" : "rgba(244,246,255,0.8)",
+9504: {sourceMode === "paint" && paintBrushMode === "color" && (
+9509: value={brushColor}
+9510: onChange={e => setBrushColor(e.target.value)}
+9517: {(sourceMode !== "paint" || paintBrushMode === "glitch") && (
+9549: onClick={undoStroke}
+9562: onClick={clearStrokes}
+9578: {drawCrash && (
+9589: onClick={() => setDrawCrash(null)}
+9593: <div style={{ wordBreak: "break-word" }}>{drawCrash}</div>
+9767: const sm = sourceMode === "generator" ? "GEN" : sourceMode === "upload" ? "UPLD" : sourceMode === "paint" ? "PAINT" : "CAM";
+9778: {(["camera","upload","paint"] as const).map((sm) => {
+9779: const lbl = sm === "camera" ? "CAM" : sm === "upload" ? "UPLD" : "PAINT";
+9786: sourceMode === "paint";
+9816: ensurePaintCanvas();
+9817: setSourceMode("paint");
+9820: setDrawActive(true);

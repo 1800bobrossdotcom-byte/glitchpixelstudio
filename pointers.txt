@@ -1,0 +1,58 @@
+﻿4381: // onPointerDown / onPointerMove). Density scales with distance so fast
+4677: const holdTimerRef = useRef<ReturnType<typeof setTimeout>|null>(null);
+4678: const holdFiredRef = useRef(false);
+4740: const startRecordingRef = useRef<() => void>(() => {});
+4741: const stopRecordingRef = useRef<() => void>(() => {});
+7162: const onPointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+7165: holdFiredRef.current = false;
+7166: holdTimerRef.current = setTimeout(() => {
+7167: holdFiredRef.current = true;
+7168: startRecordingRef.current();
+7173: try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not supported on some Android WebViews */ }
+7191: reportDrawCrash("onPointerDown", err);
+7195: const onPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+7227: reportDrawCrash("onPointerMove", err);
+7231: const onPointerUp = useCallback(() => {
+7233: if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
+7234: if (holdFiredRef.current) {
+7235: stopRecordingRef.current();
+7248: reportDrawCrash("onPointerUp", err);
+7737: if (elapsed >= recordCapMs && recordingRef.current) stopRecordingRef.current();
+7779: stopRecordingRef.current();
+7932: stopRecordingRef.current();
+7949: startRecordingRef.current();
+7955: stopRecordingRef.current();
+8029: startRecordingRef.current = startRecording;
+8030: stopRecordingRef.current = stopRecording;
+9854: onPointerDown={(e) => {
+9856: holdFiredRef.current = false;
+9857: if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
+9858: holdTimerRef.current = setTimeout(() => {
+9859: holdFiredRef.current = true;
+9860: startRecordingRef.current();
+9863: onPointerUp={(e) => {
+9865: if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
+9866: if (holdFiredRef.current) {
+9868: stopRecordingRef.current();
+9874: onPointerLeave={() => {
+9875: if (holdTimerRef.current) { clearTimeout(holdTimerRef.current); holdTimerRef.current = null; }
+9876: if (holdFiredRef.current) { stopRecordingRef.current(); holdFiredRef.current = false; }
+9951: onPointerDown={onPointerDown}
+9952: onPointerMove={onPointerMove}
+9953: onPointerUp={onPointerUp}
+9954: onPointerLeave={onPointerUp}
+10222: onPointerDown={(e) => {
+10236: onPointerMove={(e) => {
+10243: onPointerUp={() => {
+10250: onPointerCancel={() => {
+10760: onPointerDown={(e) => e.stopPropagation()}
+10777: onPointerDown={(e) => e.stopPropagation()}
+11211: onClick={() => { if (recording) stopRecordingRef.current(); else startRecordingRef.current(); }}
+11878: const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+11879: e.currentTarget.setPointerCapture(e.pointerId);
+11883: const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+11895: const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+11936: onPointerDown={onPointerDown}
+11937: onPointerMove={onPointerMove}
+11938: onPointerUp={onPointerUp}
+11939: onPointerCancel={onPointerUp}

@@ -1,0 +1,214 @@
+﻿2551: interface DrawStroke { points: DrawPoint[]; color: string; width: number; opacity: number; brush?: string }
+3057: "DRAW mode — paint where FX appear",
+3290: // sourceMode === "camera" intent check which broke GEN+CAM.
+3294: // v1.3.54 — added "paint" source mode: a blank persistent canvas that the
+3295: // user fingerpaints into (MS-Paint emulator). Runs the same shader stack so
+3297: type SourceMode = "camera" | "upload" | "generator" | "paint";
+3298: const [sourceMode, setSourceMode] = useState<SourceMode>("camera");
+3301: const sourceModeRef = useRef<SourceMode>("camera");
+3306: // v1.3.54 — PAINT mode: a 1024x1024 persistent canvas serves as the source
+3307: // texture for the shader. Created lazily on first paint-mode entry so we
+3308: // don't allocate it for users who never tap PAINT.
+3309: const paintCanvasRef = useRef<HTMLCanvasElement | null>(null);
+3310: const ensurePaintCanvas = useCallback(() => {
+3311: let pc = paintCanvasRef.current;
+3321: paintCanvasRef.current = pc;
+3608: // — the user wanted to see procedural FX painting THEIR body, not the
+3747: // v1.2.47: BG label means "FX paints background, person stays clean".
+3750: // PERSON, so to paint the BACKGROUND we want shader to compute
+3942: // Pipeline now: paint scratch -> clear maskCanvas -> drawImage.
+4053: // the generator panel exposes the full painter's vocabulary.
+4179: // v1.2.85 — sortMix defaults to 0 so first paint is pure GEN+CAM
+4247: // v1.3.55 — single-square pixel pen (MS-Paint pencil). No round brush, no
+4248: // size slider. PIXEL_SIZE is in DEVICE PIXELS on the draw/mask canvas; the
+4249: // paint-canvas uses its own scale. touchPressureRef carries the latest
+4252: const PIXEL_SIZE = 22;
+4253: const touchPressureRef = useRef(1);
+4255: const [brushColor, setBrushColor] = useState("#ff00ff");
+4256: const brushSize = PIXEL_SIZE;
+4257: const [brushOpacity, setBrushOpacity] = useState(1);
+4259: // render loop while ANY strokes are painted, so the painted region picks
+4267: // pixel pen the only paint mode, so every palette cell now drives FX.
+4268: type GlitchPreset = {
+4296: const GLITCH_PRESETS: readonly GlitchPreset[] = [
+4307: const [glitchPreset, setGlitchPreset] = useState(0);
+4308: const glitchPresetRef = useRef(0);
+4309: useEffect(() => { glitchPresetRef.current = glitchPreset; }, [glitchPreset]);
+4310: // v1.3.54 — paint brush mode toggle (only meaningful in PAINT source).
+4311: // "color" = strokes draw colored pixels into paintCanvas (MS-Paint).
+4312: // "glitch" = strokes paint into FX mask (existing DRAW behavior).
+4313: const [paintBrushMode, setPaintBrushMode] = useState<"color" | "glitch">("glitch");
+4314: const paintBrushModeRef = useRef<"color" | "glitch">("glitch");
+4315: useEffect(() => { paintBrushModeRef.current = paintBrushMode; }, [paintBrushMode]);
+4317: // dropped: DRAW feature is gated off (drawAvailable=false) and the cycle
+4320: const currentStrokeRef = useRef<DrawStroke|null>(null);
+4321: const drawCanvasRef = useRef<HTMLCanvasElement>(null);
+4322: // v1.2.77 — scratch canvas for compositing the user's brush strokes
+4325: const [brushType, setBrushType] = useState<"round"|"spray"|"neon"|"wide">("round");
+4326: const brushColorRef = useRef("#ff00ff");
+4327: const brushTypeRef = useRef<string>("round");
+4357: const pxCanvasRef  = useRef<HTMLCanvasElement>(null);
+4370: const c = pxCanvasRef.current;
+4376: const c = pxCanvasRef.current;
+4386: const baseHueRaw = brushColorRef.current;
+4435: const c = pxCanvasRef.current;
+4509: currentStrokeRef.current = null;
+4512: // v1.3.54 — DRAW now also available in PAINT source mode (the new MS-Paint
+4513: // emulator: blank canvas → fingerpaint → GLITCH PALETTE smears it). The
+4515: const drawAvailable =
+4516: sourceMode === "paint" ||
+4517: (sourceMode === "upload" && (uploadKind === "image" || uploadKind === "video"));
+4520: if (!drawAvailable && drawActive) {
+4522: currentStrokeRef.current = null;
+4525: }, [drawAvailable, drawActive]);
+4528: // If anything inside the draw paint path throws, instead of letting the
+4539: currentStrokeRef.current = null;
+4815: const dc = drawCanvasRef.current;
+4874: const wantsCam = sourceMode === "camera" || faceFxMode !== "OFF";
+4881: }, [introWantsClose, sourceMode, faceFxMode, cameraActive]);
+5121: const dc = drawCanvasRef.current;
+5228: useEffect(()=>{ sourceModeRef.current=sourceMode; },[sourceMode]);
+5233: // sourceMode === "generator" branch). User reported "universal palette
+5418: // (we want sortMix to stay at 0 so first paint shows pure GEN+CAM, not
+5438: if (sourceMode !== "generator") return;
+5467: }, [automateOn, automateRate, automateStyles, automateBlend, sourceMode]);
+5473: useEffect(()=>{ brushColorRef.current=brushColor; },[brushColor]);
+5474: useEffect(()=>{ brushTypeRef.current=brushType; },[brushType]);
+5511: // — only when the user changes mask brush mode or layout).
+5589: const srcMode = sourceModeRef.current;
+5626: if (srcMode === "paint") {
+5627: // v1.3.54 — PAINT source: feed the persistent paint canvas as the
+5631: const pc = paintCanvasRef.current;
+5646: // above the WebGL output (opacity 0.32) so paintwork looked
+5649: const dc = drawCanvasRef.current;
+5650: if (texSource && drawActive && drawAvailable && dc && dc.width > 0 && dc.height > 0 && srcW > 0 && srcH > 0) {
+5940: // for the new modes while still showing the painter blend.
+6199: // shader's per-pixel mask handles where FX paint.
+6450: // the FX rack paints on, via the existing uFaceInvert plumbing in the
+6711: // there are painted strokes (so the mask gates the boost spatially via
+6715: const _preset = _pbActive ? GLITCH_PRESETS[glitchPresetRef.current] : null;
+6720: const _press = _pbActive ? Math.max(0.15, Math.min(1.4, touchPressureRef.current)) : 0;
+6885: // baked into a texture that the next pass merely paints over.
+7043: // The visible draw canvas is *not* a paint surface — it is a UI hint
+7044: // showing where the FX mask is active. Painted regions appear as a soft
+7051: const dc = drawCanvasRef.current;
+7059: // v1.3.55 \u2014 hard pixel squares (MS-Paint pencil). Each stroke point is a
+7060: // single fillRect of PIXEL_SIZE on both the visible overlay (translucent
+7065: const s = Math.max(1, Math.round(PIXEL_SIZE * scale));
+7081: const cs = currentStrokeRef.current;
+7104: // appear inside painted regions. If we instead set this to false on an
+7121: const dc = drawCanvasRef.current;
+7129: }, [drawActive, drawAvailable, renderDrawOverlay]);
+7145: // (nx, ny) ∈ [0,1] into the paint canvas with imageSmoothingEnabled=false.
+7146: // No round brush, no interpolated radius — MS-Paint pencil tool behavior.
+7147: const stampPaintPixel = useCallback((nx: number, ny: number) => {
+7148: const pc = ensurePaintCanvas();
+7152: pctx.fillStyle = brushColorRef.current;
+7153: // Pen size scales with paint-canvas resolution so it reads as a chunky
+7154: // pixel regardless of source size. PIXEL_SIZE is the on-screen size; the
+7155: // paint canvas is 1024² so 24 device-pixels ≈ 24 paint-pixels.
+7156: const s = PIXEL_SIZE;
+7160: }, [ensurePaintCanvas]);
+7163: if (!drawActive || !drawAvailable) {
+7177: touchPressureRef.current = pressure;
+7183: // PAINT source + COLOR mode: stamp a hard pixel square into paint canvas.
+7184: if (sourceModeRef.current === "paint" && paintBrushModeRef.current === "color") {
+7185: stampPaintPixel(pos.x, pos.y);
+7188: currentStrokeRef.current = { points: [{ ...pos, pressure }], color: brushColorRef.current, width: PIXEL_SIZE, opacity: 1, brush: "pixel" };
+7193: }, [drawActive, drawAvailable, stampPaintPixel, pxSpawnAt, renderDrawOverlay, reportDrawCrash, GLITCH_PRESETS]);
+7196: if (!drawActive || !drawAvailable) {
+7199: if (!currentStrokeRef.current) return;
+7202: const pts = currentStrokeRef.current.points;
+7206: touchPressureRef.current = pressure;
+7213: const isPaintColor = sourceModeRef.current === "paint" && paintBrushModeRef.current === "color";
+7215: const pc = paintCanvasRef.current;
+7217: const stepNorm = Math.max(0.001, (PIXEL_SIZE * 0.85) / pcW);
+7223: if (isPaintColor) stampPaintPixel(ix, iy);
+7229: }, [drawActive, drawAvailable, stampPaintPixel, pxSpawnAt, renderDrawOverlay, reportDrawCrash, GLITCH_PRESETS]);
+7232: if (!drawActive || !drawAvailable) {
+7240: const cs = currentStrokeRef.current;
+7245: currentStrokeRef.current = null;
+7250: }, [drawActive, drawAvailable, renderDrawOverlay, reportDrawCrash]);
+7306: // sourceMode === "camera", which BROKE GEN+CAM (which keeps sourceMode
+7462: setSourceMode("upload");
+7567: setSourceMode("camera");
+7573: currentStrokeRef.current = null;
+7985: const mode = sourceModeRef.current;
+8385: // toggled sourceMode/faceFxMode quickly, racing two getUserMedia()
+8391: if (sourceMode === "camera" || faceFxMode !== "OFF") {
+8397: }, [bootDone, sourceMode, faceFxMode]);
+8406: // (sourceMode==camera OR faceFx armed) but cameraActive is false and
+8411: const wantsCam = sourceModeRef.current === "camera" || faceFxModeRef.current !== "OFF";
+8434: sourceModeRef.current === "camera" || faceFxModeRef.current !== "OFF";
+8514: // sourceMode="camera" with no faceFxMode reset, so a warm relaunch
+8521: setSourceMode("generator");
+9099: /* SynthPanel chassis + brushed-metal inner workspace go GLASS
+9102: brushed-metal interior becomes a subtle dark wash. */
+9249: Roland TR-808 drum machine look: brushed graphite chassis with the
+9661: if (!drawAvailable) {
+9667: disabled={!drawAvailable}
+9671: opacity: drawAvailable ? 1 : 0.45,
+9676: title={drawAvailable
+9677: ? (drawActive ? "DRAW ON — paint where FX appear" : "DRAW — paint where FX appear (upload only)")
+9942: ref={drawCanvasRef}
+9945: cursor: drawActive && drawAvailable ? "crosshair" : "default", zIndex: 3,
+9947: opacity: drawActive && drawAvailable ? 0.32 : 0,
+9960: in glitch brush mode while DRAW is on. Otherwise stays out of
+9964: ref={pxCanvasRef}
+9974: drawActive && drawAvailable &&
+9975: paintBrushMode === "glitch" &&
+9985: Animated preset tiles smear/interact when painted over.
+9986: In PAINT source mode an extra COLOR/GLITCH brush toggle
+9987: flips between MS-Paint coloring and FX painting. */}
+9988: {drawActive && drawAvailable && (
+10016: {/* Brush mode toggle — only meaningful in PAINT source */}
+10017: {sourceMode === "paint" && (
+10022: onClick={() => setPaintBrushMode(m)}
+10023: title={m === "color" ? "Paint colored pixels (MS-Paint)" : "Paint glitch FX presets"}
+10026: background: paintBrushMode === m ? "rgba(176,20,240,0.28)" : "transparent",
+10027: border: `1px solid ${paintBrushMode === m ? "#B014F0" : "rgba(244,246,255,0.25)"}`,
+10028: color: paintBrushMode === m ? "#E7AEFF" : "rgba(244,246,255,0.8)",
+10036: {/* Color picker — only when COLOR brush in PAINT mode */}
+10037: {sourceMode === "paint" && paintBrushMode === "color" && (
+10042: value={brushColor}
+10043: onChange={e => setBrushColor(e.target.value)}
+10049: {/* Preset palette — 3x3 grid. Greyed out in COLOR brush mode. */}
+10050: {(sourceMode !== "paint" || paintBrushMode === "glitch") && (
+10053: {GLITCH_PRESETS.map((p, i) => {
+10054: const active = glitchPreset === i;
+10058: onClick={() => setGlitchPreset(i)}
+10287: procedural generator paints (off = base only,
+10290: The internal sourceMode/faceFxMode plumbing is
+10300: const sm = sourceMode === "generator" ? "GEN" : sourceMode === "upload" ? "UPLD" : sourceMode === "paint" ? "PAINT" : "CAM";
+10311: {(["camera","upload","paint"] as const).map((sm) => {
+10312: const lbl = sm === "camera" ? "CAM" : sm === "upload" ? "UPLD" : "PAINT";
+10318: sm === "upload" ? sourceMode === "upload" :
+10319: sourceMode === "paint";
+10333: setSourceMode("camera");
+10339: // handler sets sourceMode="upload" and clears
+10343: // v1.3.54 — PAINT: enter MS-Paint emulator mode.
+10344: // Allocate the persistent paint canvas, drop
+10346: // strictly off the paint canvas, and arm DRAW
+10349: ensurePaintCanvas();
+10350: setSourceMode("paint");
+10379: {/* Row 2 — GEN OVERLAY (where the generator paints) */}
+10384: // is unambiguous. SUBJ → "GEN▸FG" (generator paints
+10393: g === "off"     ? sourceMode !== "generator" :
+10394: g === "full"    ? (sourceMode === "generator" && !cameraActive) :
+10395: g === "subject" ? (sourceMode === "generator" && cameraActive && faceFxMode === "FACE") :
+10396: (sourceMode === "generator" && cameraActive && faceFxMode === "BG");
+10405: if (uploadName && sourceMode === "upload") {
+10406: setSourceMode("upload");
+10408: setSourceMode("camera");
+10417: setSourceMode("generator");
+10420: // GEN painted on the person; real-world BG behind.
+10428: setSourceMode("generator");
+10437: setSourceMode("generator");
+10471: {(sourceMode === "generator" && cameraActive && (faceFxMode === "FACE" || faceFxMode === "BG")) && (
+10522: if (sourceMode === "upload") return uploadName ? `▣ ${uploadKind === "video" ? "VID" : "IMG"} · ${uploadName}${fxTag}` : "▣ NO MEDIA LOADED"
+10523: if (sourceMode === "camera") return cameraActive ? `▣ CAMERA LIVE${fxTag}` : "▣ CAMERA OFFLINE";
+11588: // SynthSwitch — chunky 2-position toggle (brushed metal lever)
+11637: // brushed metal grain
+11723: // SynthPanel — chunky brushed-metal chassis with screws + amber title strip
+11836: {/* Brushed-metal inner workspace — hidden when accordion-collapsed. */}
+12078: {/* Inner brushed metal panel */}
