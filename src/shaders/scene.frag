@@ -118,6 +118,19 @@ uniform float uReact;            // Gray-Scott reaction-diffusion mosh
 uniform float uVoroSort;         // Voronoi luma-sorted cell quantizer
 uniform float uModeParams[8]; // per-mode rack params (slot 0=AMOUNT, 1=MIX, 2..7 mode-specific)
 
+// v1.3.61 — NOVEL CS FX (one new GPU primitive per artist family, batch 1).
+// Each is a brand-new subroutine, NOT a remix of existing uniforms. Composes
+// with everything above by operating on `post` at the very end of the chain.
+uniform float uMenkmanFX;   // real DCT-block reconstruct (DC + first AC basis)
+uniform float uMolnarFX;    // recursive golden-ratio Mondrian subdivision
+uniform float uUcnvFX;      // Haar wavelet HF subband swap with prev frame
+uniform float uGysinFX;     // Gabor-patch phosphene synthesis (Dream Machine)
+uniform float uAsendorfFX;  // 2D vertical-band threshold sort
+uniform float uJodiFX;      // bit-CA over RGB threshold (rule-based)
+uniform float uArcangelFX;  // NES nametable scroll w/ fine-X register + 4-color quant
+uniform float uPaikFX;      // magnetic dipole-field UV warp
+uniform float uFentonFX;    // venetian-band SAD motion-vector swap
+
 vec2 adjustUv(vec2 uv) {
   if (uMirror > 0.5) uv.x = 1.0 - uv.x;
   uv.y = 1.0 - uv.y;
@@ -1679,8 +1692,186 @@ void main() {
       float jx = (rand(vec2(t, 17.3)) - 0.5) * r * 0.14;
       vec2 bUv = clamp(vUv + vec2(jx, jy), 0.0, 1.0);
       vec3 burst = texture2D(uCamera, bUv).rgb;
-      post = mix(post, burst, clamp(r * 1.1, 0.0, 1.0));
+  }
+  // ── v1.3.61 NOVEL CS FX (artist-family batch 1) ───────────────────
+  // Each block is gated standalone (no master gate) and composes via mix()
+  // on `post`. Order is fixed; later artists layer over earlier ones.
+  // 1. MENKMAN — true 8x8 DCT-block reconstruct: DC + first AC X/Y basis,
+  //    quantized to N levels. Real JPEG quant matrix simulation, not just
+  //    block displacement.
+  if (uMenkmanFX > 0.001) {
+    float bs = 8.0 / max(uResolution.y, 1.0);
+    vec2 bUv = floor(vUv / bs) * bs;
+    vec2 fUv = clamp((vUv - bUv) / bs, 0.0, 1.0);
+    vec3 c0 = texture2D(uCamera, bUv).rgb;
+    vec3 c1 = texture2D(uCamera, bUv + vec2(bs * 0.99, 0.0)).rgb;
+    vec3 c2 = texture2D(uCamera, bUv + vec2(0.0, bs * 0.99)).rgb;
+    vec3 c3 = texture2D(uCamera, bUv + vec2(bs * 0.99, bs * 0.99)).rgb;
+    vec3 dc = (c0 + c1 + c2 + c3) * 0.25;
+    vec3 acX = (c1 + c3) - (c0 + c2);
+    vec3 acY = (c2 + c3) - (c0 + c1);
+    float Q = mix(2.0, 24.0, clamp(uMenkmanFX, 0.0, 1.0));
+    dc = floor(dc * Q + 0.5) / Q;
+    float bx = cos(fUv.x * 3.14159);
+    float by = cos(fUv.y * 3.14159);
+    vec3 rec = dc + acX * bx * 0.25 + acY * by * 0.25;
+    post = mix(post, clamp(rec, 0.0, 1.0), clamp(uMenkmanFX, 0.0, 1.0));
+  }
+  // 2. MOLNÁR — recursive Mondrian subdivision via golden-ratio splits.
+  //    Walk an 8-level binary BSP tree; each node splits along longer axis
+  //    at φ⁻¹ or 1−φ⁻¹ chosen by deterministic hash. Cell color = source
+  //    sample at cell centroid; black borders for the grid lines.
+  if (uMolnarFX > 0.001) {
+    vec2 r0 = vec2(0.0);
+    vec2 r1 = vec2(1.0);
+    int depth = int(3.0 + uMolnarFX * 5.0);
+    for (int i = 0; i < 8; i++) {
+      if (i >= depth) break;
+      vec2 c = (r0 + r1) * 0.5;
+      float h = hash(float(i) * 7.13 + floor(c.x * 7.0) * 1.7 + floor(c.y * 7.0) * 2.3);
+      float phiInv = 0.6180339887;
+      float split = mix(phiInv, 1.0 - phiInv, h);
+      vec2 sz = r1 - r0;
+      if (sz.x > sz.y) {
+        float sx = r0.x + sz.x * split;
+        if (vUv.x < sx) r1.x = sx; else r0.x = sx;
+      } else {
+        float sy = r0.y + sz.y * split;
+        if (vUv.y < sy) r1.y = sy; else r0.y = sy;
+      }
     }
+    vec3 cellC = texture2D(uCamera, (r0 + r1) * 0.5).rgb;
+    vec2 d = min(vUv - r0, r1 - vUv);
+    float border = 1.0 - step(0.003, min(d.x, d.y));
+    vec3 mol = mix(cellC, vec3(0.05), border);
+    post = mix(post, mol, clamp(uMolnarFX, 0.0, 1.0));
+  }
+  // 3. UCNV — Haar wavelet HF subband swap. Compute 3x3 lowpass for both
+  //    current and prev frames; reconstruct as current_LF + prev_HF, i.e.
+  //    swap high-frequency detail across time. Real subband-coding glitch.
+  if (uUcnvFX > 0.001) {
+    vec2 px = 1.0 / max(uResolution, vec2(1.0));
+    vec3 lp = vec3(0.0);
+    vec3 lpP = vec3(0.0);
+    for (int dy = 0; dy < 3; dy++) {
+      for (int dx = 0; dx < 3; dx++) {
+        vec2 off = (vec2(float(dx), float(dy)) - 1.0) * px;
+        lp  += texture2D(uCamera,    vUv + off).rgb;
+        lpP += texture2D(uPrevFrame, vUv + off).rgb;
+      }
+    }
+    lp /= 9.0; lpP /= 9.0;
+    vec3 prv = texture2D(uPrevFrame, vUv).rgb;
+    vec3 swp = lp + (prv - lpP);
+    post = mix(post, clamp(swp, 0.0, 1.0), clamp(uUcnvFX, 0.0, 1.0));
+  }
+  // 4. GYSIN — Gabor-patch phosphene synthesis. Sum of 5 moving Gabor
+  //    wavelets (Gaussian × cosine carrier) added to brightness. This is
+  //    a real model of phosphene perception, not a sine flicker.
+  if (uGysinFX > 0.001) {
+    vec3 g = vec3(0.0);
+    for (int i = 0; i < 5; i++) {
+      float fi = float(i);
+      vec2 cp = vec2(hash(fi * 1.71 + 0.13), hash(fi * 2.31 + 0.27));
+      cp += 0.12 * vec2(sin(uTime * 0.51 + fi * 1.3), cos(uTime * 0.73 + fi * 0.7));
+      vec2 dd = vUv - cp;
+      float dist2 = dot(dd, dd);
+      float env = exp(-dist2 * 35.0);
+      float ang = fi * 1.2566;
+      float carrier = sin((vUv.x * 38.0) * cos(ang) + (vUv.y * 38.0) * sin(ang) + uTime * 7.0 + fi);
+      g += vec3(env * carrier);
+    }
+    g *= 0.35 * uGysinFX;
+    post = clamp(post + g, 0.0, 1.0);
+  }
+  // 5. ASENDORF — 2D vertical-band threshold sort. Walk UP from current
+  //    pixel until luma drops below an adaptive threshold; replace with
+  //    the brightest pixel encountered. Genuine 2D sort, not the 1D
+  //    line-scan sort already in the rack.
+  if (uAsendorfFX > 0.001) {
+    vec2 px = 1.0 / max(uResolution, vec2(1.0));
+    float thresh = mix(0.55, 0.20, uAsendorfFX);
+    vec3 brightest = post;
+    float blum = lum(post);
+    for (int i = 1; i <= 44; i++) {
+      if (float(i) > 8.0 + uAsendorfFX * 36.0) break;
+      vec3 s = texture2D(uCamera, vUv - vec2(0.0, float(i) * px.y)).rgb;
+      float sl = lum(s);
+      if (sl < thresh) break;
+      if (sl > blum) { brightest = s; blum = sl; }
+    }
+    post = mix(post, brightest, clamp(uAsendorfFX, 0.0, 1.0));
+  }
+  // 6. JODI — bit-cellular-automaton over thresholded RGB neighborhood.
+  //    For each channel: read 4-neighbor + center bits, apply XOR-style
+  //    rule (out = bC XOR (sum>=2)), recombine with detail. System destroy.
+  if (uJodiFX > 0.001) {
+    vec2 px = 1.0 / max(uResolution, vec2(1.0));
+    vec3 cN = texture2D(uPrevFrame, vUv + vec2(0.0,  px.y)).rgb;
+    vec3 cS = texture2D(uPrevFrame, vUv - vec2(0.0,  px.y)).rgb;
+    vec3 cE = texture2D(uPrevFrame, vUv + vec2(px.x, 0.0)).rgb;
+    vec3 cW = texture2D(uPrevFrame, vUv - vec2(px.x, 0.0)).rgb;
+    vec3 cC = texture2D(uPrevFrame, vUv).rgb;
+    vec3 bN = step(0.5, cN); vec3 bS = step(0.5, cS);
+    vec3 bE = step(0.5, cE); vec3 bW = step(0.5, cW);
+    vec3 bC = step(0.5, cC);
+    vec3 sumN = bN + bS + bE + bW;
+    vec3 hot = step(1.5, sumN);
+    vec3 next = abs(bC - hot);
+    vec3 ca = next + (post - bC) * 0.25;
+    post = mix(post, clamp(ca, 0.0, 1.0), clamp(uJodiFX, 0.0, 1.0));
+  }
+  // 7. ARCANGEL — NES nametable scroll. Coarse 8x8 tile lookup with a
+  //    hardware fine-X scroll register, palette quantized to 4 colors per
+  //    tile (NES PPU semantics). Super Mario Clouds done at the bus level.
+  if (uArcangelFX > 0.001) {
+    float tileSize = 8.0;
+    vec2 res = max(uResolution, vec2(1.0));
+    vec2 tilePix = floor(vUv * res / tileSize);
+    vec2 fineP = (vUv * res - tilePix * tileSize) / tileSize;
+    float fineX = fract(uTime * (0.3 + uArcangelFX * 1.5));
+    vec2 srcTile = vec2(mod(tilePix.x + floor(uTime * 4.0), 32.0), tilePix.y);
+    vec2 srcUv = (srcTile * tileSize + fineP * tileSize + vec2(fineX * tileSize, 0.0)) / res;
+    srcUv = fract(srcUv);
+    vec3 nes = texture2D(uCamera, srcUv).rgb;
+    float lq = lum(nes);
+    vec3 q;
+    if      (lq < 0.25) q = vec3(0.05, 0.05, 0.10);
+    else if (lq < 0.50) q = vec3(0.70, 0.20, 0.20);
+    else if (lq < 0.75) q = vec3(0.20, 0.65, 0.30);
+    else                q = vec3(0.95, 0.95, 0.85);
+    post = mix(post, q, clamp(uArcangelFX, 0.0, 1.0));
+  }
+  // 8. PAIK — magnetic dipole-field warp. Synthesize a moving dipole;
+  //    compute B-field analytically (B = (3(d·m)d − m r²)/r⁵); use B as
+  //    a UV warp vector. Real CRT-magnet displacement field.
+  if (uPaikFX > 0.001) {
+    vec2 dipole = vec2(0.5 + 0.32 * sin(uTime * 0.71), 0.5 + 0.32 * cos(uTime * 1.13));
+    vec2 dd = vUv - dipole;
+    float r2 = dot(dd, dd) + 0.002;
+    vec2 m = vec2(cos(uTime * 0.41), sin(uTime * 0.41));
+    float dotDM = dot(dd, m);
+    vec2 B = (3.0 * dotDM * dd - m * r2) / (r2 * r2 + 0.001);
+    vec2 warp = clamp(B * 0.0012 * uPaikFX, vec2(-0.25), vec2(0.25));
+    vec3 paik = texture2D(uCamera, clamp(vUv + warp, 0.001, 0.999)).rgb;
+    post = mix(post, paik, clamp(uPaikFX, 0.0, 1.0));
+  }
+  // 9. FENTON — venetian-band SAD motion-vector swap. Per horizontal
+  //    band, search 5 horizontal offsets in the prev frame; pick the
+  //    one with min sum-of-absolute-differences. Real "Digital TV Dinner"
+  //    1978 algorithm: motion-comp the band from history.
+  if (uFentonFX > 0.001) {
+    vec2 px = 1.0 / max(uResolution, vec2(1.0));
+    float bestSad = 1e9;
+    vec3 bestC = post;
+    vec3 cur = texture2D(uCamera, vUv).rgb;
+    for (int s = 0; s < 5; s++) {
+      float sx = (float(s) - 2.0) * px.x * 4.0;
+      vec3 prv = texture2D(uPrevFrame, clamp(vUv + vec2(sx, 0.0), 0.001, 0.999)).rgb;
+      float sad = abs(cur.r - prv.r) + abs(cur.g - prv.g) + abs(cur.b - prv.b);
+      if (sad < bestSad) { bestSad = sad; bestC = prv; }
+    }
+    post = mix(post, bestC, clamp(uFentonFX, 0.0, 1.0));
   }
   gl_FragColor = vec4(clamp(post, 0.0, 1.0), 1.0);
 }

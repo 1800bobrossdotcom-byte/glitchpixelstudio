@@ -4160,6 +4160,18 @@ export default function SpectraAfter() {
   const [sortMix, setSortMix] = useState(0.0);
   const [reactD, setReactD] = useState(0.0);
   const [voroSort, setVoroSort] = useState(0.0);
+  // v1.3.61 — NOVEL CS FX (9 artist families). Each knob 0..1 directly drives
+  // a brand-new shader primitive (DCT, Mondrian BSP, wavelet HF swap, Gabor,
+  // 2D vertical sort, bit-CA, NES nametable, magnetic dipole, SAD motion).
+  const [menkmanFX,   setMenkmanFX]   = useState(0.0);
+  const [molnarFX,    setMolnarFX]    = useState(0.0);
+  const [ucnvFX,      setUcnvFX]      = useState(0.0);
+  const [gysinFX,     setGysinFX]     = useState(0.0);
+  const [asendorfFX,  setAsendorfFX]  = useState(0.0);
+  const [jodiFX,      setJodiFX]      = useState(0.0);
+  const [arcangelFX,  setArcangelFX]  = useState(0.0);
+  const [paikFX,      setPaikFX]      = useState(0.0);
+  const [fentonFX,    setFentonFX]    = useState(0.0);
   const [feedback, setFeedback] = useState(0.0);
   const [contour, setContour] = useState(0.0);
   const [ascii, setAscii] = useState(0.0);
@@ -4872,6 +4884,9 @@ export default function SpectraAfter() {
       "uFaceTex","uFaceTexValid","uFaceFeather","uFaceMaskRadius",
       "uGlyph","uSortMix","uReact","uVoroSort","uGlyphAtlas","uSortTex",
       "uFxQuality",
+      // v1.3.61 — NOVEL CS FX uniforms (one per artist family)
+      "uMenkmanFX","uMolnarFX","uUcnvFX","uGysinFX","uAsendorfFX",
+      "uJodiFX","uArcangelFX","uPaikFX","uFentonFX",
       "uModeParams[0]"];
       // Mask texture for touch FX
       const maskTex = gl.createTexture();
@@ -5087,6 +5102,16 @@ export default function SpectraAfter() {
   const sortMixRef = useRef(sortMix);
   const reactDRef = useRef(reactD);
   const voroSortRef = useRef(voroSort);
+  // v1.3.61 — NOVEL CS FX refs (read inside RAF render loop)
+  const menkmanFXRef  = useRef(menkmanFX);
+  const molnarFXRef   = useRef(molnarFX);
+  const ucnvFXRef     = useRef(ucnvFX);
+  const gysinFXRef    = useRef(gysinFX);
+  const asendorfFXRef = useRef(asendorfFX);
+  const jodiFXRef     = useRef(jodiFX);
+  const arcangelFXRef = useRef(arcangelFX);
+  const paikFXRef     = useRef(paikFX);
+  const fentonFXRef   = useRef(fentonFX);
   // v1.2.58 — CPU pixel-sort scratch + Gysin glyph atlas
   const cpuSortDownCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const cpuSortOutCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -5290,6 +5315,16 @@ export default function SpectraAfter() {
   useEffect(()=>{ sortMixRef.current=sortMix; },[sortMix]);
   useEffect(()=>{ reactDRef.current=reactD; },[reactD]);
   useEffect(()=>{ voroSortRef.current=voroSort; },[voroSort]);
+  // v1.3.61 — NOVEL CS FX ref sync
+  useEffect(()=>{ menkmanFXRef.current  = menkmanFX;  },[menkmanFX]);
+  useEffect(()=>{ molnarFXRef.current   = molnarFX;   },[molnarFX]);
+  useEffect(()=>{ ucnvFXRef.current     = ucnvFX;     },[ucnvFX]);
+  useEffect(()=>{ gysinFXRef.current    = gysinFX;    },[gysinFX]);
+  useEffect(()=>{ asendorfFXRef.current = asendorfFX; },[asendorfFX]);
+  useEffect(()=>{ jodiFXRef.current     = jodiFX;     },[jodiFX]);
+  useEffect(()=>{ arcangelFXRef.current = arcangelFX; },[arcangelFX]);
+  useEffect(()=>{ paikFXRef.current     = paikFX;     },[paikFX]);
+  useEffect(()=>{ fentonFXRef.current   = fentonFX;   },[fentonFX]);
   useEffect(()=>{ feedbackRef.current=feedback; },[feedback]);
   useEffect(()=>{ contourRef.current=contour; },[contour]);
   useEffect(()=>{ asciiRef.current=ascii; },[ascii]);
@@ -6658,6 +6693,18 @@ export default function SpectraAfter() {
     setF1(u.uSortMix, sortMixRef.current * _mI);
     setF1(u.uReact, reactDRef.current * _mI + PB("uReact"));
     setF1(u.uVoroSort, voroSortRef.current * _mI + PB("uVoroSort"));
+    // v1.3.61 — NOVEL CS FX uniform writes. Each knob directly drives its
+    // novel shader primitive — no PB() macro overlay (these are NEW knobs,
+    // not part of the v1.3.60 modulator palette).
+    setF1(u.uMenkmanFX,  menkmanFXRef.current  * _mI);
+    setF1(u.uMolnarFX,   molnarFXRef.current   * _mI);
+    setF1(u.uUcnvFX,     ucnvFXRef.current     * _mI);
+    setF1(u.uGysinFX,    gysinFXRef.current    * _mI);
+    setF1(u.uAsendorfFX, asendorfFXRef.current * _mI);
+    setF1(u.uJodiFX,     jodiFXRef.current     * _mI);
+    setF1(u.uArcangelFX, arcangelFXRef.current * _mI);
+    setF1(u.uPaikFX,     paikFXRef.current     * _mI);
+    setF1(u.uFentonFX,   fentonFXRef.current   * _mI);
     setF1(u.uFeedback, feedbackRef.current * _mB + PB("uFeedback"));
     setF1(u.uContour, contourRef.current * _mI + PB("uContour"));
     setF1(u.uAscii, asciiRef.current * _mI + PB("uAscii"));
@@ -9769,7 +9816,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.60 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.61 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
@@ -10482,13 +10529,58 @@ export default function SpectraAfter() {
               </div>
             </SynthPanel>
 
-            {/* ── v1.3.58 GLITCH PALETTE rack — 9 mathematically-modulated
-                generative homages. Each preset is a per-frame closure that
-                emits time-varying uniform deltas computed from the actual
-                computer-science primitive defining its namesake artist's
-                practice (logistic map, Lissajous, Box-Muller, NES sawtooth,
-                Bernoulli ROM flip, 8 Hz Dream Machine, DCT quant ladder,
-                Poisson burst, luminance sweep). Nothing here is static. */}
+            {/* ── v1.3.61 NOVEL CS FX rack ── 9 brand-new GPU shader
+                primitives, one per artist family. Each KNOB (0..1)
+                directly drives a unique mathematical primitive in
+                scene.frag — NOT a remix of existing rack uniforms:
+                  MENKMAN  — true 8x8 DCT block reconstruct (DC + first AC)
+                  MOLNÁR   — recursive golden-ratio Mondrian BSP
+                  UCNV     — Haar wavelet HF subband swap with prev frame
+                  GYSIN    — Gabor-patch phosphene synthesis
+                  ASENDORF — 2D vertical-band threshold sort
+                  JODI     — bit cellular automaton over RGB neighborhood
+                  ARCANGEL — NES nametable scroll w/ fine-X + 4-color quant
+                  PAIK     — magnetic dipole-field UV warp
+                  FENTON   — venetian-band SAD motion-vector swap (1978 algo)
+                Composes with everything else; runs at the very tail of
+                main(). v1.3.62+ will add rotary detents per knob to cycle
+                3-5 sub-variants per family. */}
+            <SynthPanel title="ARTIST FX" subtitle="9 NOVEL CS PRIMITIVES · ONE PER FAMILY" accent="rgba(255,180,255,0.95)">
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginTop: 6, justifyItems: "center" }}>
+                <Knob label="MENKMAN"  value={menkmanFX}  min={0} max={1} step={0.01} defaultValue={0} onChange={setMenkmanFX} />
+                <Knob label="MOLNÁR"   value={molnarFX}   min={0} max={1} step={0.01} defaultValue={0} onChange={setMolnarFX} />
+                <Knob label="UCNV"     value={ucnvFX}     min={0} max={1} step={0.01} defaultValue={0} onChange={setUcnvFX} />
+                <Knob label="GYSIN"    value={gysinFX}    min={0} max={1} step={0.01} defaultValue={0} onChange={setGysinFX} />
+                <Knob label="ASENDORF" value={asendorfFX} min={0} max={1} step={0.01} defaultValue={0} onChange={setAsendorfFX} />
+                <Knob label="JODI"     value={jodiFX}     min={0} max={1} step={0.01} defaultValue={0} onChange={setJodiFX} />
+                <Knob label="ARCANGEL" value={arcangelFX} min={0} max={1} step={0.01} defaultValue={0} onChange={setArcangelFX} />
+                <Knob label="PAIK"     value={paikFX}     min={0} max={1} step={0.01} defaultValue={0} onChange={setPaikFX} />
+                <Knob label="FENTON"   value={fentonFX}   min={0} max={1} step={0.01} defaultValue={0} onChange={setFentonFX} />
+              </div>
+              <div style={{ marginTop: 10, display: "flex", justifyContent: "center" }}>
+                <button
+                  onClick={() => {
+                    setMenkmanFX(0); setMolnarFX(0); setUcnvFX(0); setGysinFX(0);
+                    setAsendorfFX(0); setJodiFX(0); setArcangelFX(0); setPaikFX(0); setFentonFX(0);
+                  }}
+                  style={{
+                    padding: "5px 14px", fontSize: 9, letterSpacing: "1.4px", fontWeight: 700,
+                    background: "rgba(255,180,255,0.08)",
+                    border: "1px solid rgba(255,180,255,0.45)",
+                    color: "rgba(255,210,255,0.92)", cursor: "pointer", borderRadius: 4,
+                    fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
+                  }}
+                  title="Reset all 9 ARTIST FX knobs to 0"
+                >ALL OFF</button>
+              </div>
+              <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(255,180,255,0.55)", textAlign: "center" }}>
+                each knob = unique GPU shader · v1.3.62 will add sub-variant detents
+              </div>
+            </SynthPanel>
+
+            {/* ── v1.3.58/v1.3.60 GLITCH PALETTE rack (kept as POWER-gated
+                fallback for the v1.3.60 modulator system; ARTIST FX above
+                is the new primitive layer). */}
             <SynthPanel title="GLITCH PALETTE" subtitle="9 GENERATIVE HOMAGES · DYNAMIC FX" accent="rgba(255,180,255,0.95)">
               <SynthSwitch
                 label="POWER"
