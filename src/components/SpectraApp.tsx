@@ -4172,6 +4172,23 @@ export default function SpectraAfter() {
   const [arcangelFX,  setArcangelFX]  = useState(0.0);
   const [paikFX,      setPaikFX]      = useState(0.0);
   const [fentonFX,    setFentonFX]    = useState(0.0);
+  // v1.3.64 — family selectors per ARTIST FX (0/1/2 = three sub-variants)
+  const [menkmanFam,  setMenkmanFam]  = useState(0);
+  const [molnarFam,   setMolnarFam]   = useState(0);
+  const [ucnvFam,     setUcnvFam]     = useState(0);
+  const [gysinFam,    setGysinFam]    = useState(0);
+  const [asendorfFam, setAsendorfFam] = useState(0);
+  const [jodiFam,     setJodiFam]     = useState(0);
+  const [arcangelFam, setArcangelFam] = useState(0);
+  const [paikFam,     setPaikFam]     = useState(0);
+  const [fentonFam,   setFentonFam]   = useState(0);
+  // v1.3.64 — when true, ARTIST knobs map to family index (0–1–2)
+  // instead of intensity. Toggle button on the panel switches the meaning.
+  const [artistFamilyMode, setArtistFamilyMode] = useState(false);
+  // v1.3.64 — ARTIST FX touch-bend strength + live touch position. The
+  // live x/y is fed into the existing uTouch uniform; uArtistTouch scales
+  // how hard each FX bends toward the finger.
+  const [artistTouchStr, setArtistTouchStr] = useState(0.7);
   const [feedback, setFeedback] = useState(0.0);
   const [contour, setContour] = useState(0.0);
   const [ascii, setAscii] = useState(0.0);
@@ -4887,6 +4904,10 @@ export default function SpectraAfter() {
       // v1.3.61 — NOVEL CS FX uniforms (one per artist family)
       "uMenkmanFX","uMolnarFX","uUcnvFX","uGysinFX","uAsendorfFX",
       "uJodiFX","uArcangelFX","uPaikFX","uFentonFX",
+      // v1.3.64 — ARTIST FX family selectors + touch-bend scalar
+      "uMenkmanFam","uMolnarFam","uUcnvFam","uGysinFam","uAsendorfFam",
+      "uJodiFam","uArcangelFam","uPaikFam","uFentonFam",
+      "uArtistTouch",
       "uModeParams[0]"];
       // Mask texture for touch FX
       const maskTex = gl.createTexture();
@@ -5112,6 +5133,17 @@ export default function SpectraAfter() {
   const arcangelFXRef = useRef(arcangelFX);
   const paikFXRef     = useRef(paikFX);
   const fentonFXRef   = useRef(fentonFX);
+  // v1.3.64 — family + artist-touch refs (read in RAF render loop)
+  const menkmanFamRef  = useRef(menkmanFam);
+  const molnarFamRef   = useRef(molnarFam);
+  const ucnvFamRef     = useRef(ucnvFam);
+  const gysinFamRef    = useRef(gysinFam);
+  const asendorfFamRef = useRef(asendorfFam);
+  const jodiFamRef     = useRef(jodiFam);
+  const arcangelFamRef = useRef(arcangelFam);
+  const paikFamRef     = useRef(paikFam);
+  const fentonFamRef   = useRef(fentonFam);
+  const artistTouchStrRef = useRef(artistTouchStr);
   // v1.2.58 — CPU pixel-sort scratch + Gysin glyph atlas
   const cpuSortDownCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const cpuSortOutCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -5325,6 +5357,16 @@ export default function SpectraAfter() {
   useEffect(()=>{ arcangelFXRef.current = arcangelFX; },[arcangelFX]);
   useEffect(()=>{ paikFXRef.current     = paikFX;     },[paikFX]);
   useEffect(()=>{ fentonFXRef.current   = fentonFX;   },[fentonFX]);
+  useEffect(()=>{ menkmanFamRef.current  = menkmanFam;  },[menkmanFam]);
+  useEffect(()=>{ molnarFamRef.current   = molnarFam;   },[molnarFam]);
+  useEffect(()=>{ ucnvFamRef.current     = ucnvFam;     },[ucnvFam]);
+  useEffect(()=>{ gysinFamRef.current    = gysinFam;    },[gysinFam]);
+  useEffect(()=>{ asendorfFamRef.current = asendorfFam; },[asendorfFam]);
+  useEffect(()=>{ jodiFamRef.current     = jodiFam;     },[jodiFam]);
+  useEffect(()=>{ arcangelFamRef.current = arcangelFam; },[arcangelFam]);
+  useEffect(()=>{ paikFamRef.current     = paikFam;     },[paikFam]);
+  useEffect(()=>{ fentonFamRef.current   = fentonFam;   },[fentonFam]);
+  useEffect(()=>{ artistTouchStrRef.current = artistTouchStr; },[artistTouchStr]);
   useEffect(()=>{ feedbackRef.current=feedback; },[feedback]);
   useEffect(()=>{ contourRef.current=contour; },[contour]);
   useEffect(()=>{ asciiRef.current=ascii; },[ascii]);
@@ -6705,6 +6747,17 @@ export default function SpectraAfter() {
     setF1(u.uArcangelFX, arcangelFXRef.current * _mI);
     setF1(u.uPaikFX,     paikFXRef.current     * _mI);
     setF1(u.uFentonFX,   fentonFXRef.current   * _mI);
+    // v1.3.64 — family + touch-bend
+    setF1(u.uMenkmanFam,  menkmanFamRef.current);
+    setF1(u.uMolnarFam,   molnarFamRef.current);
+    setF1(u.uUcnvFam,     ucnvFamRef.current);
+    setF1(u.uGysinFam,    gysinFamRef.current);
+    setF1(u.uAsendorfFam, asendorfFamRef.current);
+    setF1(u.uJodiFam,     jodiFamRef.current);
+    setF1(u.uArcangelFam, arcangelFamRef.current);
+    setF1(u.uPaikFam,     paikFamRef.current);
+    setF1(u.uFentonFam,   fentonFamRef.current);
+    setF1(u.uArtistTouch, artistTouchStrRef.current);
     setF1(u.uFeedback, feedbackRef.current * _mB + PB("uFeedback"));
     setF1(u.uContour, contourRef.current * _mI + PB("uContour"));
     setF1(u.uAscii, asciiRef.current * _mI + PB("uAscii"));
@@ -9548,7 +9601,35 @@ export default function SpectraAfter() {
             }}/>
             <div style={{ position: "absolute", inset: 10, border: "1px solid rgba(176,20,240,0.26)", zIndex: 2, pointerEvents: "none" }}/>
 
-            <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />
+            <canvas
+              ref={canvasRef}
+              style={{ width: "100%", height: "100%", display: "block", touchAction: "none" }}
+              // v1.3.64 — ARTIST FX touch interactivity. Swiping/pressing on
+              // the live camera surface feeds touchRef.x/y/active which the
+              // shader reads as `uTouch`+`uTouchActive`. Each ARTIST FX
+              // block bends its anchor/center/scroll toward the finger so
+              // the live image visibly distorts under touch.
+              onPointerDown={(e) => {
+                e.preventDefault();
+                const r = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+                touchRef.current.x = Math.max(0, Math.min(1, (e.clientX - r.left) / Math.max(1, r.width)));
+                touchRef.current.y = Math.max(0, Math.min(1, 1 - (e.clientY - r.top) / Math.max(1, r.height)));
+                touchRef.current.active = true;
+                try { (e.currentTarget as HTMLCanvasElement).setPointerCapture(e.pointerId); } catch {}
+              }}
+              onPointerMove={(e) => {
+                if (!touchRef.current.active) return;
+                const r = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
+                touchRef.current.x = Math.max(0, Math.min(1, (e.clientX - r.left) / Math.max(1, r.width)));
+                touchRef.current.y = Math.max(0, Math.min(1, 1 - (e.clientY - r.top) / Math.max(1, r.height)));
+              }}
+              onPointerUp={(e) => {
+                touchRef.current.active = false;
+                try { (e.currentTarget as HTMLCanvasElement).releasePointerCapture(e.pointerId); } catch {}
+              }}
+              onPointerCancel={() => { touchRef.current.active = false; }}
+              onPointerLeave={() => { touchRef.current.active = false; }}
+            />
 
             <button
               className={"sp-btn sp-photo-btn" + (neonMode ? " sp-photo-btn-neon" : "")}
@@ -9816,7 +9897,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.63 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.64 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
@@ -10545,23 +10626,46 @@ export default function SpectraAfter() {
                 Composes with everything else; runs at the very tail of
                 main(). v1.3.62+ will add rotary detents per knob to cycle
                 3-5 sub-variants per family. */}
-            <SynthPanel title="ARTIST FX" subtitle="9 NOVEL CS PRIMITIVES · ONE PER FAMILY" accent="rgba(255,180,255,0.95)">
+            <SynthPanel title="ARTIST FX" subtitle="9 NOVEL CS PRIMITIVES · FAMILY MODE · TOUCH-BEND" accent="rgba(255,180,255,0.95)">
+              {/* v1.3.64 — MODE toggle. AMT = knob sets intensity 0..1 (default).
+                  FAMILY = knob picks one of 3 sub-variants per FX. Knob value
+                  is reused for both meanings via the routing below. */}
+              <div style={{ display: "flex", justifyContent: "center", gap: 10, marginBottom: 8 }}>
+                <button
+                  onClick={() => setArtistFamilyMode(v => !v)}
+                  style={{
+                    padding: "6px 18px", fontSize: 10, letterSpacing: "1.6px", fontWeight: 800,
+                    background: artistFamilyMode ? "rgba(255,180,255,0.32)" : "rgba(255,180,255,0.06)",
+                    border: "1px solid rgba(255,180,255,0.65)",
+                    color: artistFamilyMode ? "#fff" : "rgba(255,210,255,0.85)",
+                    cursor: "pointer", borderRadius: 4,
+                    fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
+                  }}
+                  title="Toggle knob meaning between AMT (intensity) and FAMILY (variant 0/1/2)"
+                >MODE: {artistFamilyMode ? "FAMILY" : "AMT"}</button>
+              </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginTop: 6, justifyItems: "center" }}>
-                <Knob label="MENKMAN"  value={menkmanFX}  min={0} max={1} step={0.01} defaultValue={0} onChange={setMenkmanFX} />
-                <Knob label="MOLNÁR"   value={molnarFX}   min={0} max={1} step={0.01} defaultValue={0} onChange={setMolnarFX} />
-                <Knob label="UCNV"     value={ucnvFX}     min={0} max={1} step={0.01} defaultValue={0} onChange={setUcnvFX} />
-                <Knob label="GYSIN"    value={gysinFX}    min={0} max={1} step={0.01} defaultValue={0} onChange={setGysinFX} />
-                <Knob label="ASENDORF" value={asendorfFX} min={0} max={1} step={0.01} defaultValue={0} onChange={setAsendorfFX} />
-                <Knob label="JODI"     value={jodiFX}     min={0} max={1} step={0.01} defaultValue={0} onChange={setJodiFX} />
-                <Knob label="ARCANGEL" value={arcangelFX} min={0} max={1} step={0.01} defaultValue={0} onChange={setArcangelFX} />
-                <Knob label="PAIK"     value={paikFX}     min={0} max={1} step={0.01} defaultValue={0} onChange={setPaikFX} />
-                <Knob label="FENTON"   value={fentonFX}   min={0} max={1} step={0.01} defaultValue={0} onChange={setFentonFX} />
+                <Knob label="MENKMAN"  value={artistFamilyMode ? menkmanFam/2  : menkmanFX}  min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setMenkmanFam(Math.round(v*2))  : setMenkmanFX(v)} />
+                <Knob label="MOLNÁR"   value={artistFamilyMode ? molnarFam/2   : molnarFX}   min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setMolnarFam(Math.round(v*2))   : setMolnarFX(v)} />
+                <Knob label="UCNV"     value={artistFamilyMode ? ucnvFam/2     : ucnvFX}     min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setUcnvFam(Math.round(v*2))     : setUcnvFX(v)} />
+                <Knob label="GYSIN"    value={artistFamilyMode ? gysinFam/2    : gysinFX}    min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setGysinFam(Math.round(v*2))    : setGysinFX(v)} />
+                <Knob label="ASENDORF" value={artistFamilyMode ? asendorfFam/2 : asendorfFX} min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setAsendorfFam(Math.round(v*2)) : setAsendorfFX(v)} />
+                <Knob label="JODI"     value={artistFamilyMode ? jodiFam/2     : jodiFX}     min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setJodiFam(Math.round(v*2))     : setJodiFX(v)} />
+                <Knob label="ARCANGEL" value={artistFamilyMode ? arcangelFam/2 : arcangelFX} min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setArcangelFam(Math.round(v*2)) : setArcangelFX(v)} />
+                <Knob label="PAIK"     value={artistFamilyMode ? paikFam/2     : paikFX}     min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setPaikFam(Math.round(v*2))     : setPaikFX(v)} />
+                <Knob label="FENTON"   value={artistFamilyMode ? fentonFam/2   : fentonFX}   min={0} max={1} step={artistFamilyMode?0.5:0.01} defaultValue={0} onChange={(v)=> artistFamilyMode ? setFentonFam(Math.round(v*2))   : setFentonFX(v)} />
+              </div>
+              {/* v1.3.64 — touch-bend strength scales how hard ARTIST FX warp toward the finger */}
+              <div style={{ marginTop: 10, display: "flex", justifyContent: "center" }}>
+                <Knob label="TOUCH" value={artistTouchStr} min={0} max={1} step={0.01} defaultValue={0.7} onChange={setArtistTouchStr} size={48} />
               </div>
               <div style={{ marginTop: 10, display: "flex", justifyContent: "center" }}>
                 <button
                   onClick={() => {
                     setMenkmanFX(0); setMolnarFX(0); setUcnvFX(0); setGysinFX(0);
                     setAsendorfFX(0); setJodiFX(0); setArcangelFX(0); setPaikFX(0); setFentonFX(0);
+                    setMenkmanFam(0); setMolnarFam(0); setUcnvFam(0); setGysinFam(0);
+                    setAsendorfFam(0); setJodiFam(0); setArcangelFam(0); setPaikFam(0); setFentonFam(0);
                   }}
                   style={{
                     padding: "5px 14px", fontSize: 9, letterSpacing: "1.4px", fontWeight: 700,
@@ -10570,11 +10674,11 @@ export default function SpectraAfter() {
                     color: "rgba(255,210,255,0.92)", cursor: "pointer", borderRadius: 4,
                     fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
                   }}
-                  title="Reset all 9 ARTIST FX knobs to 0"
+                  title="Reset all 9 ARTIST FX knobs + families to 0"
                 >ALL OFF</button>
               </div>
               <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(255,180,255,0.55)", textAlign: "center" }}>
-                each knob = unique GPU shader · v1.3.62 will add sub-variant detents
+                MODE toggles knob meaning · swipe live camera to bend FX · v1.3.64
               </div>
             </SynthPanel>
 

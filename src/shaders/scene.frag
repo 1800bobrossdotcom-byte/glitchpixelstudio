@@ -130,6 +130,21 @@ uniform float uJodiFX;      // bit-CA over RGB threshold (rule-based)
 uniform float uArcangelFX;  // NES nametable scroll w/ fine-X register + 4-color quant
 uniform float uPaikFX;      // magnetic dipole-field UV warp
 uniform float uFentonFX;    // venetian-band SAD motion-vector swap
+// v1.3.64 — family selectors per ARTIST FX (0/1/2 = three sub-variants each)
+uniform float uMenkmanFam;
+uniform float uMolnarFam;
+uniform float uUcnvFam;
+uniform float uGysinFam;
+uniform float uAsendorfFam;
+uniform float uJodiFam;
+uniform float uArcangelFam;
+uniform float uPaikFam;
+uniform float uFentonFam;
+// v1.3.64 — alias to existing uTouch/uTouchActive used by ARTIST FX so the
+// touch-bend can be scaled independently of the touch-paint mask.
+#define uTouchPos uTouch
+#define uTouchStrength uArtistTouch
+uniform float uArtistTouch;
 
 vec2 adjustUv(vec2 uv) {
   if (uMirror > 0.5) uv.x = 1.0 - uv.x;
@@ -635,53 +650,57 @@ void main() {
     }
     else if (intF >= 5.5)               srcInBand = true;                                  // NONE
 
+    // v1.3.64 — Asendorf walk engine. Walk in the chosen direction,
+    // BREAK when sortMetric drops out of the [lo,hi] band; track the
+    // brightest (or darkest, per pickMax) sample along the way. This
+    // replaces the old constant-64-tap scan with the cleaner Asendorf
+    // semantics that drive the ARTIST FX ASENDORF block. Per-mode the
+    // walk direction differs: LINE = step1 backward, SPIRAL = radial
+    // step, BLOCK = horizontal walk inside the 8x8 cell, SLICE =
+    // random hops along the perpendicular axis.
     vec3 bestCol = srcCol;
     float bestMet = pickMax > 0.5 ? -1.0 : 2.0;
-    float runActive = 1.0;
     bool foundInBand = false;
-    // Constant 64-sample scan (GLSL ES 1.00 safe). Sample-position
-    // formula switches per uSortMode; the in-band/run-edge accounting
-    // is shared.
-    for (int s = 0; s < 64; s++) {
+    for (int s = 1; s < 64; s++) {
       float fs = float(s) + jitter;
+      if (fs > runMaxF) break;
       vec2 sUv;
       if (modeF < 0.5) {
-        // LINE: scan backwards along row (or column).
+        // LINE: walk backwards along the row/column.
         sUv = uv - step1 * fs;
       } else if (modeF < 1.5) {
-        // SPIRAL: walk along same radial ring at varying angles.
+        // SPIRAL: radial walk around the same ring.
         float ang = spiralA + (fs - 32.0) * spiralStep;
         sUv = spiralCenter + vec2(cos(ang), sin(ang)) * spiralR;
       } else if (modeF < 2.5) {
-        // BLOCK: deterministic 8x8 block sweep, all 64 pixels.
-        float bx = mod(float(s), 8.0);
-        float by = floor(float(s) / 8.0);
+        // BLOCK: walk horizontally inside the 8x8 origin cell.
+        float bx = mod(fs, 8.0);
+        float by = floor(fs / 8.0);
         sUv = blockOrigin + vec2(bx, by) * px;
       } else {
-        // SLICE: random pixels along the row/column (Jeff Thompson style).
+        // SLICE: random hops along the perpendicular axis.
         float r = hash2(vec2(lineId * 0.31, fs * 0.17 + floor(uTime * 0.7)));
         sUv = sortVert ? vec2(uv.x, r) : vec2(r, uv.y);
       }
-      float inRange = step(float(s), runMaxF)
-                    * step(0.0, sUv.x) * step(sUv.x, 1.0)
-                    * step(0.0, sUv.y) * step(sUv.y, 1.0)
-                    * runActive;
-      vec2 fetchUv = clamp(sUv, 0.0, 1.0);
-      vec3 sc = texture2D(uCamera, fetchUv).rgb;
+      // out-of-frame ends the walk
+      if (sUv.x < 0.0 || sUv.x > 1.0 || sUv.y < 0.0 || sUv.y > 1.0) break;
+      vec3 sc = texture2D(uCamera, clamp(sUv, 0.0, 1.0)).rgb;
       float m = sortMetric(sc, key);
-      bool inBand = (m >= lo && m <= hi);
-      if (inRange > 0.5 && inBand) {
-        foundInBand = true;
-        if (pickMax > 0.5 ? m > bestMet : m < bestMet) {
-          bestMet = m; bestCol = sc;
-        }
-      } else if (inRange > 0.5 && foundInBand && modeF < 0.5) {
-        // Crisp streak edge: stop accepting further samples (LINE only).
-        runActive = 0.0;
+      // Asendorf: if metric leaves the band, the run is OVER.
+      // (LINE/SPIRAL/SLICE break for crisp streak edges; BLOCK stays
+      // permissive so the whole cell still paints.)
+      if (m < lo || m > hi) {
+        if (foundInBand && modeF < 1.5) break;
+        if (foundInBand && modeF >= 2.5) break;
+        continue;
+      }
+      foundInBand = true;
+      if (pickMax > 0.5 ? m > bestMet : m < bestMet) {
+        bestMet = m; bestCol = sc;
       }
     }
-    // BLOCK paints the whole 8x8 cell uniformly; LINE/SPIRAL/SLICE
-    // only paint in-band pixels so out-of-band passes through.
+    // BLOCK still paints the whole 8x8 cell uniformly using whatever
+    // brightest in-band sample we collected on the walk.
     bool paintAll = (modeF >= 1.5 && modeF < 2.5);
     sortedCol = bestCol;
     // Signal phasing (AE Pixel Sorter Signal panel): luma noise, chroma
@@ -1756,8 +1775,13 @@ void main() {
   //    AC X/Y basis with N-level quantization, then NUKES the current
   //    pixel's post toward that block-quant. Compounds with everything.
   if (uMenkmanFX > 0.001) {
-    float bs = 8.0 / max(uResolution.y, 1.0);
-    vec2 bUv = floor(uv / bs) * bs;
+    int mkFam = int(floor(clamp(uMenkmanFam, 0.0, 2.5)));
+    // family 0 = 8px blocks, 1 = 16px (chunkier), 2 = 4px (fine grain)
+    float blockPix = mkFam == 0 ? 8.0 : (mkFam == 1 ? 16.0 : 4.0);
+    float bs = blockPix / max(uResolution.y, 1.0);
+    // touch shifts block origin so swiping drags the macroblock grid
+    vec2 mkBias = (uTouchPos - vec2(0.5)) * uTouchActive * uTouchStrength * 0.5 * bs * 8.0;
+    vec2 bUv = floor((uv + mkBias) / bs) * bs - mkBias;
     vec2 fUv = clamp((uv - bUv) / bs, 0.0, 1.0);
     vec3 c0 = texture2D(uCamera, bUv).rgb;
     vec3 c1 = texture2D(uCamera, bUv + vec2(bs * 0.99, 0.0)).rgb;
@@ -1766,14 +1790,15 @@ void main() {
     vec3 dc = (c0 + c1 + c2 + c3) * 0.25;
     vec3 acX = (c1 + c3) - (c0 + c2);
     vec3 acY = (c2 + c3) - (c0 + c1);
-    float Q = mix(2.0, 24.0, clamp(uMenkmanFX, 0.0, 1.0));
-    // quantize the LIVE post relative to block DC, not raw camera
+    // family quant levels: 0=2..24, 1=2..8 (heavier), 2=4..48 (finer)
+    float Q = mkFam == 1 ? mix(2.0, 8.0, uMenkmanFX)
+            : mkFam == 2 ? mix(4.0, 48.0, uMenkmanFX)
+            : mix(2.0, 24.0, uMenkmanFX);
     vec3 dcMix = mix(dc, post, 0.5);
     vec3 dcQ = floor(dcMix * Q + 0.5) / Q;
     float bx = cos(fUv.x * 3.14159);
     float by = cos(fUv.y * 3.14159);
     vec3 rec = dcQ + acX * bx * 0.30 + acY * by * 0.30;
-    // multiplicative+additive corruption — stacks with everything
     vec3 corrupt = post * 0.4 + rec * 0.6 + (rec - post) * 0.5;
     post = mix(post, clamp(corrupt, 0.0, 1.0), clamp(uMenkmanFX, 0.0, 1.0));
   }
@@ -1782,11 +1807,18 @@ void main() {
   //    grid lines are SUBTRACTED from post (black borders carve into
   //    image, not overlay). Pixel-level destruction of post, no replace.
   if (uMolnarFX > 0.001) {
+    int mnFam = int(floor(clamp(uMolnarFam, 0.0, 2.5)));
     vec2 r0 = vec2(0.0);
     vec2 r1 = vec2(1.0);
-    int depth = int(3.0 + uMolnarFX * 5.0);
+    // family 0 = 3..8 depth, 1 = shallower 2..5 (big blocks), 2 = deeper 5..10
+    int depth = mnFam == 1 ? int(2.0 + uMolnarFX * 3.0)
+              : mnFam == 2 ? int(5.0 + uMolnarFX * 5.0)
+              : int(3.0 + uMolnarFX * 5.0);
+    // touch shifts the BSP root so swiping drags the cell grid
+    vec2 mnUv = uv + (uTouchPos - vec2(0.5)) * uTouchActive * uTouchStrength * 0.3;
+    mnUv = clamp(mnUv, 0.001, 0.999);
     float cellId = 0.0;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 10; i++) {
       if (i >= depth) break;
       vec2 c = (r0 + r1) * 0.5;
       float h = hash(float(i) * 7.13 + floor(c.x * 7.0) * 1.7 + floor(c.y * 7.0) * 2.3);
@@ -1795,26 +1827,36 @@ void main() {
       vec2 sz = r1 - r0;
       if (sz.x > sz.y) {
         float sx = r0.x + sz.x * split;
-        if (uv.x < sx) { r1.x = sx; cellId = cellId * 2.0; }
-        else           { r0.x = sx; cellId = cellId * 2.0 + 1.0; }
+        if (mnUv.x < sx) { r1.x = sx; cellId = cellId * 2.0; }
+        else             { r0.x = sx; cellId = cellId * 2.0 + 1.0; }
       } else {
         float sy = r0.y + sz.y * split;
-        if (uv.y < sy) { r1.y = sy; cellId = cellId * 2.0; }
-        else           { r0.y = sy; cellId = cellId * 2.0 + 1.0; }
+        if (mnUv.y < sy) { r1.y = sy; cellId = cellId * 2.0; }
+        else             { r0.y = sy; cellId = cellId * 2.0 + 1.0; }
       }
     }
     // per-cell hue swap + brightness flip on POST (not camera)
     float ch = hash(cellId * 13.7);
     float cs = hash(cellId * 21.3);
     vec3 swiz;
-    if      (ch < 0.25) swiz = post.rgb;
-    else if (ch < 0.50) swiz = post.gbr;
-    else if (ch < 0.75) swiz = post.brg;
-    else                swiz = vec3(1.0) - post.rgb; // invert this cell
+    // family 0 = invert quartile, 1 = pure swizzle (no invert), 2 = invert all + swap
+    if (mnFam == 1) {
+      if      (ch < 0.33) swiz = post.rgb;
+      else if (ch < 0.66) swiz = post.gbr;
+      else                swiz = post.brg;
+    } else if (mnFam == 2) {
+      if      (ch < 0.50) swiz = vec3(1.0) - post.gbr;
+      else                swiz = vec3(1.0) - post.brg;
+    } else {
+      if      (ch < 0.25) swiz = post.rgb;
+      else if (ch < 0.50) swiz = post.gbr;
+      else if (ch < 0.75) swiz = post.brg;
+      else                swiz = vec3(1.0) - post.rgb;
+    }
     swiz *= 0.6 + cs * 0.8;
-    // black borders carved INTO post (subtractive)
-    vec2 d = min(uv - r0, r1 - uv);
-    float border = 1.0 - smoothstep(0.0, 0.004, min(d.x, d.y));
+    vec2 d = min(mnUv - r0, r1 - mnUv);
+    float borderW = mnFam == 2 ? 0.008 : 0.004;
+    float border = 1.0 - smoothstep(0.0, borderW, min(d.x, d.y));
     swiz = mix(swiz, vec3(0.0), border * 0.95);
     post = mix(post, clamp(swiz, 0.0, 1.0), clamp(uMolnarFX, 0.0, 1.0));
   }
@@ -1823,45 +1865,62 @@ void main() {
   //    frame's HF; reassemble as post_LF + prev_HF. True subband
   //    corruption — operates on post's own frequency content.
   if (uUcnvFX > 0.001) {
+    int ucFam = int(floor(clamp(uUcnvFam, 0.0, 2.5)));
     vec2 px = 1.0 / max(uResolution, vec2(1.0));
+    // touch tilts the HF sample direction so swiping smears bands
+    vec2 ucOff = (uTouchPos - vec2(0.5)) * uTouchActive * uTouchStrength * 6.0 * px;
     vec3 lp = vec3(0.0);
     vec3 lpP = vec3(0.0);
     for (int dy = 0; dy < 3; dy++) {
       for (int dx = 0; dx < 3; dx++) {
         vec2 off = (vec2(float(dx), float(dy)) - 1.0) * px;
         lp  += texture2D(uCamera,    uv + off).rgb;
-        lpP += texture2D(uPrevFrame, uv + off).rgb;
+        lpP += texture2D(uPrevFrame, uv + off + ucOff).rgb;
       }
     }
     lp /= 9.0; lpP /= 9.0;
-    vec3 prv = texture2D(uPrevFrame, uv).rgb;
+    vec3 prv = texture2D(uPrevFrame, uv + ucOff).rgb;
     vec3 prvHF = prv - lpP;
-    // post's own LF base + previous frame's HF detail SHIFTED by 0.5px
     vec3 postLF = mix(post, lp, 0.5);
-    vec3 swp = postLF + prvHF * (1.5 + uUcnvFX * 2.0);
+    // family 0 = HF amplify, 1 = HF subtract (smoothing inversion), 2 = HF rotate channels
+    vec3 swp;
+    if (ucFam == 1) {
+      swp = postLF - prvHF * (1.0 + uUcnvFX * 2.0);
+    } else if (ucFam == 2) {
+      swp = postLF + prvHF.gbr * (1.5 + uUcnvFX * 2.0);
+    } else {
+      swp = postLF + prvHF * (1.5 + uUcnvFX * 2.0);
+    }
     post = mix(post, clamp(swp, 0.0, 1.0), clamp(uUcnvFX, 0.0, 1.0));
   }
   // 4. GYSIN — Gabor-patch phosphene MULTIPLIED into post (not added as
   //    overlay). Each Gabor wavelet modulates post brightness AND hue,
   //    so the carrier directly distorts the image at pixel level.
   if (uGysinFX > 0.001) {
+    int gyFam = int(floor(clamp(uGysinFam, 0.0, 2.5)));
     vec3 g = vec3(0.0);
-    for (int i = 0; i < 5; i++) {
+    // family 0 = 5 free-floating, 1 = 7 tighter+faster, 2 = 3 fat slow
+    int gyN = gyFam == 1 ? 7 : (gyFam == 2 ? 3 : 5);
+    float gyEnv = gyFam == 1 ? 70.0 : (gyFam == 2 ? 18.0 : 35.0);
+    float gyFreq = gyFam == 1 ? 60.0 : (gyFam == 2 ? 22.0 : 38.0);
+    float gyPhase = gyFam == 1 ? 12.0 : (gyFam == 2 ? 4.0 : 7.0);
+    for (int i = 0; i < 7; i++) {
+      if (i >= gyN) break;
       float fi = float(i);
       vec2 cp = vec2(hash(fi * 1.71 + 0.13), hash(fi * 2.31 + 0.27));
       cp += 0.12 * vec2(sin(uTime * 0.51 + fi * 1.3), cos(uTime * 0.73 + fi * 0.7));
+      // touch pulls Gabor centers toward finger
+      cp = mix(cp, uTouchPos, uTouchActive * uTouchStrength * 0.6);
       vec2 dd = uv - cp;
       float dist2 = dot(dd, dd);
-      float env = exp(-dist2 * 35.0);
+      float env = exp(-dist2 * gyEnv);
       float ang = fi * 1.2566;
-      float carrier = sin((uv.x * 38.0) * cos(ang) + (uv.y * 38.0) * sin(ang) + uTime * 7.0 + fi);
-      // each Gabor pushes a different channel
+      float carrier = sin((uv.x * gyFreq) * cos(ang) + (uv.y * gyFreq) * sin(ang) + uTime * gyPhase + fi);
       vec3 chan = vec3(mod(fi, 3.0) < 0.5 ? 1.0 : 0.0,
                        mod(fi, 3.0) < 1.5 && mod(fi, 3.0) >= 0.5 ? 1.0 : 0.0,
                        mod(fi, 3.0) >= 1.5 ? 1.0 : 0.0);
       g += chan * env * carrier;
     }
-    // multiplicative carrier — modulates post's own brightness/color
     vec3 mod_ = vec3(1.0) + g * (2.5 * uGysinFX);
     vec3 distorted = clamp(post * mod_, 0.0, 1.0);
     post = mix(post, distorted, clamp(uGysinFX, 0.0, 1.0));
@@ -1871,18 +1930,25 @@ void main() {
   //    keep brightest sample. Now operates on processed pipeline so it
   //    pixel-sorts whatever the previous FX did. Fixes inversion.
   if (uAsendorfFX > 0.001) {
+    int asFam = int(floor(clamp(uAsendorfFam, 0.0, 2.5)));
     vec2 px = 1.0 / max(uResolution, vec2(1.0));
     float thresh = mix(0.55, 0.20, uAsendorfFX);
+    // touch direction biases the walk vector
+    vec2 tDir = (uTouchPos - vec2(0.5)) * uTouchActive * uTouchStrength;
+    // family 0 = vertical up walk, 1 = horizontal left walk, 2 = touch-direction walk
+    vec2 walkDir;
+    if (asFam == 1) walkDir = vec2(-px.x, 0.0);
+    else if (asFam == 2) walkDir = normalize(vec2(0.001) + tDir + vec2(0.0, -1.0)) * length(px);
+    else walkDir = vec2(0.0, -px.y);
     vec3 brightest = post;
     float blum = lum(post);
     for (int i = 1; i <= 44; i++) {
       if (float(i) > 8.0 + uAsendorfFX * 36.0) break;
-      vec3 s = texture2D(uCamera, uv - vec2(0.0, float(i) * px.y)).rgb;
+      vec3 s = texture2D(uCamera, uv + walkDir * float(i)).rgb;
       float sl = lum(s);
       if (sl < thresh) break;
       if (sl > blum) { brightest = s; blum = sl; }
     }
-    // multiply post by brightest's color ratio for pixel-level corruption
     vec3 sortMul = mix(brightest, post * (brightest / max(post, vec3(0.05))), 0.5);
     post = mix(post, clamp(sortMul, 0.0, 1.0), clamp(uAsendorfFX, 0.0, 1.0));
   }
@@ -1890,18 +1956,23 @@ void main() {
   //    frame in uv-space (mirrored), applies XOR rule, recombines with
   //    current post. Pixel-level destructive corruption.
   if (uJodiFX > 0.001) {
+    int jdFam = int(floor(clamp(uJodiFam, 0.0, 2.5)));
     vec2 px = 1.0 / max(uResolution, vec2(1.0));
-    vec3 cN = texture2D(uPrevFrame, uv + vec2(0.0,  px.y)).rgb;
-    vec3 cS = texture2D(uPrevFrame, uv - vec2(0.0,  px.y)).rgb;
-    vec3 cE = texture2D(uPrevFrame, uv + vec2(px.x, 0.0)).rgb;
-    vec3 cW = texture2D(uPrevFrame, uv - vec2(px.x, 0.0)).rgb;
+    // touch jitters the neighbor sample radius
+    float jdR = 1.0 + uTouchActive * uTouchStrength * length(uTouchPos - vec2(0.5)) * 8.0;
+    vec3 cN = texture2D(uPrevFrame, uv + vec2(0.0,  px.y * jdR)).rgb;
+    vec3 cS = texture2D(uPrevFrame, uv - vec2(0.0,  px.y * jdR)).rgb;
+    vec3 cE = texture2D(uPrevFrame, uv + vec2(px.x * jdR, 0.0)).rgb;
+    vec3 cW = texture2D(uPrevFrame, uv - vec2(px.x * jdR, 0.0)).rgb;
     vec3 bN = step(0.5, cN); vec3 bS = step(0.5, cS);
     vec3 bE = step(0.5, cE); vec3 bW = step(0.5, cW);
-    vec3 bC = step(0.5, post); // bit of CURRENT post, not prev
+    vec3 bC = step(0.5, post);
     vec3 sumN = bN + bS + bE + bW;
-    vec3 hot = step(1.5, sumN);
-    vec3 next = abs(bC - hot);
-    // XOR the bit-result INTO post's own value (not replace)
+    // family 0 = majority-rule, 1 = parity (XOR all), 2 = anti-majority
+    vec3 next;
+    if (jdFam == 1) next = abs(bN - bS) * abs(bE - bW);
+    else if (jdFam == 2) { vec3 hot = step(2.5, sumN); next = abs(bC - hot); }
+    else { vec3 hot = step(1.5, sumN); next = abs(bC - hot); }
     vec3 ca = abs(post - next * 0.5) + (post - bC) * 0.3;
     post = mix(post, clamp(ca, 0.0, 1.0), clamp(uJodiFX, 0.0, 1.0));
   }
@@ -1910,60 +1981,116 @@ void main() {
   //    sampled tile's luma, then color is cross-multiplied with current
   //    post's hue so it stacks rather than overwrites.
   if (uArcangelFX > 0.001) {
-    float tileSize = 8.0;
+    int acFam = int(floor(clamp(uArcangelFam, 0.0, 2.5)));
+    // family 0 = NES (8px), 1 = C64 (16px), 2 = ATARI (4px)
+    float tileSize = acFam == 1 ? 16.0 : (acFam == 2 ? 4.0 : 8.0);
     vec2 res = max(uResolution, vec2(1.0));
+    // touch shifts the scroll register live
+    float touchScrollX = (uTouchPos.x - 0.5) * uTouchActive * uTouchStrength * 32.0;
     vec2 tilePix = floor(uv * res / tileSize);
     vec2 fineP = (uv * res - tilePix * tileSize) / tileSize;
-    float fineX = fract(uTime * (0.3 + uArcangelFX * 1.5));
-    vec2 srcTile = vec2(mod(tilePix.x + floor(uTime * 4.0), 32.0), tilePix.y);
+    float fineX = fract(uTime * (0.3 + uArcangelFX * 1.5)) + touchScrollX * 0.05;
+    vec2 srcTile = vec2(mod(tilePix.x + floor(uTime * 4.0) + touchScrollX, 32.0), tilePix.y);
     vec2 srcUv = (srcTile * tileSize + fineP * tileSize + vec2(fineX * tileSize, 0.0)) / res;
     srcUv = fract(srcUv);
     vec3 nes = texture2D(uCamera, srcUv).rgb;
     float lq = lum(nes);
     vec3 q;
-    if      (lq < 0.25) q = vec3(0.05, 0.05, 0.10);
-    else if (lq < 0.50) q = vec3(0.70, 0.20, 0.20);
-    else if (lq < 0.75) q = vec3(0.20, 0.65, 0.30);
-    else                q = vec3(0.95, 0.95, 0.85);
-    // cross-multiply NES palette with current post (stacks visibly)
+    if (acFam == 1) {
+      // C64 palette — cyan/magenta/yellow/white
+      if      (lq < 0.25) q = vec3(0.10, 0.05, 0.20);
+      else if (lq < 0.50) q = vec3(0.20, 0.85, 0.85);
+      else if (lq < 0.75) q = vec3(0.85, 0.20, 0.85);
+      else                q = vec3(0.95, 0.95, 0.20);
+    } else if (acFam == 2) {
+      // ATARI palette — ochre/teal/sand
+      if      (lq < 0.25) q = vec3(0.10, 0.10, 0.05);
+      else if (lq < 0.50) q = vec3(0.65, 0.45, 0.15);
+      else if (lq < 0.75) q = vec3(0.20, 0.55, 0.55);
+      else                q = vec3(0.90, 0.85, 0.65);
+    } else {
+      if      (lq < 0.25) q = vec3(0.05, 0.05, 0.10);
+      else if (lq < 0.50) q = vec3(0.70, 0.20, 0.20);
+      else if (lq < 0.75) q = vec3(0.20, 0.65, 0.30);
+      else                q = vec3(0.95, 0.95, 0.85);
+    }
     vec3 nesMul = q * (0.4 + post * 1.6);
     post = mix(post, clamp(nesMul, 0.0, 1.0), clamp(uArcangelFX, 0.0, 1.0));
   }
   // 8. PAIK — magnetic dipole-field UV warp. Warp vector applied to
   //    uv-space sampling AND to post itself (chromatic separation).
   if (uPaikFX > 0.001) {
-    vec2 dipole = vec2(0.5 + 0.32 * sin(uTime * 0.71), 0.5 + 0.32 * cos(uTime * 1.13));
+    int pkFam = int(floor(clamp(uPaikFam, 0.0, 2.5)));
+    // touch becomes the dipole position when active; otherwise auto-orbit
+    vec2 dipole = mix(vec2(0.5 + 0.32 * sin(uTime * 0.71), 0.5 + 0.32 * cos(uTime * 1.13)),
+                      uTouchPos,
+                      uTouchActive * uTouchStrength);
     vec2 dd = uv - dipole;
     float r2 = dot(dd, dd) + 0.002;
-    vec2 m = vec2(cos(uTime * 0.41), sin(uTime * 0.41));
+    // family 0 = rotating dipole, 1 = static horizontal, 2 = pulsing radial
+    vec2 m;
+    if (pkFam == 1) m = vec2(1.0, 0.0);
+    else if (pkFam == 2) m = normalize(dd + vec2(0.001)) * (0.5 + 0.5 * sin(uTime * 2.0));
+    else m = vec2(cos(uTime * 0.41), sin(uTime * 0.41));
     float dotDM = dot(dd, m);
     vec2 B = (3.0 * dotDM * dd - m * r2) / (r2 * r2 + 0.001);
-    vec2 warp = clamp(B * 0.0018 * uPaikFX, vec2(-0.3), vec2(0.3));
-    // chromatic dipole warp — RGB sampled at offset positions
+    float warpStr = pkFam == 2 ? 0.0030 : 0.0018;
+    vec2 warp = clamp(B * warpStr * uPaikFX, vec2(-0.3), vec2(0.3));
     float wr = texture2D(uCamera, clamp(uv + warp * 1.2, 0.001, 0.999)).r;
     float wg = texture2D(uCamera, clamp(uv + warp * 0.8, 0.001, 0.999)).g;
     float wb = texture2D(uCamera, clamp(uv + warp * 0.4, 0.001, 0.999)).b;
     vec3 paik = vec3(wr, wg, wb);
-    // multiplicative blend with post — magnet pulls colors out of pipeline
     vec3 magnetic = mix(paik, post * paik * 2.0, 0.4);
     post = mix(post, clamp(magnetic, 0.0, 1.0), clamp(uPaikFX, 0.0, 1.0));
   }
-  // 9. FENTON — venetian-band SAD motion-vector swap. Search 5 horizontal
-  //    offsets in prev frame (uv-space, mirrored); pick min SAD vs post.
-  //    Replaces with motion-compensated history at pixel level.
+  // 9. FENTON — venetian-band motion-vector swap with HARD slats. v1.3.64
+  //    rewrite: actual visible venetian blinds. Carve horizontal slats
+  //    into the frame; each slat samples prev frame at a different
+  //    horizontal motion offset (SAD-picked). Slat thickness + offset
+  //    range scales with knob. Now visibly destructive at any value > 0.
   if (uFentonFX > 0.001) {
-    vec2 px = 1.0 / max(uResolution, vec2(1.0));
+    vec2 fpx = 1.0 / max(uResolution, vec2(1.0));
+    int fenFam = int(floor(clamp(uFentonFam, 0.0, 2.5)));
+    // touch shifts the slat origin so swiping moves the blinds
+    vec2 fenUv = uv + (uTouchPos - vec2(0.5)) * uTouchActive * uTouchStrength * 0.25;
+    // family 0 = horizontal slats (default), 1 = vertical slats, 2 = chevron
+    float slatCoord;
+    if (fenFam == 0) slatCoord = fenUv.y;
+    else if (fenFam == 1) slatCoord = fenUv.x;
+    else slatCoord = (fenUv.x + fenUv.y) * 0.5;
+    // slat density scales 18..80 per frame; thickness modulated
+    float slatN = mix(18.0, 80.0, uFentonFX);
+    float slatId = floor(slatCoord * slatN);
+    float slatPhase = fract(slatCoord * slatN);
+    // each slat picks one of 5 horizontal motion offsets via min-SAD
     float bestSad = 1e9;
     vec3 bestC = post;
+    float searchR = (4.0 + uFentonFX * 36.0) * fpx.x;
     for (int s = 0; s < 5; s++) {
-      float sx = (float(s) - 2.0) * px.x * (4.0 + uFentonFX * 24.0);
-      vec3 prv = texture2D(uPrevFrame, clamp(uv + vec2(sx, 0.0), 0.001, 0.999)).rgb;
+      float sx = (float(s) - 2.0) * searchR;
+      vec2 sUvF;
+      if (fenFam == 1) sUvF = clamp(uv + vec2(0.0, sx), 0.001, 0.999);
+      else            sUvF = clamp(uv + vec2(sx, 0.0), 0.001, 0.999);
+      vec3 prv = texture2D(uPrevFrame, sUvF).rgb;
       float sad = abs(post.r - prv.r) + abs(post.g - prv.g) + abs(post.b - prv.b);
+      // bias the SAD by slatId so adjacent slats prefer different vectors
+      sad += abs(float(s) - 2.0 - mod(slatId, 5.0) + 2.0) * 0.05;
       if (sad < bestSad) { bestSad = sad; bestC = prv; }
     }
-    // additive ghost — best-match prev STACKS on post
-    vec3 ghost = clamp(post + (bestC - post) * 1.4, 0.0, 1.0);
-    post = mix(post, ghost, clamp(uFentonFX, 0.0, 1.0));
+    // hard slat carve: alternate slats use ghost vs darken-edge
+    float slatMask = step(0.15, slatPhase) * step(slatPhase, 0.85);
+    float oddSlat = mod(slatId, 2.0);
+    vec3 ghost;
+    if (oddSlat < 0.5) {
+      // bright slats — motion-comp ghost replaces post strongly
+      ghost = mix(post, bestC, 0.85);
+    } else {
+      // dark slats — invert + motion ghost mixed darker
+      ghost = mix(vec3(1.0) - post, bestC * 0.5, 0.5);
+    }
+    // edges between slats are pure black (the venetian gap)
+    ghost = mix(vec3(0.0), ghost, slatMask);
+    post = mix(post, clamp(ghost, 0.0, 1.0), clamp(uFentonFX, 0.0, 1.0));
   }
   gl_FragColor = vec4(clamp(post, 0.0, 1.0), 1.0);
 }
