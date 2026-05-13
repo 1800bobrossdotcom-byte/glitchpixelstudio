@@ -1692,6 +1692,8 @@ void main() {
       float jx = (rand(vec2(t, 17.3)) - 0.5) * r * 0.14;
       vec2 bUv = clamp(vUv + vec2(jx, jy), 0.0, 1.0);
       vec3 burst = texture2D(uCamera, bUv).rgb;
+      post = mix(post, burst, clamp(r * 1.1, 0.0, 1.0));
+    }
   }
   // ── v1.3.61 NOVEL CS FX (artist-family batch 1) ───────────────────
   // Each block is gated standalone (no master gate) and composes via mix()
