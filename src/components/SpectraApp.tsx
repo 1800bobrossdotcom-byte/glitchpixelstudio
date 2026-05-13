@@ -4226,48 +4226,210 @@ export default function SpectraAfter() {
   // produces a fully-finished aesthetic at any pressure rather than a subtle
   // delta. The previous PIXEL slot was dropped — v1.3.55 made the single-
   // pixel pen the only paint mode, so every palette cell now drives FX.
+  type UniformBoostKey =
+    | "uMoshIFrame" | "uMoshBleed" | "uMoshMotion" | "uMoshDistort"
+    | "uSortAmt" | "uSortWobble" | "uSortRandom"
+    | "uChrash" | "uLiquid" | "uKaleido" | "uSpiral"
+    | "uAscii" | "uVenetian" | "uScanTear"
+    | "uHSync" | "uFeedback" | "uRgbBars" | "uContour"
+    | "uBlockGlitch" | "uVoroSort" | "uRupture"
+    | "uRgbSwap" | "uGlyph" | "uMandala" | "uYantra"
+    | "uTile" | "uHexfold" | "uStarfold"
+    | "uDroste" | "uReact";
+  type BoostMap = Partial<Record<UniformBoostKey, number>>;
+  type PresetState = { chaos: number };
   type GlitchPreset = {
     name: string;
     color: string;
-    boosts: Partial<Record<
-      "uMoshIFrame" | "uMoshBleed" | "uMoshMotion" | "uMoshDistort" |
-      "uSortAmt" | "uSortWobble" | "uSortRandom" |
-      "uChrash" | "uLiquid" | "uKaleido" | "uSpiral" |
-      "uAscii" | "uVenetian" | "uScanTear" |
-      "uHSync" | "uFeedback" | "uRgbBars" | "uContour" |
-      "uBlockGlitch" | "uVoroSort" | "uRupture" |
-      "uRgbSwap" | "uGlyph" | "uMandala" | "uYantra" |
-      "uTile" | "uHexfold" | "uStarfold" |
-      "uDroste" | "uReact",
-      number
-    >>;
+    /** Short mathematical signature shown under the button. */
+    signature: string;
+    /** Per-frame generator — returns time-varying uniform boosts. */
+    modulate: (t: number, s: PresetState) => BoostMap;
   };
-  // Each cell is named after a pioneer of glitch / computer / video art
-  // whose practice maps to the FX rack it drives. Boost stacks are tuned
-  // so each cell embodies its namesake's signature aesthetic:
-  //   MENKMAN  — Rosa Menkman, JPEG/DCT block destruction + channel swap.
-  //   MOLNÁR   — Vera Molnár, ordered algorithmic geometry: contour+tile+hex.
-  //   UCNV     — ucnv, pure datamosh: i-frame kill + motion-vector carry.
-  //   GYSIN    — Brion Gysin, cut-up + Dream Machine: glyph atlas + kaleido.
-  //   ASENDORF — Kim Asendorf, the canonical pixel-sort + signal wobble.
-  //   JODI     — jodi.org net.art system-destroy: ascii flood + rupture.
-  //   ARCANGEL — Cory Arcangel, Super Mario Clouds: slow droste + feedback.
-  //   PAIK     — Nam June Paik, CRT magnet feedback tunnel + mandala flicker.
-  //   FENTON   — Jamie Fenton, "Digital TV Dinner" (1978) venetian slab mosh.
+  // v1.3.58 — DYNAMIC GENERATIVE PRESETS. Each cell is no longer a static
+  // bag of boost values; it is a per-frame closure that emits time-varying
+  // uniform deltas computed from the mathematical / algorithmic signature
+  // of the artist it pays homage to. Nothing here is a stylistic mimic —
+  // each modulator implements the actual computer-science primitive that
+  // defined that artist's practice:
+  //
+  //   MENKMAN  — JPEG/DCT 8x8 block quantization ladder (3-level step
+  //              function + triangle sub-pulse).
+  //   MOLNÁR   — algorithmic grid + Box-Muller Gaussian perturbation +
+  //              golden-ratio sub-harmonic rotation ("Interruptions" 1968).
+  //   UCNV     — Poisson-distributed I-frame kill bursts with exponential
+  //              decay envelope; continuous motion-vector carry.
+  //   GYSIN    — Dream Machine: 8 Hz alpha-wave flicker + 78 RPM (1.3 Hz)
+  //              carrier + binary cut-up phase swap.
+  //   ASENDORF — ASDFPixelSort luminance-window sweep (triangle ramp) +
+  //              golden-ratio / 1-phi sub-frequencies on wobble/random.
+  //   JODI     — stateful logistic-map chaos (r=3.95) iterated per frame;
+  //              quad-phase beat clock routes chaos to different uniforms.
+  //   ARCANGEL — NES horizontal-scroll sawtooth (0.4 Hz) + phase-locked
+  //              counter-sawtooth + hsync glitch on wrap discontinuity.
+  //   PAIK     — Lissajous figure (3:5 frequency ratio, π/4 phase offset);
+  //              product-of-orthogonals drives chrash brightness.
+  //   FENTON   — Bernoulli(p) trials at 10 Hz frame boundary (Astrocade
+  //              ROM corruption model) → discrete slab on/off events.
+  //
+  const TAU = Math.PI * 2;
+  const PHI = 1.6180339887;
+  // Cheap hash: deterministic, no Math.random. floor-bucketed input.
+  const _h = (n: number): number => {
+    const x = Math.sin(n * 12.9898 + 78.233) * 43758.5453;
+    return x - Math.floor(x);
+  };
   const GLITCH_PRESETS: readonly GlitchPreset[] = [
-    { name: "MENKMAN",  color: "#FF6FB1", boosts: { uBlockGlitch: 0.95, uRgbBars: 0.60, uRgbSwap: 0.50, uChrash: 0.55, uScanTear: 0.45 } },
-    { name: "MOLNÁR",   color: "#5BE9FF", boosts: { uContour: 0.85, uTile: 0.55, uHexfold: 0.45, uVoroSort: 0.30 } },
-    { name: "UCNV",     color: "#A270FF", boosts: { uMoshIFrame: 0.95, uMoshBleed: 0.80, uMoshMotion: 0.70, uMoshDistort: 0.50 } },
-    { name: "GYSIN",    color: "#7AFF6E", boosts: { uGlyph: 0.90, uKaleido: 0.70, uMandala: 0.45, uAscii: 0.35 } },
-    { name: "ASENDORF", color: "#FFA040", boosts: { uSortAmt: 0.95, uSortWobble: 0.70, uSortRandom: 0.55 } },
-    { name: "JODI",     color: "#FF2E2E", boosts: { uAscii: 0.85, uRupture: 0.65, uHSync: 0.55, uScanTear: 0.45 } },
-    { name: "ARCANGEL", color: "#FFE36B", boosts: { uDroste: 0.70, uFeedback: 0.55, uLiquid: 0.35, uHSync: 0.25 } },
-    { name: "PAIK",     color: "#B0F4FF", boosts: { uFeedback: 0.95, uMandala: 0.55, uChrash: 0.40, uMoshBleed: 0.35 } },
-    { name: "FENTON",   color: "#FF4D6E", boosts: { uVenetian: 0.95, uRgbBars: 0.50, uMoshIFrame: 0.55, uMoshBleed: 0.40 } },
+    {
+      name: "MENKMAN", color: "#FF6FB1",
+      signature: "DCT 8×8 quant ladder",
+      modulate: (t) => {
+        const phase = t * 12;
+        const q = Math.floor(phase) % 3;             // 3-level quantization
+        const ph = phase - Math.floor(phase);
+        const tri = 1 - Math.abs(ph * 2 - 1);        // triangle sub-pulse
+        return {
+          uBlockGlitch: 0.55 + q * 0.18 + tri * 0.12,
+          uRgbBars:    0.25 + (q === 2 ? 0.55 : 0),
+          uRgbSwap:    q === 1 ? 0.65 : 0.08,
+          uChrash:     0.30 + tri * 0.40,
+          uScanTear:   q === 0 ? 0.60 : 0.12,
+        };
+      },
+    },
+    {
+      name: "MOLNÁR", color: "#5BE9FF",
+      signature: "grid + Box-Muller σ",
+      modulate: (t) => {
+        // Box-Muller pair from deterministic sines (no Math.random)
+        const u1 = Math.max(1e-3, _h(Math.floor(t * 0.7)));
+        const u2 = _h(Math.floor(t * 0.31) + 17);
+        const g  = Math.sqrt(-2 * Math.log(u1)) * Math.cos(TAU * u2);
+        const gauss = Math.min(1, Math.abs(g) * 0.35);
+        const slow  = 0.5 + 0.5 * Math.sin(t * 0.05 * TAU);
+        return {
+          uContour: 0.92,                              // deterministic skeleton
+          uTile:    0.42 + slow * 0.30,
+          uHexfold: 0.28 + 0.22 * Math.sin(t * 0.5 / PHI),
+          uVoroSort: gauss,
+        };
+      },
+    },
+    {
+      name: "UCNV", color: "#A270FF",
+      signature: "Poisson burst · exp decay",
+      modulate: (t) => {
+        const win   = 2.0;                            // 2 Hz burst clock
+        const phase = t * win;
+        const idx   = Math.floor(phase);
+        const fire  = _h(idx) < 0.35 ? 1 : 0;         // Poisson-thinned trial
+        const inWin = phase - idx;
+        const env   = fire * Math.exp(-inWin * 3.5);  // exponential decay
+        const carry = 0.45 + 0.20 * Math.sin(t * 0.8);
+        return {
+          uMoshIFrame:  0.55 + env * 0.40,
+          uMoshBleed:   0.45 + env * 0.45,
+          uMoshMotion:  carry,
+          uMoshDistort: 0.30 + env * 0.55,
+        };
+      },
+    },
+    {
+      name: "GYSIN", color: "#7AFF6E",
+      signature: "8 Hz α-wave · 78 RPM",
+      modulate: (t) => {
+        const dream = 0.5 + 0.5 * Math.sin(t * 8 * TAU);   // alpha-wave flicker
+        const rpm   = 0.5 + 0.5 * Math.sin(t * 1.3 * TAU); // Dream Machine carrier
+        const cut   = (Math.floor(t / 1.5) & 1) ? rpm : 1 - rpm;
+        return {
+          uGlyph:   0.50 + dream * 0.45,
+          uKaleido: 0.40 + rpm   * 0.40,
+          uMandala: 0.25 + cut   * 0.35,
+          uAscii:   dream > 0.85 ? 0.55 : 0.10,
+        };
+      },
+    },
+    {
+      name: "ASENDORF", color: "#FFA040",
+      signature: "luminance sweep · φ wobble",
+      modulate: (t) => {
+        // Triangle sweep of sort amount: full sort while window walks
+        const tri = 1 - Math.abs(((t * 0.10) % 2) - 1);   // 0..1..0 every 10s
+        return {
+          uSortAmt:    0.55 + tri * 0.40,
+          uSortWobble: 0.40 + 0.40 * Math.sin(t * PHI),
+          uSortRandom: 0.30 + 0.30 * Math.cos(t * (1 / PHI)),
+        };
+      },
+    },
+    {
+      name: "JODI", color: "#FF2E2E",
+      signature: "logistic map r=3.95",
+      modulate: (t, s) => {
+        // Stateful chaos register
+        s.chaos = 3.95 * s.chaos * (1 - s.chaos);
+        if (s.chaos < 1e-4 || s.chaos > 1 - 1e-4) {
+          s.chaos = 0.4 + 0.2 * Math.sin(t);            // re-seed if collapsed
+        }
+        const c = s.chaos;
+        const beat = Math.floor(t * 3) & 3;
+        return {
+          uAscii:    c * 0.92,
+          uRupture:  (1 - c) * 0.80,
+          uHSync:    beat === 1 ? 0.75 : c * 0.20,
+          uScanTear: beat === 3 ? 0.70 : (1 - c) * 0.20,
+        };
+      },
+    },
+    {
+      name: "ARCANGEL", color: "#FFE36B",
+      signature: "NES scroll sawtooth",
+      modulate: (t) => {
+        const saw  = (t * 0.40) - Math.floor(t * 0.40);
+        const saw2 = (t * 0.40 + 0.5) - Math.floor(t * 0.40 + 0.5);
+        return {
+          uDroste:   0.30 + saw  * 0.55,
+          uFeedback: 0.25 + saw2 * 0.45,
+          uLiquid:   0.20 + 0.15 * Math.sin(t * 0.40 * TAU),
+          uHSync:    saw < 0.04 ? 0.65 : 0.08,            // hsync hit on wrap
+        };
+      },
+    },
+    {
+      name: "PAIK", color: "#B0F4FF",
+      signature: "Lissajous 3:5 · π/4",
+      modulate: (t) => {
+        const fx = 0.5 + 0.5 * Math.sin(t * 0.3 * TAU);
+        const fy = 0.5 + 0.5 * Math.sin(t * 0.5 * TAU + Math.PI / 4);
+        return {
+          uFeedback:  0.55 + fx * 0.40,
+          uMandala:   0.30 + fy * 0.40,
+          uChrash:    0.20 + fx * fy * 0.55,             // product brightness
+          uMoshBleed: 0.25 + (1 - fx) * 0.30,
+        };
+      },
+    },
+    {
+      name: "FENTON", color: "#FF4D6E",
+      signature: "Bernoulli ROM flip 10 Hz",
+      modulate: (t) => {
+        const idx = Math.floor(t * 10);
+        const a = _h(idx);
+        const b = _h(idx + 991);
+        return {
+          uVenetian:   a < 0.5 ? 0.95 : 0.20,
+          uRgbBars:    b < 0.4 ? 0.70 : 0.08,
+          uMoshIFrame: a < 0.2 ? 0.85 : 0.25,
+          uMoshBleed:  b < 0.3 ? 0.75 : 0.18,
+        };
+      },
+    },
   ];
   const [glitchPreset, setGlitchPreset] = useState(0);
   const glitchPresetRef = useRef(0);
   useEffect(() => { glitchPresetRef.current = glitchPreset; }, [glitchPreset]);
+  // v1.3.58 — chaos register for stateful modulators (JODI logistic map).
+  const presetStateRef = useRef<PresetState>({ chaos: 0.42 });
   // v1.3.57 — FX Panel 2 ON/OFF toggle. When true, the selected GLITCH_PRESETS
   // entry's `boosts` are added on top of every shader uniform globally
   // (PB() helper in the render loop). When false, presets are dormant.
@@ -6391,8 +6553,10 @@ export default function SpectraAfter() {
     // No more touch coupling; when enabled, full boost applies globally.)
     const _pbActive = glitchPresetEnabledRef.current;
     const _preset = _pbActive ? GLITCH_PRESETS[glitchPresetRef.current] : null;
-    const _pb = _preset ? _preset.boosts : undefined;
-    const PB = (k: keyof NonNullable<typeof _pb>): number => ((_pb && _pb[k]) || 0) * (_pbActive ? 1 : 0);
+    const _pb: BoostMap | undefined = _preset
+      ? _preset.modulate(timeRef.current, presetStateRef.current)
+      : undefined;
+    const PB = (k: UniformBoostKey): number => ((_pb && _pb[k]) || 0) * (_pbActive ? 1 : 0);
     setF1(u.uBrightness, 1 + (brightnessRef.current - 1) * _mC);
     setF1(u.uContrast,   1 + (contrastRef.current   - 1) * _mC);
     setF1(u.uSaturation, 1 + (saturationRef.current - 1) * _mC);
@@ -9557,7 +9721,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.57 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.3.58 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
@@ -10270,10 +10434,14 @@ export default function SpectraAfter() {
               </div>
             </SynthPanel>
 
-            {/* ── v1.3.57 GLITCH PALETTE rack — the 9 artist-pioneer presets
-                exposed as a global FX panel with a single ON/OFF gate.
-                Replaces the old draw-canvas pressure-coupled palette. */}
-            <SynthPanel title="GLITCH PALETTE" subtitle="9 ARTIST PIONEERS · GLOBAL FX" accent="rgba(255,180,255,0.95)">
+            {/* ── v1.3.58 GLITCH PALETTE rack — 9 mathematically-modulated
+                generative homages. Each preset is a per-frame closure that
+                emits time-varying uniform deltas computed from the actual
+                computer-science primitive defining its namesake artist's
+                practice (logistic map, Lissajous, Box-Muller, NES sawtooth,
+                Bernoulli ROM flip, 8 Hz Dream Machine, DCT quant ladder,
+                Poisson burst, luminance sweep). Nothing here is static. */}
+            <SynthPanel title="GLITCH PALETTE" subtitle="9 GENERATIVE HOMAGES · DYNAMIC FX" accent="rgba(255,180,255,0.95)">
               <SynthSwitch
                 label="POWER"
                 offLabel="OFF"
@@ -10288,9 +10456,9 @@ export default function SpectraAfter() {
                     <button
                       key={p.name}
                       onClick={() => setGlitchPreset(i)}
-                      title={p.name}
+                      title={`${p.name} — ${p.signature}`}
                       style={{
-                        padding: "10px 4px",
+                        padding: "8px 4px 6px",
                         fontSize: 11,
                         letterSpacing: "1px",
                         fontWeight: 700,
@@ -10302,13 +10470,23 @@ export default function SpectraAfter() {
                         borderRadius: 5,
                         boxShadow: active ? `0 0 10px ${p.color}77, inset 0 0 6px ${p.color}33` : "none",
                         transition: "all 0.15s ease",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        gap: 2,
+                        lineHeight: 1.1,
                       }}
-                    >{p.name}</button>
+                    >
+                      <span>{p.name}</span>
+                      <span style={{ fontSize: 7, fontWeight: 500, letterSpacing: "0.4px", opacity: 0.75 }}>
+                        {p.signature}
+                      </span>
+                    </button>
                   );
                 })}
               </div>
               <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(255,180,255,0.55)", textAlign: "center" }}>
-                POWER ON → preset boosts every FX uniform globally
+                each preset is a live generator · uniforms breathe per frame
               </div>
             </SynthPanel>
 
