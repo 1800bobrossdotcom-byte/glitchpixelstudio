@@ -3299,6 +3299,10 @@ export default function SpectraAfter() {
   const uploadVideoRef = useRef<HTMLVideoElement | null>(null);
   const uploadObjectUrlRef = useRef<string | null>(null);
   const sourceFileInputRef = useRef<HTMLInputElement>(null);
+  // v1.3.74 — when PIXEL GEN II's LIVE toggle is ON, this ref points
+  // to its 256x256 generator canvas so the WebGL render loop can sample
+  // it as the live source (overrides upload image/video).
+  const pixGen2LiveRef = useRef<HTMLCanvasElement | null>(null);
 
   // ── Pixel generator (procedural texture source) — feeds shader → pxl/mosh
   const GEN_STYLES = [
@@ -5861,12 +5865,22 @@ export default function SpectraAfter() {
     let srcW = 0;
     let srcH = 0;
     if (srcMode === "upload") {
-      const upV = uploadVideoRef.current;
-      const upI = uploadImgRef.current;
-      if (upV && upV.readyState >= 2 && upV.videoWidth > 0) {
-        texSource = upV; srcW = upV.videoWidth; srcH = upV.videoHeight;
-      } else if (upI && upI.complete && upI.naturalWidth > 0) {
-        texSource = upI; srcW = upI.naturalWidth; srcH = upI.naturalHeight;
+      // v1.3.74 — PIXEL GEN II LIVE override. When the user hit LIVE on
+      // the generator panel, srcMode was flipped to "upload" + this ref
+      // was set to the generator's offscreen canvas. Sample it directly
+      // each frame so the live evolving genome IS the source for the
+      // entire FX chain (not a frozen snapshot).
+      const pgL = pixGen2LiveRef.current;
+      if (pgL && pgL.width > 0 && pgL.height > 0) {
+        texSource = pgL; srcW = pgL.width; srcH = pgL.height;
+      } else {
+        const upV = uploadVideoRef.current;
+        const upI = uploadImgRef.current;
+        if (upV && upV.readyState >= 2 && upV.videoWidth > 0) {
+          texSource = upV; srcW = upV.videoWidth; srcH = upV.videoHeight;
+        } else if (upI && upI.complete && upI.naturalWidth > 0) {
+          texSource = upI; srcW = upI.naturalWidth; srcH = upI.naturalHeight;
+        }
       }
       // (v1.3.57 — draw-stroke bake-into-source path removed.)
     } else if (srcMode === "generator" || (srcMode === "camera" && genMixRef.current > 0.001)) {
@@ -11246,7 +11260,11 @@ export default function SpectraAfter() {
                 into the upload feed so it becomes the BASE for the rest
                 of the FX chain. Stays far from Conway-style cellular
                 automata; every regen is a different look. */}
-            <PixelGenII handleUploadFile={handleUploadFile} />
+            <PixelGenII
+              liveRef={pixGen2LiveRef}
+              setSourceMode={setSourceMode}
+              sourceMode={sourceMode}
+            />
 
             {/* ── v1.3.58/v1.3.60 GLITCH PALETTE rack (kept as POWER-gated
                 fallback for the v1.3.60 modulator system; ARTIST FX above
@@ -12212,7 +12230,15 @@ function pg2RollGenome(seed: number): PG2Genome {
   };
 }
 
-function PixelGenII({ handleUploadFile }: { handleUploadFile: (f: File) => void }) {
+function PixelGenII({
+  liveRef,
+  setSourceMode,
+  sourceMode,
+}: {
+  liveRef: React.MutableRefObject<HTMLCanvasElement | null>;
+  setSourceMode: (m: "camera" | "upload" | "generator") => void;
+  sourceMode: "camera" | "upload" | "generator";
+}) {
   const cv = useRef<HTMLCanvasElement | null>(null);
   const fbRef = useRef<ImageData | null>(null);    // last frame for feedback sampling
   const agentsRef = useRef<Float32Array | null>(null); // [x,y,vx,vy,hue] per agent
@@ -12395,17 +12421,36 @@ function PixelGenII({ handleUploadFile }: { handleUploadFile: (f: File) => void 
     return () => { stopped = true; if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [autoEvolve]);
 
-  const useAsSource = useCallback(() => {
-    const c = cv.current; if (!c) return;
-    c.toBlob(blob => {
-      if (!blob) return;
-      const file = new File([blob], `pixel-gen-${sig}.png`, { type: "image/png" });
-      handleUploadFile(file);
-    }, "image/png");
-  }, [handleUploadFile, sig]);
+  // Track whether the panel currently owns the live source. We compare
+  // sourceMode each render — if the user picks CAM/GEN/UPLOAD elsewhere
+  // the panel auto-releases (its visual stays on as preview, but it stops
+  // claiming to be the source).
+  const isLive = sourceMode === "upload" && liveRef.current === cv.current;
+  const toggleLive = useCallback(() => {
+    if (isLive) {
+      // Turn LIVE off — release the ref and revert to camera.
+      liveRef.current = null;
+      setSourceMode("camera");
+    } else {
+      // Engage LIVE — publish this canvas as the upload-branch override.
+      liveRef.current = cv.current;
+      setSourceMode("upload");
+    }
+  }, [isLive, liveRef, setSourceMode]);
+
+  // If something else changes the source (CAM/GEN/UPLOAD picker), drop
+  // our live claim so we don't keep hijacking the upload branch.
+  useEffect(() => {
+    if (sourceMode !== "upload" && liveRef.current === cv.current) {
+      liveRef.current = null;
+    }
+  }, [sourceMode, liveRef]);
+
+  // Stop publishing on unmount.
+  useEffect(() => () => { if (liveRef.current === cv.current) liveRef.current = null; }, [liveRef]);
 
   return (
-    <SynthPanel title="PIXEL GEN II" subtitle={`GENOME ${sig}`} accent="rgba(180,255,220,0.95)">
+    <SynthPanel title="PIXEL GEN II" subtitle={`GENOME ${sig}${isLive ? " \u00b7 LIVE" : ""}`} accent="rgba(180,255,220,0.95)">
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
         <canvas
           ref={cv}
@@ -12414,9 +12459,11 @@ function PixelGenII({ handleUploadFile }: { handleUploadFile: (f: File) => void 
             width: "100%", maxWidth: 320, aspectRatio: "1 / 1",
             imageRendering: "pixelated",
             background: "#08010C",
-            border: "1px solid rgba(180,255,220,0.45)",
+            border: `1px solid ${isLive ? "rgba(255,180,120,0.85)" : "rgba(180,255,220,0.45)"}`,
             borderRadius: 6,
-            boxShadow: "inset 0 0 18px rgba(0,0,0,0.85), 0 0 14px rgba(120,255,200,0.18)",
+            boxShadow: isLive
+              ? "inset 0 0 18px rgba(0,0,0,0.85), 0 0 22px rgba(255,180,120,0.45)"
+              : "inset 0 0 18px rgba(0,0,0,0.85), 0 0 14px rgba(120,255,200,0.18)",
           }}
         />
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6, width: "100%" }}>
@@ -12436,13 +12483,15 @@ function PixelGenII({ handleUploadFile }: { handleUploadFile: (f: File) => void 
             title="AUTO — auto-reroll the genome every 10-14s for endless variety"
           >AUTO</button>
           <button
-            onClick={useAsSource}
-            style={pg2BtnStyle(false)}
-            title="Pipe the current frame into BASE so the rest of the FX chain runs on top of it"
-          >USE</button>
+            onClick={toggleLive}
+            style={pg2BtnStyle(isLive)}
+            title={isLive
+              ? "LIVE is ON — the FX chain is running on this generator. Tap to release back to camera."
+              : "LIVE — send this generator straight to the main output as the live source for the FX chain (replaces the preview-only window)."}
+          >{isLive ? "\u25CF LIVE" : "LIVE"}</button>
         </div>
-        <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(180,255,220,0.55)", textAlign: "center" }}>
-          NEVER THE SAME TWICE · TAP REGEN
+        <div style={{ fontSize: 8, letterSpacing: "1px", color: isLive ? "rgba(255,180,120,0.75)" : "rgba(180,255,220,0.55)", textAlign: "center" }}>
+          {isLive ? "\u25CF LIVE · SHOWING ON MAIN OUTPUT" : "NEVER THE SAME TWICE · TAP REGEN"}
         </div>
       </div>
     </SynthPanel>
