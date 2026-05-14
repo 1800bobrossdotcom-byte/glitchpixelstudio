@@ -9925,36 +9925,11 @@ export default function SpectraAfter() {
           >{faceFxMode === "OFF" ? "👤" : faceFxMode === "FACE" ? "👤" : "▣"}</button>
           {/* v1.3.69 — Bug-report button removed; in-app feedback channel
               moved off-device. */}
-          {/* v1.3.70 — inline SNAP / REC capture buttons. Live in the top
-              menu bar so they're never blocking the canvas. The translucent
-              floating pair (rendered only when uiHidden) below the canvas
-              is still available for immersive-mode capture. */}
-          <button
-            className="sp-btn"
-            onClick={() => { playSfx("shutter"); captureStillRef.current(); }}
-            style={{
-              ...topBtnStyle,
-              width: 46, height: 36, padding: 0, fontSize: 10, borderRadius: 9, letterSpacing: "0.4px",
-            }}
-            title="SNAP — capture a still"
-          >○ SNAP</button>
-          <button
-            className="sp-btn"
-            onClick={() => {
-              if (recording) { playSfx("recStop"); stopRecordingRef.current(); }
-              else { playSfx("recStart"); startRecordingRef.current(); }
-            }}
-            style={{
-              ...topBtnStyle,
-              width: 46, height: 36, padding: 0, fontSize: 10, borderRadius: 9, letterSpacing: "0.4px",
-              background: recording ? "rgba(224,61,61,0.92)" : (topBtnStyle.background as string | undefined),
-              borderColor: recording ? "#E03D3D" : (topBtnStyle.borderColor as string | undefined),
-              boxShadow: recording ? "0 0 14px rgba(224,61,61,0.85)" : topBtnStyle.boxShadow,
-              color: recording ? "#fff" : undefined,
-              animation: recording ? "spRecPulse 1.05s ease-in-out infinite" : undefined,
-            }}
-            title={recording ? "Stop video recording" : "Start video recording"}
-          >{recording ? "■ STOP" : "● REC"}</button>
+          {/* v1.3.72 — SNAP / REC moved out of the top bar entirely.
+              They now live as a sticky thumb-reach bar pinned to the
+              TOP of the bottom panel (see sp-snap-rec-strip below) so
+              the user's thumbs naturally land on them while holding
+              the phone in shooting position. */}
           {/* v1.3.30 — UI SKIN cycle: MOOG (walnut/cream) → 808 (Roland) → NEON (glass). */}
           <button
             className="sp-btn"
@@ -10395,6 +10370,50 @@ export default function SpectraAfter() {
           {(neonMode ? (children: React.ReactNode) => (
             <SynthPanelAccordionContext.Provider value={accordionCtx}>{children}</SynthPanelAccordionContext.Provider>
           ) : (children: React.ReactNode) => <>{children}</>)(<>
+          {/* v1.3.72 — sticky SNAP / REC strip pinned to the TOP of the
+              bottom panel. On mobile this is exactly where the user's
+              thumbs naturally rest while holding the phone in shooting
+              position, so the two most-used capture controls are always
+              one tap away even as the panel scrolls underneath. */}
+          <div
+            className="sp-snap-rec-strip"
+            style={{
+              position: "sticky", top: 0, zIndex: 30,
+              display: "flex", flexDirection: "row", gap: 8,
+              padding: "6px 10px",
+              background: "linear-gradient(180deg, rgba(15,0,28,0.96) 0%, rgba(15,0,28,0.82) 100%)",
+              borderBottom: "1px solid rgba(231,174,255,0.35)",
+              backdropFilter: "blur(8px)",
+              WebkitBackdropFilter: "blur(8px)",
+            }}
+          >
+            <button
+              className="sp-btn"
+              onClick={() => { playSfx("shutter"); captureStillRef.current(); }}
+              style={{
+                ...topBtnStyle,
+                flex: 1, height: 44, padding: 0, fontSize: 12, borderRadius: 10, letterSpacing: "1.2px", fontWeight: 700,
+              }}
+              title="SNAP — capture a still"
+            >○ SNAP</button>
+            <button
+              className="sp-btn"
+              onClick={() => {
+                if (recording) { playSfx("recStop"); stopRecordingRef.current(); }
+                else { playSfx("recStart"); startRecordingRef.current(); }
+              }}
+              style={{
+                ...topBtnStyle,
+                flex: 1, height: 44, padding: 0, fontSize: 12, borderRadius: 10, letterSpacing: "1.2px", fontWeight: 700,
+                background: recording ? "rgba(224,61,61,0.92)" : (topBtnStyle.background as string | undefined),
+                borderColor: recording ? "#E03D3D" : (topBtnStyle.borderColor as string | undefined),
+                boxShadow: recording ? "0 0 14px rgba(224,61,61,0.85)" : topBtnStyle.boxShadow,
+                color: recording ? "#fff" : undefined,
+                animation: recording ? "spRecPulse 1.05s ease-in-out infinite" : undefined,
+              }}
+              title={recording ? "Stop video recording" : "Start video recording"}
+            >{recording ? "■ STOP" : "● REC"}</button>
+          </div>
           <div style={{
             height: pullDistance,
             opacity: pullDistance > 0 ? 1 : 0,
