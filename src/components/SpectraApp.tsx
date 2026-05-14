@@ -12019,9 +12019,16 @@ const SynthPanelAccordionContext = createContext<{
 } | null>(null);
 
 function SynthPanel({
-  title, subtitle, accent, children,
+  title, subtitle, accent, children, keepMounted,
 }: {
   title: string; subtitle?: string; accent?: string; children: React.ReactNode;
+  // v1.3.76 — when true, children stay mounted even while the
+  // accordion is collapsed (their parent <div> just toggles to
+  // display:none). Required for panels that own a long-running rAF
+  // loop or a live-source ref (e.g. PIXEL GEN II) — without this the
+  // simulation halts and the LIVE feed goes dead the moment the user
+  // opens any other panel.
+  keepMounted?: boolean;
 }) {
   const accentColor = accent ?? "rgba(231,174,255,0.95)";
   // ── Accordion integration. If a parent has provided
@@ -12120,8 +12127,11 @@ function SynthPanel({
         )}
       </div>
 
-      {/* Brushed-metal inner workspace — hidden when accordion-collapsed. */}
-      {isOpen && (
+      {/* Brushed-metal inner workspace — hidden when accordion-collapsed.
+          When keepMounted is true (e.g. PIXEL GEN II) we toggle
+          display:none instead of unmounting so the rAF loop and any
+          live-source refs survive collapse. */}
+      {(isOpen || keepMounted) && (
       <div className="sp-rack-inner" style={{
         marginTop: 4,
         padding: "5px 5px 5px",
@@ -12132,6 +12142,7 @@ function SynthPanel({
         `,
         boxShadow: "inset 0 2px 4px rgba(0,0,0,0.7), inset 0 -1px 0 rgba(255,255,255,0.05)",
         border: "1px solid rgba(0,0,0,0.7)",
+        display: isOpen ? undefined : "none",
       }}>
         {children}
       </div>
@@ -12164,6 +12175,16 @@ type PG2Genome = {
   ops: PG2Op[];
   blend: "add" | "screen" | "xor" | "max";
   integ: "euler" | "verlet" | "wrap" | "bounce";
+  // v1.3.76 — motion family. "flow" = previous default smooth-force
+  // motion. "snake" = sharp angular cardinal-axis-only motion that
+  // turns 90 degrees at irregular intervals (Snake game / Truchet
+  // feel). "orbit" = rotates the force vector 90 degrees before
+  // integrating, biases toward circular orbital paths.
+  motion: "flow" | "snake" | "orbit";
+  // v1.3.76 — pixel cell size 1..8. Larger cell = chunkier "zoomed
+  // in" pixels. Plot snaps each agent to a grid of size cell so the
+  // brush actually fills a square of the chosen size.
+  cell: number;
   fade: number;       // per-frame trail decay 0..1 (1 = no decay)
   agents: number;
   step: number;       // velocity scale
@@ -12212,12 +12233,21 @@ function pg2RollGenome(seed: number): PG2Genome {
   }
   const blends = ["add", "screen", "xor", "max"] as const;
   const integs = ["euler", "verlet", "wrap", "bounce"] as const;
+  // v1.3.76 — motion family weighted toward smooth flow with regular
+  // snake / orbit appearances for variety.
+  const motions = ["flow", "flow", "flow", "snake", "snake", "orbit"] as const;
+  // v1.3.76 — pixel cell sizes weighted toward small (sharp) with
+  // occasional chunky "zoomed in" rolls. 1 = native res; 8 = very
+  // chunky. Bias toward small so most regens stay crisp.
+  const cells = [1, 1, 1, 1, 2, 2, 2, 3, 4, 4, 6, 8] as const;
   // Short signature so the user can see/share the seed.
   const sig = "#" + seed.toString(36).slice(-4).toUpperCase();
   return {
     ops,
     blend: blends[Math.floor(r() * 4)],
     integ: integs[Math.floor(r() * 4)],
+    motion: motions[Math.floor(r() * motions.length)],
+    cell: cells[Math.floor(r() * cells.length)],
     fade: 0.86 + r() * 0.12,         // trail persistence
     agents: 220 + Math.floor(r() * 480),
     step: 0.4 + r() * 1.4,
@@ -12253,6 +12283,12 @@ function PixelGenII({
   const [running, setRunning] = useState(true);
   const [autoEvolve, setAutoEvolve] = useState(false);
   const [sig, setSig] = useState("#----");
+  // v1.3.76 — manual blend override. "auto" defers to the genome's
+  // rolled blend mode; any other value forces that mode regardless of
+  // genome. Lets the user dial in a look without re-rolling.
+  const [blendOverride, setBlendOverride] = useState<"auto" | "add" | "screen" | "xor" | "max">("auto");
+  const blendOverrideRef = useRef(blendOverride);
+  useEffect(() => { blendOverrideRef.current = blendOverride; }, [blendOverride]);
   const lastEvolveRef = useRef(performance.now());
   // v1.3.75 — dynamic dimensions. Preview = 256×256. When LIVE is ON,
   // we resize the generator canvas to match the main output (capped to
@@ -12328,11 +12364,12 @@ function PixelGenII({
       const needsFeedback = g.ops.some(op => op.k === "feedback");
       const fb = needsFeedback ? ctx.getImageData(0, 0, W, H) : null;
 
+      const blendKind = blendOverrideRef.current === "auto" ? g.blend : blendOverrideRef.current;
       const blendOp =
-        g.blend === "add"    ? "lighter"     :
-        g.blend === "screen" ? "screen"      :
-        g.blend === "xor"    ? "difference"  :
-                               "lighten";
+        blendKind === "add"    ? "lighter"     :
+        blendKind === "screen" ? "screen"      :
+        blendKind === "xor"    ? "difference"  :
+                                 "lighten";
       ctx.globalCompositeOperation = blendOp as GlobalCompositeOperation;
 
       const hueShift = (g.hueDrift * t) % 360;
@@ -12398,8 +12435,46 @@ function PixelGenII({
           }
         }
 
-        // Integrate per integration rule.
-        if (g.integ === "euler") {
+        // Integrate per integration rule. v1.3.76 — motion family
+        // overrides the smooth-flow path with sharp angular variants:
+        //   snake = velocity quantized to a single cardinal axis at
+        //           constant speed; turns 90 degrees at irregular
+        //           per-agent intervals biased by the force vector.
+        //           Produces Snake-game / Truchet-grid feel.
+        //   orbit = rotates the force vector 90 degrees before
+        //           integrating, biases the system toward circular
+        //           orbital motion regardless of operator mix.
+        if (g.motion === "snake") {
+          const speed = g.step * 1.6;
+          // Initialize direction if the agent is essentially still.
+          if (Math.abs(vx) < 0.01 && Math.abs(vy) < 0.01) {
+            if (Math.abs(fx) >= Math.abs(fy)) { vx = (fx >= 0 ? 1 : -1) * speed; vy = 0; }
+            else { vx = 0; vy = (fy >= 0 ? 1 : -1) * speed; }
+          }
+          // Pick a turn cadence that varies across agents so the
+          // population doesn't all turn on the same frame.
+          const turnK = 7 + (i % 13);
+          if ((t + i) % turnK === 0) {
+            if (Math.abs(fx) >= Math.abs(fy)) { vx = (fx >= 0 ? 1 : -1) * speed; vy = 0; }
+            else { vx = 0; vy = (fy >= 0 ? 1 : -1) * speed; }
+          }
+        } else if (g.motion === "orbit") {
+          // Rotate force vector 90 degrees to bias toward circular
+          // orbital motion. Then run normal integration.
+          const ofx = -fy, ofy = fx;
+          if (g.integ === "euler") {
+            vx = ofx * g.step; vy = ofy * g.step;
+          } else if (g.integ === "verlet") {
+            vx = vx * 0.92 + ofx * g.step * 0.18;
+            vy = vy * 0.92 + ofy * g.step * 0.18;
+          } else if (g.integ === "wrap") {
+            vx = vx * 0.6 + ofx * g.step * 0.5;
+            vy = vy * 0.6 + ofy * g.step * 0.5;
+          } else {
+            vx = vx * 0.85 + ofx * g.step * 0.3;
+            vy = vy * 0.85 + ofy * g.step * 0.3;
+          }
+        } else if (g.integ === "euler") {
           vx = fx * g.step; vy = fy * g.step;
         } else if (g.integ === "verlet") {
           vx = vx * 0.92 + fx * g.step * 0.18;
@@ -12422,9 +12497,14 @@ function PixelGenII({
           if (y < 0) { y = 0; vy = -vy; } else if (y >= H) { y = H - 1; vy = -vy; }
         }
 
-        // Plot — small filled rect (cheaper than path arc at high agent counts).
+        // Plot — grid-snapped filled rect of size g.cell. Larger cell
+        // values give a chunky "zoomed in" pixel feel; cell=1 is the
+        // native crisp look.
+        const c = g.cell;
+        const gx = Math.floor(x / c) * c;
+        const gy = Math.floor(y / c) * c;
         ctx.fillStyle = `hsla(${(hue % 360 + 360) % 360},${g.sat}%,${g.val}%,${g.brushAlpha})`;
-        ctx.fillRect(x | 0, y | 0, 2, 2);
+        ctx.fillRect(gx, gy, c, c);
 
         a[off + 0] = x; a[off + 1] = y;
         a[off + 2] = vx; a[off + 3] = vy;
@@ -12520,7 +12600,7 @@ function PixelGenII({
   }, [isLive, outputCanvasRef, PG2_PREVIEW, PG2_LIVE_MAX]);
 
   return (
-    <SynthPanel title="PIXEL GEN II" subtitle={`GENOME ${sig}${isLive ? " \u00b7 LIVE" : ""}`} accent="rgba(180,255,220,0.95)">
+    <SynthPanel title="PIXEL GEN II" subtitle={`GENOME ${sig}${isLive ? " \u00b7 LIVE" : ""}`} accent="rgba(180,255,220,0.95)" keepMounted>
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
         <canvas
           ref={cv}
@@ -12560,6 +12640,19 @@ function PixelGenII({
               ? "LIVE is ON — the FX chain is running on this generator. Tap to release back to camera."
               : "LIVE — send this generator straight to the main output as the live source for the FX chain (replaces the preview-only window)."}
           >{isLive ? "\u25CF LIVE" : "LIVE"}</button>
+        </div>
+        {/* v1.3.76 — manual blend mode cycler. AUTO defers to the
+            genome's rolled blend; pressing this overrides it across
+            every regen until set back to AUTO. */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 6, width: "100%" }}>
+          <button
+            onClick={() => setBlendOverride(prev => {
+              const order = ["auto", "add", "screen", "xor", "max"] as const;
+              return order[(order.indexOf(prev) + 1) % order.length];
+            })}
+            style={pg2BtnStyle(blendOverride !== "auto")}
+            title="BLEND — cycle the agent blend mode. AUTO uses whatever the genome rolled; ADD / SCREEN / XOR / MAX force a specific look across all regens."
+          >{`BLEND \u00B7 ${blendOverride.toUpperCase()}`}</button>
         </div>
         <div style={{ fontSize: 8, letterSpacing: "1px", color: isLive ? "rgba(255,180,120,0.75)" : "rgba(180,255,220,0.55)", textAlign: "center" }}>
           {isLive ? "\u25CF LIVE · SHOWING ON MAIN OUTPUT" : "NEVER THE SAME TWICE · TAP REGEN"}
