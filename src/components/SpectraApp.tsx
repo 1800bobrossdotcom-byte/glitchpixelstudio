@@ -11188,22 +11188,21 @@ export default function SpectraAfter() {
                 Composes with everything else; runs at the very tail of
                 main(). v1.3.62+ will add rotary detents per knob to cycle
                 3-5 sub-variants per family. */}
-            <SynthPanel title="ARTIST FX" subtitle="9 NOVEL CS PRIMITIVES · AMT + FAM PER ARTIST · TOUCH-BEND" accent="rgba(255,180,255,0.95)">
-              {/* v1.3.70 — panel redesign. The old AMT/FAMILY mode toggle
-                  is gone; each artist now exposes BOTH a big AMT knob
-                  (intensity 0..1) AND a small FAM knob (variant 0/1/2)
-                  side-by-side. AUTO-VJ + RANDOMIZE pull from both ends. */}
+            <SynthPanel title="ARTIST FX" subtitle="RAW PRIMITIVES" accent="rgba(255,180,255,0.95)">
+              {/* v1.3.73 — text trim. Labels shortened to 4-char codes so
+                  they no longer overflow the 3-col phone grid; subtitle
+                  pared down; verbose footer removed. */}
               {(() => {
                 const artistRows: Array<{ label: string; amt: number; setAmt: (v: number) => void; fam: number; setFam: (v: number) => void }> = [
-                  { label: "MENKMAN",  amt: menkmanFX,  setAmt: setMenkmanFX,  fam: menkmanFam,  setFam: setMenkmanFam  },
-                  { label: "MOLNÁR",   amt: molnarFX,   setAmt: setMolnarFX,   fam: molnarFam,   setFam: setMolnarFam   },
-                  { label: "UCNV",     amt: ucnvFX,     setAmt: setUcnvFX,     fam: ucnvFam,     setFam: setUcnvFam     },
-                  { label: "GYSIN",    amt: gysinFX,    setAmt: setGysinFX,    fam: gysinFam,    setFam: setGysinFam    },
-                  { label: "ASENDORF", amt: asendorfFX, setAmt: setAsendorfFX, fam: asendorfFam, setFam: setAsendorfFam },
-                  { label: "JODI",     amt: jodiFX,     setAmt: setJodiFX,     fam: jodiFam,     setFam: setJodiFam     },
-                  { label: "ARCANGEL", amt: arcangelFX, setAmt: setArcangelFX, fam: arcangelFam, setFam: setArcangelFam },
-                  { label: "PAIK",     amt: paikFX,     setAmt: setPaikFX,     fam: paikFam,     setFam: setPaikFam     },
-                  { label: "FENTON",   amt: fentonFX,   setAmt: setFentonFX,   fam: fentonFam,   setFam: setFentonFam   },
+                  { label: "MENK", amt: menkmanFX,  setAmt: setMenkmanFX,  fam: menkmanFam,  setFam: setMenkmanFam  },
+                  { label: "MOLN", amt: molnarFX,   setAmt: setMolnarFX,   fam: molnarFam,   setFam: setMolnarFam   },
+                  { label: "UCNV", amt: ucnvFX,     setAmt: setUcnvFX,     fam: ucnvFam,     setFam: setUcnvFam     },
+                  { label: "GYSN", amt: gysinFX,    setAmt: setGysinFX,    fam: gysinFam,    setFam: setGysinFam    },
+                  { label: "ASEN", amt: asendorfFX, setAmt: setAsendorfFX, fam: asendorfFam, setFam: setAsendorfFam },
+                  { label: "JODI", amt: jodiFX,     setAmt: setJodiFX,     fam: jodiFam,     setFam: setJodiFam     },
+                  { label: "ARCN", amt: arcangelFX, setAmt: setArcangelFX, fam: arcangelFam, setFam: setArcangelFam },
+                  { label: "PAIK", amt: paikFX,     setAmt: setPaikFX,     fam: paikFam,     setFam: setPaikFam     },
+                  { label: "FENT", amt: fentonFX,   setAmt: setFentonFX,   fam: fentonFam,   setFam: setFentonFam   },
                 ];
                 return (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginTop: 4, justifyItems: "center" }}>
@@ -11238,10 +11237,16 @@ export default function SpectraAfter() {
                   title="Reset all 9 ARTIST FX knobs + families to 0"
                 >ALL OFF</button>
               </div>
-              <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(255,180,255,0.55)", textAlign: "center" }}>
-                AMT = intensity · FAM = variant 0/1/2 · swipe live camera to bend FX · v1.3.70
-              </div>
             </SynthPanel>
+
+            {/* ── v1.3.73 PIXEL GEN II — generative pixel evolver. Six
+                rotating algorithms (DRIFT / SPIN / LISS / PLASMA / PUSH /
+                BURST), all parameters reseeded on REGEN, AUTO-EVOLVE
+                rerolls every ~12s, USE AS SOURCE pipes the current frame
+                into the upload feed so it becomes the BASE for the rest
+                of the FX chain. Stays far from Conway-style cellular
+                automata; every regen is a different look. */}
+            <PixelGenII handleUploadFile={handleUploadFile} />
 
             {/* ── v1.3.58/v1.3.60 GLITCH PALETTE rack (kept as POWER-gated
                 fallback for the v1.3.60 modulator system; ARTIST FX above
@@ -12114,6 +12119,345 @@ function SynthPanel({
       )}
     </div>
   );
+}
+
+// ── v1.3.73 PIXEL GEN II — genome-driven generative pixel engine ───
+// Each REGEN composes a brand-new "genome": a randomly-sized bag of
+// primitive operators (noise fields, swirl pivots, magnetic dipoles,
+// polar harmonics, axis drifts, framebuffer feedback samplers, etc.)
+// each with its own random seed, weight, and phase. Every frame, every
+// agent applies the entire genome to compute its velocity. There are
+// no named modes; every regen is a unique never-before-seen system.
+// AUTO-EVOLVE rerolls the genome every ~10-14s. USE AS SOURCE pipes
+// the current frame into the upload feed so it becomes the BASE for
+// the rest of the FX chain.
+type PG2Op =
+  | { k: "noise";    sx: number; sy: number; tw: number; phx: number; phy: number; w: number }
+  | { k: "swirl";    cx: number; cy: number; r: number;  w: number; sgn: number }
+  | { k: "dipole";   cx: number; cy: number; mx: number; my: number; w: number }
+  | { k: "harm";     fx: number; fy: number; ph: number; w: number }
+  | { k: "drift";    ax: number; ay: number; w: number }
+  | { k: "feedback"; sx: number; sy: number; w: number; thr: number }
+  | { k: "lissa";    a: number;  b: number;  ph: number; w: number }
+  | { k: "rad";      cx: number; cy: number; w: number; sgn: number };
+
+type PG2Genome = {
+  ops: PG2Op[];
+  blend: "add" | "screen" | "xor" | "max";
+  integ: "euler" | "verlet" | "wrap" | "bounce";
+  fade: number;       // per-frame trail decay 0..1 (1 = no decay)
+  agents: number;
+  step: number;       // velocity scale
+  hueDrift: number;   // palette hue rotation per frame
+  hueBase: number;    // starting hue
+  hueSpread: number;  // hue variance across agents
+  sat: number;
+  val: number;
+  brushAlpha: number; // per-agent ink amount
+  sig: string;        // 4-char human signature like "#A7K2"
+};
+
+function pg2Hash(seed: number) {
+  // Mulberry32 — small, deterministic, good enough for a regen seed.
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function pg2RollGenome(seed: number): PG2Genome {
+  const r = pg2Hash(seed);
+  const opCount = 3 + Math.floor(r() * 5); // 3-7 operators per genome
+  const ops: PG2Op[] = [];
+  for (let i = 0; i < opCount; i++) {
+    const pick = r();
+    if (pick < 0.18) {
+      ops.push({ k: "noise", sx: 0.004 + r() * 0.022, sy: 0.004 + r() * 0.022, tw: 0.0004 + r() * 0.0028, phx: r() * 1000, phy: r() * 1000, w: 0.4 + r() * 1.4 });
+    } else if (pick < 0.34) {
+      ops.push({ k: "swirl", cx: r(), cy: r(), r: 0.05 + r() * 0.45, w: 0.5 + r() * 1.6, sgn: r() < 0.5 ? -1 : 1 });
+    } else if (pick < 0.48) {
+      ops.push({ k: "dipole", cx: r(), cy: r(), mx: (r() - 0.5) * 2, my: (r() - 0.5) * 2, w: 0.3 + r() * 1.4 });
+    } else if (pick < 0.62) {
+      ops.push({ k: "harm", fx: 1 + Math.floor(r() * 6), fy: 1 + Math.floor(r() * 6), ph: r() * Math.PI * 2, w: 0.4 + r() * 1.2 });
+    } else if (pick < 0.74) {
+      ops.push({ k: "drift", ax: (r() - 0.5) * 1.4, ay: (r() - 0.5) * 1.4, w: 0.3 + r() * 1.0 });
+    } else if (pick < 0.84) {
+      ops.push({ k: "feedback", sx: r(), sy: r(), w: 0.5 + r() * 1.5, thr: 0.2 + r() * 0.5 });
+    } else if (pick < 0.92) {
+      ops.push({ k: "lissa", a: 1 + Math.floor(r() * 5), b: 1 + Math.floor(r() * 5), ph: r() * Math.PI, w: 0.4 + r() * 1.2 });
+    } else {
+      ops.push({ k: "rad", cx: r(), cy: r(), w: 0.4 + r() * 1.4, sgn: r() < 0.5 ? -1 : 1 });
+    }
+  }
+  const blends = ["add", "screen", "xor", "max"] as const;
+  const integs = ["euler", "verlet", "wrap", "bounce"] as const;
+  // Short signature so the user can see/share the seed.
+  const sig = "#" + seed.toString(36).slice(-4).toUpperCase();
+  return {
+    ops,
+    blend: blends[Math.floor(r() * 4)],
+    integ: integs[Math.floor(r() * 4)],
+    fade: 0.86 + r() * 0.12,         // trail persistence
+    agents: 220 + Math.floor(r() * 480),
+    step: 0.4 + r() * 1.4,
+    hueDrift: (r() - 0.5) * 1.2,
+    hueBase: r() * 360,
+    hueSpread: 20 + r() * 280,
+    sat: 60 + r() * 40,
+    val: 75 + r() * 25,
+    brushAlpha: 0.18 + r() * 0.55,
+    sig,
+  };
+}
+
+function PixelGenII({ handleUploadFile }: { handleUploadFile: (f: File) => void }) {
+  const cv = useRef<HTMLCanvasElement | null>(null);
+  const fbRef = useRef<ImageData | null>(null);    // last frame for feedback sampling
+  const agentsRef = useRef<Float32Array | null>(null); // [x,y,vx,vy,hue] per agent
+  const genomeRef = useRef<PG2Genome | null>(null);
+  const tRef = useRef(0);
+  const rafRef = useRef<number | null>(null);
+  const runningRef = useRef(true);
+  const [seed, setSeed] = useState(() => Math.floor(Math.random() * 2147483647));
+  const [running, setRunning] = useState(true);
+  const [autoEvolve, setAutoEvolve] = useState(false);
+  const [sig, setSig] = useState("#----");
+  const lastEvolveRef = useRef(performance.now());
+  const W = 256, H = 256;
+
+  const reseed = useCallback((s: number) => {
+    const g = pg2RollGenome(s);
+    genomeRef.current = g;
+    setSig(g.sig);
+    // Re-seed agent positions with the genome's RNG so the same seed
+    // really does reproduce the same frame.
+    const r = pg2Hash(s ^ 0x9E3779B9);
+    const a = new Float32Array(g.agents * 5);
+    for (let i = 0; i < g.agents; i++) {
+      a[i * 5 + 0] = r() * W;
+      a[i * 5 + 1] = r() * H;
+      a[i * 5 + 2] = (r() - 0.5) * 0.8;
+      a[i * 5 + 3] = (r() - 0.5) * 0.8;
+      a[i * 5 + 4] = g.hueBase + (r() - 0.5) * g.hueSpread;
+    }
+    agentsRef.current = a;
+    // Wipe canvas so the new genome starts on a clean field.
+    const c = cv.current; if (!c) return;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+    ctx.fillStyle = "#08010C";
+    ctx.fillRect(0, 0, W, H);
+    fbRef.current = null;
+    tRef.current = 0;
+  }, []);
+
+  // Initial seed.
+  useEffect(() => { reseed(seed); }, [seed, reseed]);
+
+  useEffect(() => { runningRef.current = running; }, [running]);
+
+  useEffect(() => {
+    let stopped = false;
+    const tick = () => {
+      if (stopped) return;
+      rafRef.current = requestAnimationFrame(tick);
+      if (!runningRef.current) return;
+      const c = cv.current; if (!c) return;
+      const ctx = c.getContext("2d", { willReadFrequently: true }); if (!ctx) return;
+      const g = genomeRef.current; const a = agentsRef.current;
+      if (!g || !a) return;
+
+      // Auto-evolve roll.
+      if (autoEvolve && performance.now() - lastEvolveRef.current > 10000 + Math.random() * 4000) {
+        lastEvolveRef.current = performance.now();
+        const next = (Math.random() * 2147483647) | 0;
+        setSeed(next);
+        return;
+      }
+
+      tRef.current += 1;
+      const t = tRef.current;
+
+      // Trail fade — translucent black wash. Lower fade = longer trails.
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = `rgba(8,1,12,${1 - g.fade})`;
+      ctx.fillRect(0, 0, W, H);
+
+      // Sample previous frame for feedback ops.
+      const needsFeedback = g.ops.some(op => op.k === "feedback");
+      const fb = needsFeedback ? ctx.getImageData(0, 0, W, H) : null;
+
+      const blendOp =
+        g.blend === "add"    ? "lighter"     :
+        g.blend === "screen" ? "screen"      :
+        g.blend === "xor"    ? "difference"  :
+                               "lighten";
+      ctx.globalCompositeOperation = blendOp as GlobalCompositeOperation;
+
+      const hueShift = (g.hueDrift * t) % 360;
+      const N = g.agents;
+      for (let i = 0; i < N; i++) {
+        const off = i * 5;
+        let x = a[off + 0], y = a[off + 1];
+        let vx = a[off + 2], vy = a[off + 3];
+        const hue = a[off + 4] + hueShift;
+
+        // Sum every operator in the genome into (fx, fy).
+        let fx = 0, fy = 0;
+        for (const op of g.ops) {
+          if (op.k === "noise") {
+            // Cheap pseudo-noise via summed sines — phase-shifted by time.
+            const px = x * op.sx + op.phx + t * op.tw;
+            const py = y * op.sy + op.phy + t * op.tw * 1.3;
+            fx += Math.sin(px * 2.31 + Math.cos(py * 1.7)) * op.w;
+            fy += Math.cos(py * 2.13 + Math.sin(px * 1.9)) * op.w;
+          } else if (op.k === "swirl") {
+            const dx = x - op.cx * W, dy = y - op.cy * H;
+            const r2 = dx * dx + dy * dy + 1;
+            const fall = Math.exp(-r2 / (op.r * op.r * W * H));
+            fx += -dy * op.w * op.sgn * fall * 0.04;
+            fy +=  dx * op.w * op.sgn * fall * 0.04;
+          } else if (op.k === "dipole") {
+            const dx = x - op.cx * W, dy = y - op.cy * H;
+            const r2 = dx * dx + dy * dy + 16;
+            const inv = op.w * 60 / r2;
+            // Project dipole moment onto radial — gives push/pull lobes.
+            const dot = (dx * op.mx + dy * op.my);
+            fx += (op.mx - 2 * dot * dx / r2) * inv;
+            fy += (op.my - 2 * dot * dy / r2) * inv;
+          } else if (op.k === "harm") {
+            fx += Math.sin(y / H * Math.PI * op.fy + op.ph) * op.w;
+            fy += Math.cos(x / W * Math.PI * op.fx + op.ph) * op.w;
+          } else if (op.k === "drift") {
+            fx += op.ax * op.w;
+            fy += op.ay * op.w;
+          } else if (op.k === "lissa") {
+            const tt = t * 0.012;
+            fx += Math.sin(tt * op.a + op.ph) * op.w;
+            fy += Math.cos(tt * op.b) * op.w;
+          } else if (op.k === "rad") {
+            const dx = x - op.cx * W, dy = y - op.cy * H;
+            const m = Math.sqrt(dx * dx + dy * dy) + 1;
+            fx += (dx / m) * op.w * op.sgn;
+            fy += (dy / m) * op.w * op.sgn;
+          } else if (op.k === "feedback" && fb) {
+            // Sample the framebuffer at an offset position; brightness
+            // there becomes a velocity gradient. Lets the system "see"
+            // its own output and reorganize around it.
+            const sx = ((x + op.sx * 32) | 0) & (W - 1);
+            const sy = ((y + op.sy * 32) | 0) & (H - 1);
+            const pi = (sy * W + sx) * 4;
+            const lum = (fb.data[pi] + fb.data[pi + 1] + fb.data[pi + 2]) / 765;
+            if (lum > op.thr) {
+              fx += (Math.cos(lum * Math.PI * 4)) * op.w;
+              fy += (Math.sin(lum * Math.PI * 4)) * op.w;
+            }
+          }
+        }
+
+        // Integrate per integration rule.
+        if (g.integ === "euler") {
+          vx = fx * g.step; vy = fy * g.step;
+        } else if (g.integ === "verlet") {
+          vx = vx * 0.92 + fx * g.step * 0.18;
+          vy = vy * 0.92 + fy * g.step * 0.18;
+        } else if (g.integ === "wrap") {
+          vx = vx * 0.6 + fx * g.step * 0.5;
+          vy = vy * 0.6 + fy * g.step * 0.5;
+        } else { // bounce
+          vx = vx * 0.85 + fx * g.step * 0.3;
+          vy = vy * 0.85 + fy * g.step * 0.3;
+        }
+
+        x += vx; y += vy;
+
+        if (g.integ === "wrap") {
+          if (x < 0) x += W; else if (x >= W) x -= W;
+          if (y < 0) y += H; else if (y >= H) y -= H;
+        } else {
+          if (x < 0) { x = 0; vx = -vx; } else if (x >= W) { x = W - 1; vx = -vx; }
+          if (y < 0) { y = 0; vy = -vy; } else if (y >= H) { y = H - 1; vy = -vy; }
+        }
+
+        // Plot — small filled rect (cheaper than path arc at high agent counts).
+        ctx.fillStyle = `hsla(${(hue % 360 + 360) % 360},${g.sat}%,${g.val}%,${g.brushAlpha})`;
+        ctx.fillRect(x | 0, y | 0, 2, 2);
+
+        a[off + 0] = x; a[off + 1] = y;
+        a[off + 2] = vx; a[off + 3] = vy;
+      }
+
+      ctx.globalCompositeOperation = "source-over";
+    };
+    rafRef.current = requestAnimationFrame(tick);
+    return () => { stopped = true; if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [autoEvolve]);
+
+  const useAsSource = useCallback(() => {
+    const c = cv.current; if (!c) return;
+    c.toBlob(blob => {
+      if (!blob) return;
+      const file = new File([blob], `pixel-gen-${sig}.png`, { type: "image/png" });
+      handleUploadFile(file);
+    }, "image/png");
+  }, [handleUploadFile, sig]);
+
+  return (
+    <SynthPanel title="PIXEL GEN II" subtitle={`GENOME ${sig}`} accent="rgba(180,255,220,0.95)">
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+        <canvas
+          ref={cv}
+          width={W} height={H}
+          style={{
+            width: "100%", maxWidth: 320, aspectRatio: "1 / 1",
+            imageRendering: "pixelated",
+            background: "#08010C",
+            border: "1px solid rgba(180,255,220,0.45)",
+            borderRadius: 6,
+            boxShadow: "inset 0 0 18px rgba(0,0,0,0.85), 0 0 14px rgba(120,255,200,0.18)",
+          }}
+        />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 6, width: "100%" }}>
+          <button
+            onClick={() => setSeed((Math.random() * 2147483647) | 0)}
+            style={pg2BtnStyle(false)}
+            title="REGEN — roll a brand-new generative genome"
+          >REGEN</button>
+          <button
+            onClick={() => setRunning(r => !r)}
+            style={pg2BtnStyle(running)}
+            title={running ? "Pause evolution" : "Resume evolution"}
+          >{running ? "PAUSE" : "PLAY"}</button>
+          <button
+            onClick={() => setAutoEvolve(a => !a)}
+            style={pg2BtnStyle(autoEvolve)}
+            title="AUTO — auto-reroll the genome every 10-14s for endless variety"
+          >AUTO</button>
+          <button
+            onClick={useAsSource}
+            style={pg2BtnStyle(false)}
+            title="Pipe the current frame into BASE so the rest of the FX chain runs on top of it"
+          >USE</button>
+        </div>
+        <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(180,255,220,0.55)", textAlign: "center" }}>
+          NEVER THE SAME TWICE · TAP REGEN
+        </div>
+      </div>
+    </SynthPanel>
+  );
+}
+
+function pg2BtnStyle(active: boolean): React.CSSProperties {
+  return {
+    padding: "6px 4px", fontSize: 9, letterSpacing: "1.2px", fontWeight: 700,
+    background: active ? "rgba(180,255,220,0.22)" : "rgba(180,255,220,0.06)",
+    border: `1px solid ${active ? "rgba(180,255,220,0.85)" : "rgba(180,255,220,0.4)"}`,
+    color: active ? "rgba(220,255,240,0.98)" : "rgba(180,255,220,0.85)",
+    cursor: "pointer", borderRadius: 4,
+    fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
+  };
 }
 
 // ───────────────────────────────────────────────────────────────────────
