@@ -11264,6 +11264,7 @@ export default function SpectraAfter() {
               liveRef={pixGen2LiveRef}
               setSourceMode={setSourceMode}
               sourceMode={sourceMode}
+              outputCanvasRef={canvasRef}
             />
 
             {/* ── v1.3.58/v1.3.60 GLITCH PALETTE rack (kept as POWER-gated
@@ -12234,10 +12235,12 @@ function PixelGenII({
   liveRef,
   setSourceMode,
   sourceMode,
+  outputCanvasRef,
 }: {
   liveRef: React.MutableRefObject<HTMLCanvasElement | null>;
   setSourceMode: (m: "camera" | "upload" | "generator") => void;
   sourceMode: "camera" | "upload" | "generator";
+  outputCanvasRef?: React.RefObject<HTMLCanvasElement | null>;
 }) {
   const cv = useRef<HTMLCanvasElement | null>(null);
   const fbRef = useRef<ImageData | null>(null);    // last frame for feedback sampling
@@ -12251,7 +12254,15 @@ function PixelGenII({
   const [autoEvolve, setAutoEvolve] = useState(false);
   const [sig, setSig] = useState("#----");
   const lastEvolveRef = useRef(performance.now());
-  const W = 256, H = 256;
+  // v1.3.75 — dynamic dimensions. Preview = 256×256. When LIVE is ON,
+  // we resize the generator canvas to match the main output (capped to
+  // PG2_LIVE_MAX) so the WebGL upload pipeline samples a high-res
+  // source instead of upscaling a tiny 256×256 preview into a blurry
+  // mess. dimsRef is the source of truth used by the tick loop.
+  const PG2_PREVIEW = 256;
+  const PG2_LIVE_MAX = 1024; // perf cap — getImageData/agents scale with W*H
+  const dimsRef = useRef({ w: PG2_PREVIEW, h: PG2_PREVIEW });
+  const [dims, setDims] = useState({ w: PG2_PREVIEW, h: PG2_PREVIEW });
 
   const reseed = useCallback((s: number) => {
     const g = pg2RollGenome(s);
@@ -12260,6 +12271,7 @@ function PixelGenII({
     // Re-seed agent positions with the genome's RNG so the same seed
     // really does reproduce the same frame.
     const r = pg2Hash(s ^ 0x9E3779B9);
+    const { w: W, h: H } = dimsRef.current;
     const a = new Float32Array(g.agents * 5);
     for (let i = 0; i < g.agents; i++) {
       a[i * 5 + 0] = r() * W;
@@ -12305,6 +12317,7 @@ function PixelGenII({
 
       tRef.current += 1;
       const t = tRef.current;
+      const { w: W, h: H } = dimsRef.current;
 
       // Trail fade — translucent black wash. Lower fade = longer trails.
       ctx.globalCompositeOperation = "source-over";
@@ -12372,8 +12385,10 @@ function PixelGenII({
             // Sample the framebuffer at an offset position; brightness
             // there becomes a velocity gradient. Lets the system "see"
             // its own output and reorganize around it.
-            const sx = ((x + op.sx * 32) | 0) & (W - 1);
-            const sy = ((y + op.sy * 32) | 0) & (H - 1);
+            const sxRaw = ((x + op.sx * 32) | 0) % W;
+            const syRaw = ((y + op.sy * 32) | 0) % H;
+            const sx = sxRaw < 0 ? sxRaw + W : sxRaw;
+            const sy = syRaw < 0 ? syRaw + H : syRaw;
             const pi = (sy * W + sx) * 4;
             const lum = (fb.data[pi] + fb.data[pi + 1] + fb.data[pi + 2]) / 765;
             if (lum > op.thr) {
@@ -12449,12 +12464,68 @@ function PixelGenII({
   // Stop publishing on unmount.
   useEffect(() => () => { if (liveRef.current === cv.current) liveRef.current = null; }, [liveRef]);
 
+  // v1.3.75 — dynamic resolution. When LIVE engages, resize the
+  // generator backing buffer to match the main output canvas (capped at
+  // PG2_LIVE_MAX) so the WebGL upload pipeline samples high-res pixels
+  // instead of upscaling 256×256 into a blurry mess. Agent positions
+  // are rescaled by the new/old ratio so the running simulation stays
+  // continuous across the resize. Reverts to PG2_PREVIEW on LIVE OFF.
+  useEffect(() => {
+    let targetW = PG2_PREVIEW, targetH = PG2_PREVIEW;
+    if (isLive) {
+      const out = outputCanvasRef?.current;
+      const ow = out?.width || 0;
+      const oh = out?.height || 0;
+      if (ow > 0 && oh > 0) {
+        const longest = Math.max(ow, oh);
+        const scale = longest > PG2_LIVE_MAX ? PG2_LIVE_MAX / longest : 1;
+        targetW = Math.max(PG2_PREVIEW, Math.round(ow * scale));
+        targetH = Math.max(PG2_PREVIEW, Math.round(oh * scale));
+      } else {
+        targetW = PG2_LIVE_MAX;
+        targetH = PG2_LIVE_MAX;
+      }
+    }
+    const cur = dimsRef.current;
+    if (cur.w === targetW && cur.h === targetH) return;
+    const oldW = cur.w, oldH = cur.h;
+    const sx = targetW / oldW, sy = targetH / oldH;
+    dimsRef.current = { w: targetW, h: targetH };
+    // Set backing buffer imperatively so the next paint already runs at
+    // the new resolution (setting width/height on a canvas clears it).
+    const c = cv.current;
+    if (c) {
+      c.width = targetW;
+      c.height = targetH;
+    }
+    setDims({ w: targetW, h: targetH });
+    // Rescale running agents to new coord space so the picture doesn't
+    // pop / agents don't get clamped at the old border.
+    const a = agentsRef.current;
+    if (a) {
+      for (let i = 0; i < a.length; i += 5) {
+        a[i + 0] *= sx;
+        a[i + 1] *= sy;
+      }
+    }
+    // Background wash at new size so trails start clean.
+    if (c) {
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      if (ctx) {
+        ctx.fillStyle = "#08010C";
+        ctx.fillRect(0, 0, targetW, targetH);
+      }
+    }
+    fbRef.current = null;
+  }, [isLive, outputCanvasRef, PG2_PREVIEW, PG2_LIVE_MAX]);
+
   return (
     <SynthPanel title="PIXEL GEN II" subtitle={`GENOME ${sig}${isLive ? " \u00b7 LIVE" : ""}`} accent="rgba(180,255,220,0.95)">
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
         <canvas
           ref={cv}
-          width={W} height={H}
+          width={dims.w}
+          height={dims.h}
           style={{
             width: "100%", maxWidth: 320, aspectRatio: "1 / 1",
             imageRendering: "pixelated",
