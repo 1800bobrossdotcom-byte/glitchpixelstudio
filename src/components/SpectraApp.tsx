@@ -9835,8 +9835,10 @@ export default function SpectraAfter() {
             boxShadow: "0 0 12px rgba(26,28,242,0.55), 0 0 4px rgba(111,125,255,0.6) inset",
           }}/>
         </div>
-        {/* Right — action icons, evenly spaced, never wrap */}
-        <div style={{ display: "flex", gap: 4, alignItems: "center", justifyContent: "flex-end", flex: "0 0 auto" }}>
+        {/* Right — action icons. v1.3.71 — allow wrap to a second row so
+            SNAP / REC / UI SKIN / HANDS-FREE / RANDOMIZE / CLOSE are never
+            clipped off the right edge on narrow phones. */}
+        <div style={{ display: "flex", gap: 4, rowGap: 4, alignItems: "center", justifyContent: "flex-end", flex: "1 1 auto", flexWrap: "wrap", minWidth: 0 }}>
           <button
             className="sp-btn"
             onClick={() => {
