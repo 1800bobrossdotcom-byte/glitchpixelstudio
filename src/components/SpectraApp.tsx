@@ -18,6 +18,11 @@ import { Share } from "@capacitor/share";
 // "backtick inside GLSL comment terminates the JS template literal" footgun.
 import VERT_SRC from "@/shaders/scene.vert";
 import FRAG_SRC from "@/shaders/scene.frag";
+import { createEngine, createScheduler, encodeGifAsync, type Engine, type FeedbackSource, type Scheduler } from "@/lib/gps-engine";
+// Temporal feedback source for MOSH / CHRASH. "rendered" = previous rendered
+// frame (true feedback, half-float on WebGL2); "camera" = the look the shipped
+// builds effectively had. One constant so the two can be A/B'd on device.
+const GPS_FEEDBACK_SOURCE: FeedbackSource = "rendered";
 
 // ═══════════════════════════════════════════════════════════
 //  GPS — WebGL computational vision engine
@@ -642,18 +647,6 @@ const TERMS_URL = "https://glitchpixelstudio.app/terms";
 
 
 // ── WebGL helpers ────────────────────────────────────────────
-function compileShader(gl: WebGLRenderingContext, type: number, src: string): WebGLShader | null {
-  const s = gl.createShader(type);
-  if (!s) return null;
-  gl.shaderSource(s, src);
-  gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-    console.error("Shader error:", gl.getShaderInfoLog(s));
-    gl.deleteShader(s);
-    return null;
-  }
-  return s;
-}
 
 function makeThrottledSetter<T>(setter: (value: T) => void, ms = 32) {
   return throttle((value: T) => setter(value), ms);
@@ -1407,9 +1400,7 @@ async function saveBlobToDevice(blob: Blob, filename: string): Promise<void> {
 export default function SpectraAfter() {
     // ── Mask for touch-interactive FX
     const maskCanvasRef = useRef<HTMLCanvasElement>(null);
-    const maskTextureRef = useRef<WebGLTexture|null>(null);
     // ── Face FX person-segmentation mask (R-channel WebGL texture).
-    const faceTextureRef = useRef<WebGLTexture|null>(null);
     const faceMaskCanvasRef = useRef<HTMLCanvasElement|null>(null);
 
     // ── Audio-reactive FX
@@ -1771,27 +1762,19 @@ export default function SpectraAfter() {
   // + camera/mask textures) only fires when the bucket actually
   // changes. Replaced the v1.3.40 discrete ladder {1.00,0.85,0.70,0.55}
   // + 180/300-frame streak counters with one expression.
-  const renderScaleRef = useRef(1.0);
-  const frametimeAvgRef = useRef(16.7);
-  const lastFrameTsRef = useRef(0);
-  const fastFrameStreakRef = useRef(0);
   // v1.2.55 — UNIFORM SHADOW CACHE. ~60 uniform writes happen every
   // render. Most are slider/ref values that don't change frame-to-frame.
   // We diff against this Map keyed by WebGLUniformLocation and skip the
   // gl.uniform* call when the value is unchanged. For float vectors we
   // pack components into a delimited string for a cheap equality check.
-  const uniCacheRef = useRef(new Map<WebGLUniformLocation, number | string>());
 
   // v1.2.57 — Phase 4 GFX. Track per-texture sized state so we can use
   // texSubImage2D for the steady-state per-frame uploads (camera + mask)
   // instead of texImage2D, which avoids a driver-side reallocation +
   // texture-completeness check on every frame. We re-seed with
   // texImage2D only when the source dimensions change (rare).
-  const cameraTexSizedRef = useRef({ w: 0, h: 0 });
-  const maskTexSizedRef = useRef({ w: 0, h: 0 });
   // v1.3.30 — same trick for the FACE-FX mask texture (gated on segmenter
   // mask geometry, which only changes when MediaPipe rebuilds its model).
-  const faceTexSizedRef = useRef({ w: 0, h: 0 });
   // v1.2.57 — alternate audio analyser updates so the FFT + RMS loop
   // runs at ~30 Hz instead of 60 Hz. Audio energy doesn't change
   // meaningfully faster than that and the cached gate is what the
@@ -2084,7 +2067,7 @@ export default function SpectraAfter() {
     // remains ~15 Hz. v1.2.75 — doubled cadence across all bands so
     // the figure mask keeps up with fast dance moves (was 6/10/12 Hz).
     const _segCadenceMs = () => {
-      const f = frametimeAvgRef.current;
+      const f = schedulerRef.current?.frameTimeMs ?? 16.7;
       // v1.3.40 — also factor the global FX quality scalar. Under
       // sustained heat the governor drives fxQualityRef well below 1.0;
       // we lengthen segmenter cadence proportionally so the WASM call
@@ -2222,29 +2205,10 @@ export default function SpectraAfter() {
               maskCtx.globalCompositeOperation = "source-over";
               maskCtx.clearRect(0, 0, _dW, _dH);
               maskCtx.drawImage(scratchCanvas, 0, 0, _dW, _dH);
-              // Upload to WebGL face texture.
-              const gl = glRef.current;
-              const tex = faceTextureRef.current;
-              if (gl && tex) {
-                gl.activeTexture(gl.TEXTURE4);
-                gl.bindTexture(gl.TEXTURE_2D, tex);
-                // Camera tex is uploaded WITHOUT FLIP_Y, so to match
-                // the camera's vertical orientation the mask must
-                // also be uploaded WITHOUT FLIP_Y. Previously this was
-                // flipped, which pushed the person's head off the top
-                // of the mask and chopped the upper third of the roto.
-                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-                // v1.3.30 — texSubImage2D fast path for the face mask.
-                // texImage2D reallocates GPU memory each call; texSubImage2D
-                // updates pixels in place. Mask geometry only changes when
-                // MediaPipe rebuilds the model (rare), so the seed is one-shot.
-                const _mw = maskCanvas.width, _mh = maskCanvas.height;
-                if (_mw !== faceTexSizedRef.current.w || _mh !== faceTexSizedRef.current.h) {
-                  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
-                  faceTexSizedRef.current = { w: _mw, h: _mh };
-                } else {
-                  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
-                }
+              // Upload to the engine's face texture (no FLIP_Y, in-place fast path).
+              const engF = engineRef.current;
+              if (engF) {
+                engF.setFaceMask(maskCanvas);
                 faceFxRef.current.texValid = true;
               }
             });
@@ -3078,28 +3042,16 @@ export default function SpectraAfter() {
 
   // ── WebGL refs
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const glRef = useRef<WebGLRenderingContext|null>(null);
-  const programRef = useRef<WebGLProgram|null>(null);
+  const engineRef = useRef<Engine | null>(null);
+  const schedulerRef = useRef<Scheduler | null>(null);
   // Phase 2b: ping-pong FBOs for multi-layer combo composite
-  const fboARef = useRef<WebGLFramebuffer|null>(null);
-  const fboBRef = useRef<WebGLFramebuffer|null>(null);
-  const fboTexARef = useRef<WebGLTexture|null>(null);
-  const fboTexBRef = useRef<WebGLTexture|null>(null);
   // v1.3.81 — half-float FBO targets when the device supports them.
   // Holds gl.HALF_FLOAT_OES (0x8D61) if OES_texture_half_float +
   // EXT_color_buffer_half_float + OES_texture_half_float_linear are all
   // available, otherwise null and we stay on UNSIGNED_BYTE / RGBA8. Higher
   // precision intermediates kill the banding visible on FEEDBACK / REACT-D /
   // VOROSORT and are usually bandwidth-faster than RGBA8 on Mali / Adreno.
-  const halfFloatFboTypeRef = useRef<number|null>(null);
-  const uniformsRef = useRef<Record<string,WebGLUniformLocation|null>>({});
-  const textures = useRef<WebGLTexture[]>([]);
-  const frameIdxRef = useRef(0);
-  const firstFrameRef = useRef(true);
-  const rafRef = useRef<number>(0);
   const timeRef = useRef(0);
-  const fpsFrames = useRef(0);
-  const fpsTime = useRef(performance.now());
   const touchRef = useRef({ x: 0.5, y: 0.5, active: false });
 
   // GIF recording
@@ -3360,286 +3312,60 @@ export default function SpectraAfter() {
   const initGL = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return false;
-    const gl = canvas.getContext("webgl", {
-      premultipliedAlpha: false,
-      preserveDrawingBuffer: true,
-      antialias: false,
-      alpha: false,
-    }) as WebGLRenderingContext | null;
-    if (!gl) { setShaderError("WebGL not supported on this device."); return false; }
-    glRef.current = gl;
-
-    // v1.3.81 — probe half-float capability for the ping-pong FBO targets.
-    // All three extensions must be present to safely render to RGBA16F-style
-    // textures AND sample them with LINEAR filtering. If any are missing we
-    // fall back to RGBA8 in makeFboTex below and the rest of the pipeline is
-    // byte-identical to v1.3.80.
-    try {
-      const extHF = gl.getExtension("OES_texture_half_float");
-      const extHFL = gl.getExtension("OES_texture_half_float_linear");
-      const extCBHF = gl.getExtension("EXT_color_buffer_half_float");
-      if (extHF && extHFL && extCBHF) {
-        halfFloatFboTypeRef.current = (extHF as { HALF_FLOAT_OES: number }).HALF_FLOAT_OES;
-      } else {
-        halfFloatFboTypeRef.current = null;
-      }
-    } catch {
-      halfFloatFboTypeRef.current = null;
-    }
-
-    const vs = compileShader(gl, gl.VERTEX_SHADER, VERT_SRC);
-    const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAG_SRC);
-    if (!vs || !fs) { setShaderError("Shader compile error — see console for details."); return false; }
-
-    const prog = gl.createProgram()!;
-    gl.attachShader(prog, vs); gl.attachShader(prog, fs);
-    gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-      const msg = gl.getProgramInfoLog(prog) || "unknown";
-      console.error("GL link error:", msg);
-      setShaderError("GL link error: " + msg);
+    const created = createEngine(canvas, {
+      shaders: { vert: VERT_SRC, frag: FRAG_SRC },
+      feedbackSource: GPS_FEEDBACK_SOURCE,
+    });
+    if (!created.ok) {
+      console.error("[GPS] engine:", created.error);
+      setShaderError(created.error);
       return false;
     }
-    gl.useProgram(prog);
-    programRef.current = prog;
-
-    const names = ["uCamera","uPrevFrame","uMode","uTime","uResolution","uVideoSize",
-      "uGain","uMirror","uTouch","uTouchActive","uAudio","uABass","uATreb","uABeat",
-      "uBrightness","uContrast","uSaturation","uHueShift","uScanlines","uZoom",
-      "uSortAmt","uScanTear","uBlockGlitch","uDatamosh","uChrash","uMask",
-      "uLiquid","uFeedback","uContour","uAscii","uVenetian",
-      "uKaleido","uDisrupt","uDisruptCount","uDisruptSize","uDisruptContrary","uDisruptShape",
-      "uTile","uInvert","uDroste","uSpiral","uYantra","uMandala","uRosette","uStarfold","uHexfold",
-      "uSortKey","uSortLow","uSortHigh","uSortSegment","uSortRandom","uSortWobble","uSortMode",
-      "uSortInterval","uSortAngle",
-      "uRgbR","uRgbG","uRgbB","uRgbBars","uRgbSwap",
-      "uRupture","uHSync",
-      "uMoshIFrame","uMoshMotion","uMoshBleed","uMoshMap","uMoshDistort",
-      "uFaceActive","uFaceCenter","uFaceRadius","uFaceInvert",
-      "uFaceTex","uFaceTexValid","uFaceFeather","uFaceMaskRadius",
-      "uGlyph","uSortMix","uReact","uVoroSort","uGlyphAtlas","uSortTex",
-      "uFxQuality",
-      // v1.3.61 — NOVEL CS FX uniforms (one per artist family)
-      "uMenkmanFX","uMolnarFX","uUcnvFX","uGysinFX","uAsendorfFX",
-      "uJodiFX","uArcangelFX","uPaikFX","uFentonFX",
-      // v1.3.64 — ARTIST FX family selectors + touch-bend scalar
-      "uMenkmanFam","uMolnarFam","uUcnvFam","uGysinFam","uAsendorfFam",
-      "uJodiFam","uArcangelFam","uPaikFam","uFentonFam",
-      "uArtistTouch",
-      "uModeParams[0]"];
-      // Mask texture for touch FX
-      const maskTex = gl.createTexture();
-      gl.activeTexture(gl.TEXTURE2);
-      gl.bindTexture(gl.TEXTURE_2D, maskTex);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 256, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-      maskTextureRef.current = maskTex;
-      // Face FX person-segmentation texture (R channel = mask). Bound
-      // permanently to TEXTURE4 so we can lazy-update it from the
-      // MediaPipe segmentation loop without disturbing other slots.
-      const faceTex = gl.createTexture();
-      gl.activeTexture(gl.TEXTURE4);
-      gl.bindTexture(gl.TEXTURE_2D, faceTex);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
-      faceTextureRef.current = faceTex;
-    const u: Record<string,WebGLUniformLocation|null> = {};
-    names.forEach(n => { u[n] = gl.getUniformLocation(prog, n); });
-    u.uModeParams = u["uModeParams[0]"];
-    uniformsRef.current = u;
-
-    const quad = new Float32Array([-1,-1, 1,-1, -1,1, 1,1]);
-    const buf = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
-    const aPos = gl.getAttribLocation(prog, "aPosition");
-    gl.enableVertexAttribArray(aPos);
-    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-
-    // Two camera textures (ping-pong prev frame)
-    for (let i = 0; i < 2; i++) {
-      const tex = gl.createTexture()!;
-      gl.activeTexture(gl.TEXTURE0 + i);
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      // Initialize with 1×1 black so the texture is complete before camera starts
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
-      textures.current.push(tex);
-    }
-
-    // v1.2.58 — TEXTURE5: CPU pixel-sort result texture (uploaded from JS
-    // every Nth frame after running the real Asendorf algorithm on a
-    // 256x144 downscale). Init 1x1 black so it's complete before first run.
-    {
-      const sTex = gl.createTexture();
-      gl.activeTexture(gl.TEXTURE5);
-      gl.bindTexture(gl.TEXTURE_2D, sTex);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      // v1.2.68 — NEAREST sampling on the CPU sort texture. The CPU
-      // Asendorf sort runs at 256x144; LINEAR upscaled it into a soft
-      // blur the moment REALSORT was the only knob engaged. NEAREST
-      // preserves the crisp per-row sort pixels people expect.
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
-      cpuSortTexRef.current = sTex;
-    }
+    const eng = created.engine;
+    engineRef.current = eng;
+    console.log("[GPS] engine", eng.caps, { halfFloat: eng.halfFloatFeedback, gpuSort: eng.gpuSortActive });
 
     // v1.2.58 — TEXTURE6: Gysin glyph atlas, generated once at boot from
     // a brightness ramp drawn into a 256x256 2D canvas (4x4 grid, 64px
     // per glyph). The atlas is grayscale; the shader uses .r as alpha.
-    {
-      const gTex = gl.createTexture();
-      gl.activeTexture(gl.TEXTURE6);
-      gl.bindTexture(gl.TEXTURE_2D, gTex);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      // Build the 4x4 atlas: 16 ramp glyphs from sparse → dense.
-      // Order: lightest first (index 0 = ' ') so cellL×16 maps darkest→densest naturally.
-      const ATLAS = 256, CELL = 64;
-      const ramp = [" ", ".", ",", ":", ";", "+", "=", "o", "x", "%", "$", "#", "@", "W", "M", "\u00d1"];
-      const ac = document.createElement("canvas");
-      ac.width = ATLAS; ac.height = ATLAS;
-      const actx = ac.getContext("2d");
-      if (actx) {
-        actx.fillStyle = "#000";
-        actx.fillRect(0, 0, ATLAS, ATLAS);
-        actx.fillStyle = "#fff";
-        actx.font = `${Math.floor(CELL * 0.85)}px ui-monospace, Menlo, Consolas, monospace`;
-        actx.textAlign = "center";
-        actx.textBaseline = "middle";
-        for (let i = 0; i < 16; i++) {
-          const cx = (i % 4) * CELL + CELL / 2;
-          const cy = Math.floor(i / 4) * CELL + CELL / 2;
-          actx.fillText(ramp[i], cx, cy);
-        }
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, ac);
-      } else {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
+    const ATLAS = 256, CELL = 64;
+    const ramp = [" ", ".", ",", ":", ";", "+", "=", "o", "x", "%", "$", "#", "@", "W", "M", "\u00d1"];
+    const ac = document.createElement("canvas");
+    ac.width = ATLAS; ac.height = ATLAS;
+    const actx = ac.getContext("2d");
+    if (actx) {
+      actx.fillStyle = "#000";
+      actx.fillRect(0, 0, ATLAS, ATLAS);
+      actx.fillStyle = "#fff";
+      actx.font = `${Math.floor(CELL * 0.85)}px ui-monospace, Menlo, Consolas, monospace`;
+      actx.textAlign = "center";
+      actx.textBaseline = "middle";
+      for (let i = 0; i < 16; i++) {
+        const cx = (i % 4) * CELL + CELL / 2;
+        const cy = Math.floor(i / 4) * CELL + CELL / 2;
+        actx.fillText(ramp[i], cx, cy);
       }
-      glyphAtlasTexRef.current = gTex;
+      eng.setGlyphAtlas(ac);
     }
-
-    // v1.2.58 — bind the new sampler units once (no need to re-set per frame)
-    if (u.uSortTex) gl.uniform1i(u.uSortTex, 5);
-    if (u.uGlyphAtlas) gl.uniform1i(u.uGlyphAtlas, 6);
-
-    // Phase 2b: ping-pong FBOs for multi-layer combo composite
-    // v1.3.81 — prefer HALF_FLOAT_OES when supported (kills banding on the
-    // feedback / REACT-D / VOROSORT chains; usually faster on mobile GPUs
-    // because the intermediate bandwidth halves vs. RGBA8 upscaled in the
-    // shader). Falls back to UNSIGNED_BYTE if the extension trio is absent.
-    const makeFboTex = () => {
-      const t = gl.createTexture()!;
-      gl.activeTexture(gl.TEXTURE3);
-      gl.bindTexture(gl.TEXTURE_2D, t);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      const hfType = halfFloatFboTypeRef.current;
-      if (hfType != null) {
-        // Allocate 1x1 placeholder — resize() re-allocs to canvas dims.
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, hfType, null);
-      } else {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
-      }
-      return t;
-    };
-    const ta = makeFboTex();
-    const tb = makeFboTex();
-    const fa = gl.createFramebuffer();
-    const fb = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fa);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ta, 0);
-    // v1.3.81 — verify completeness with the chosen format. If the driver
-    // lied about the extension trio (some Adreno 5xx do), drop back to RGBA8
-    // for both FBO textures so we never end up with a broken target.
-    if (halfFloatFboTypeRef.current != null) {
-      const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
-      if (status !== gl.FRAMEBUFFER_COMPLETE) {
-        halfFloatFboTypeRef.current = null;
-        gl.bindTexture(gl.TEXTURE_2D, ta);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
-        gl.bindTexture(gl.TEXTURE_2D, tb);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
-        gl.bindFramebuffer(gl.FRAMEBUFFER, fa);
-      }
-    }
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tb, 0);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    fboARef.current = fa;
-    fboBRef.current = fb;
-    fboTexARef.current = ta;
-    fboTexBRef.current = tb;
     return true;
   }, []);
 
   // ── Resize handler ────────────────────────────────────────
   const resize = useCallback(() => {
     const canvas = canvasRef.current;
-    const gl = glRef.current;
-    if (!canvas || !gl) return;
-    // v1.2.55 — multiply DPR by renderScaleRef so adaptive resolution
-    // can shrink the GL canvas under sustained load (1.0 default,
-    // 0.75 when the rolling frametime crosses ~22 ms). The DOM canvas
-    // CSS size is unchanged — only the backing store shrinks — so the
-    // browser scales the smaller framebuffer up at composite time.
-    const baseDpr = Math.min(window.devicePixelRatio || 1, 2);
-    const dpr = baseDpr * (renderScaleRef.current || 1);
+    const eng = engineRef.current;
+    if (!canvas || !eng) return;
+    // The engine clamps DPR to 2 and multiplies by the scheduler's scale
+    // (pinned at 1.0 since v1.3.49). CSS size is unchanged — only the
+    // backing store changes. Camera textures are source-sized inside the
+    // engine, so no re-seed is needed after a resize.
     const rect = canvas.getBoundingClientRect();
-    canvas.width = Math.round(rect.width * dpr);
-    canvas.height = Math.round(rect.height * dpr);
-    gl.viewport(0, 0, canvas.width, canvas.height);
-    // Texture sizes changed — the uniform shadow cache holds a stale
-    // uResolution; clear it so the next render re-uploads.
-    uniCacheRef.current.clear();
-    // Keep temporal feedback textures sized to the framebuffer to avoid copy errors.
-    textures.current.forEach((tex, i) => {
-      gl.activeTexture(gl.TEXTURE0 + i);
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, canvas.width, canvas.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    eng.resize({
+      cssWidth: rect.width,
+      cssHeight: rect.height,
+      dpr: window.devicePixelRatio || 1,
+      scale: schedulerRef.current?.renderScale ?? 1,
     });
-    // Phase 2b: resize FBO color textures to match canvas
-    // v1.3.81 — honor the half-float type chosen at initGL time.
-    const fboType = halfFloatFboTypeRef.current ?? gl.UNSIGNED_BYTE;
-    [fboTexARef.current, fboTexBRef.current].forEach(tex => {
-      if (!tex) return;
-      gl.activeTexture(gl.TEXTURE3);
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, canvas.width, canvas.height, 0, gl.RGBA, fboType, null);
-    });
-    // (v1.3.57 — drawCanvas removed; no overlay to size.)
-    // v1.3.39 — INVALIDATE camera upload sentinels. The block above just
-    // re-allocated `textures.current[i]` (the camera ping-pong textures)
-    // to canvas dims with null pixels. The render-loop uploader at
-    // ~L7918 has a fast path: if `!firstFrameRef && sw === cameraTexSized`,
-    // it does `texSubImage2D(...texSource)` which assumes the texture is
-    // already sized to the VIDEO source. After resize() the texture is
-    // sized to the (smaller, post-renderScale) canvas backing — the
-    // sub-upload then exceeds bounds → GL_INVALID_VALUE → texture stays
-    // all-zero → camera goes black until the next window resize. Bug was
-    // dormant on desktop (resize() only fired on window resize, which
-    // also re-evaluated firstFrameRef paths through stream restart) but
-    // v1.3.36 thermal auto-throttle now triggers resize() from inside
-    // render() after ~60 hot frames, exposing it. Forcing a re-seed via
-    // these two flags makes the next render hit the texImage2D path,
-    // which correctly resizes the texture back to source dims.
-    firstFrameRef.current = true;
-    cameraTexSizedRef.current = { w: 0, h: 0 };
   }, []);
 
   // ── Render loop ───────────────────────────────────────────
@@ -3691,9 +3417,7 @@ export default function SpectraAfter() {
   // v1.2.58 — CPU pixel-sort scratch + Gysin glyph atlas
   const cpuSortDownCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const cpuSortOutCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const cpuSortTexRef = useRef<WebGLTexture | null>(null);
   const cpuSortTickRef = useRef(0);
-  const glyphAtlasTexRef = useRef<WebGLTexture | null>(null);
   const feedbackRef = useRef(feedback);
   const contourRef = useRef(contour);
   const asciiRef = useRef(ascii);
@@ -4028,11 +3752,6 @@ export default function SpectraAfter() {
     // an explicit @capacitor/app dependency. We do NOT re-arm the rAF here;
     // a `visibilitychange` listener attached in the lifecycle useEffect
     // restarts the loop when the app foregrounds again.
-    if (typeof document !== "undefined" && document.visibilityState !== "visible") {
-      // Drop our handle so the visibility listener can reliably restart.
-      rafRef.current = 0;
-      return;
-    }
     const recordingActive = recordingRef.current;
     // v1.3.42 — manual LOW POWER + battery-low no longer skip frames.
     // Both flags are folded into the FX-quality governor below as a
@@ -4040,29 +3759,13 @@ export default function SpectraAfter() {
     // shader mask AND the continuous renderScale mapping. Net effect
     // ≈ same thermal/battery savings as the old skip-every-other-frame
     // but without the visible app-wide stutter that pulsed the FX state.
-    // Upload mask canvas to mask texture
-    const gl = glRef.current;
-    const maskTex = maskTextureRef.current;
+    // Upload mask canvas to the engine's mask texture (texSubImage2D fast
+    // path inside the engine; re-seeded only when the canvas is resized).
+    const engM = engineRef.current;
     const maskCanvas = maskCanvasRef.current;
-    if (gl && maskTex && maskCanvas && maskCanvas.width > 0 && maskCanvas.height > 0) {
-      try {
-        gl.activeTexture(gl.TEXTURE2);
-        gl.bindTexture(gl.TEXTURE_2D, maskTex);
-        // v1.2.57 — texSubImage2D fast path for the mask too. Re-seed
-        // with texImage2D only when the mask canvas is resized (rare
-        // — only when the user changes mask brush mode or layout).
-        const mw = maskCanvas.width, mh = maskCanvas.height;
-        if (mw !== maskTexSizedRef.current.w || mh !== maskTexSizedRef.current.h) {
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
-          maskTexSizedRef.current = { w: mw, h: mh };
-        } else {
-          gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
-        }
-      } catch (err) {
-        // Some Android WebGL drivers reject canvas-source LUMINANCE uploads.
-        // Fall back to disabling the mask path so the FX shader keeps running.
-        // eslint-disable-next-line no-console
-        console.warn("[mask upload] disabled after error", err);
+    if (engM && maskCanvas && maskCanvas.width > 0 && maskCanvas.height > 0) {
+      if (!engM.setMask(maskCanvas, maskCanvas.width, maskCanvas.height)) {
+        console.warn("[mask upload] disabled after error");
         touchRef.current.active = false;
       }
     }
@@ -4171,8 +3874,8 @@ export default function SpectraAfter() {
       }
     }
 
-    rafRef.current = requestAnimationFrame(render);
-    if (!gl) return;
+    const eng = engineRef.current;
+    if (!eng) return;
     timeRef.current += 0.016 * speedRef.current;
 
     const video = videoRef.current;
@@ -5135,36 +4838,10 @@ export default function SpectraAfter() {
     }
 
     const hasVideo = !!texSource;
-    const u = uniformsRef.current;
     const canvas = canvasRef.current!;
-    const curTex = textures.current[frameIdxRef.current];
-    const prevTex = textures.current[1 - frameIdxRef.current];
-
-    if (hasVideo && texSource) {
-      // v1.2.57 — texSubImage2D fast path. Seed both ping-pong slots
-      // with texImage2D on the first frame (or whenever the source
-      // dimensions change), then switch to texSubImage2D for the
-      // steady-state uploads — saves a driver-side reallocation +
-      // texture-completeness check per frame.
-      type Sized = { videoWidth?: number; videoHeight?: number; width?: number; height?: number };
-      const ts = texSource as unknown as Sized;
-      const sw = ts.videoWidth ?? ts.width ?? 0;
-      const sh = ts.videoHeight ?? ts.height ?? 0;
-      const sizeChanged = sw !== cameraTexSizedRef.current.w || sh !== cameraTexSizedRef.current.h;
-      if (firstFrameRef.current || sizeChanged) {
-        for (let i = 0; i < 2; i++) {
-          gl.activeTexture(gl.TEXTURE0 + i);
-          gl.bindTexture(gl.TEXTURE_2D, textures.current[i]);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, texSource);
-        }
-        firstFrameRef.current = false;
-        cameraTexSizedRef.current = { w: sw, h: sh };
-      } else {
-        gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, curTex);
-        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, texSource);
-      }
-    }
+    // Camera upload (texImage2D seed on first frame / size change, then
+    // texSubImage2D) happens inside the engine.
+    eng.setSource(hasVideo ? texSource : null, srcW, srcH);
 
     // v1.2.58 — CPU PIXEL SORT tick (real Asendorf 2010 algorithm).
     // Throttled to ~20 Hz on a 256x144 downscale (~37k pixels). Uses a
@@ -5172,7 +4849,7 @@ export default function SpectraAfter() {
     // is numeric — sorts each above-threshold run in place by 32-bit RGBA
     // value (the Asendorf 'absolute rgb' key). The sorted canvas is
     // uploaded to TEXTURE5 / uSortTex; the shader's uSortMix block blends.
-    if (sortMixRef.current > 0.001 && hasVideo && texSource && cpuSortTexRef.current) {
+    if (!eng.gpuSortActive && sortMixRef.current > 0.001 && hasVideo && texSource) {
       // v1.3.40 — quality-aware stride. Default tick mod 3 (every 3rd
       // frame); under FX-governor pressure stretch to mod 5 or mod 8 so
       // the JS sort + readback doesn't compete with the shader for
@@ -5248,57 +4925,16 @@ export default function SpectraAfter() {
               }
             }
             octx.putImageData(img, 0, 0);
-            gl.activeTexture(gl.TEXTURE5);
-            gl.bindTexture(gl.TEXTURE_2D, cpuSortTexRef.current);
-            // v1.2.61 — match the global UNPACK_FLIP_Y_WEBGL=false set at
-            // GL init. Previously we forced flip=1 here which made the
-            // sorted tex render upside-down relative to the camera tex,
-            // so the REALSORT knob looked like it just inverted the frame.
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, oc);
+            eng.setSortTexture(oc); // uploaded without FLIP_Y, matching the camera texture
           }
         } catch { /* CPU sort tick is best-effort; ignore failures */ }
       }
     }
 
-    gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, prevTex);
-
-    // v1.2.55 — UNIFORM SHADOW CACHE helpers. We close over `gl` and the
-    // module-level cache map; the helpers diff the proposed value against
-    // the last-uploaded value and skip the GL call when unchanged. Float
-    // vectors get a packed string key (cheap to compare). Net: roughly
-    // 30–40 of the ~60 per-frame uniform calls become no-ops on idle
-    // frames, and even on busy frames the constant-valued ones
-    // (uVideoSize, uMirror, uFaceFeather, texture-unit ints) skip
-    // immediately. Cleared by resize() so a backing-store change forces
-    // a re-upload.
-    const _uc = uniCacheRef.current;
-    const setF1 = (loc: WebGLUniformLocation | null, v: number) => {
-      if (!loc) return;
-      if (_uc.get(loc) === v) return;
-      _uc.set(loc, v);
-      gl.uniform1f(loc, v);
-    };
-    const setF2 = (loc: WebGLUniformLocation | null, a: number, b: number) => {
-      if (!loc) return;
-      const k = a + "," + b;
-      if (_uc.get(loc) === k) return;
-      _uc.set(loc, k);
-      gl.uniform2f(loc, a, b);
-    };
-    const setI1 = (loc: WebGLUniformLocation | null, v: number) => {
-      if (!loc) return;
-      if (_uc.get(loc) === v) return;
-      _uc.set(loc, v);
-      gl.uniform1i(loc, v);
-    };
-    // Float arrays (uModeParams) change every frame in normal use — skip
-    // the cache for these and just upload directly. Diffing 8 floats per
-    // frame is more work than the upload itself.
-    const setFv = (loc: WebGLUniformLocation | null, arr: Float32Array | number[]) => {
-      if (!loc) return;
-      gl.uniform1fv(loc, arr);
-    };
+    eng.render({
+      sortMix: sortMixRef.current,
+      uniforms: (u, w) => {
+        const { setF1, setF2, setI1, setFv } = w;
 
     setF1(u.uTime, timeRef.current);
     setF2(u.uResolution, canvas.width, canvas.height);
@@ -5470,11 +5106,6 @@ export default function SpectraAfter() {
     // Multiplied into the shader's universal `mask` so all gates and
     // mix() calls scale in lockstep.
     setF1(u.uFxQuality, fxQualityRef.current);
-    if (faceTextureRef.current) {
-      gl.activeTexture(gl.TEXTURE4);
-      gl.bindTexture(gl.TEXTURE_2D, faceTextureRef.current);
-      setI1(u.uFaceTex, 4);
-    }
 
     // Phase 2a: per-mode rack params (slot 0=AMOUNT, 1=MIX, 2..7 mode-specific)
     {
@@ -5507,54 +5138,23 @@ export default function SpectraAfter() {
     // selects a non-NORMAL visual mode (NIGHT/THERMAL/EDGE/CMYK/etc.) it must
     // win over the PXL+MOSH combo rack so the chosen look is what's on screen.
     const fxOverride = (modeRef.current ?? 0) !== 0;
-    const useCombo = comboModeRef.current && liveLayers.length > 0 && anyArmed && !fxOverride
-      && fboARef.current !== null && fboBRef.current !== null
-      && fboTexARef.current !== null && fboTexBRef.current !== null;
-    if (useCombo) {
-      // UNIFIED SIGNAL PASS: instead of ping-ponging PXL → MOSH as two
-      // discrete framebuffer hops (which made each FX look like a
-      // separate translucent layer stacked on top of the previous one),
-      // render a SINGLE shader invocation in mode 0 (NORMAL). The
-      // pre-mode color stage of the shader already routes EVERY rack
-      // uniform — uSortAmt (PIXEL SORT), uDatamosh (DATAMOSH), uRGBDrift,
-      // uScanTear, uBlockGlitch, uLiquid, uKaleido, uDisrupt … — into
-      // the same `color` value before the mode switch. Driving them all
-      // at once in one pass means the pixel-sort streaks and datamosh
-      // smear inform each other inside one signal instead of one being
-      // baked into a texture that the next pass merely paints over.
-      setI1(u.uMode, 0);
-      setF1(u.uGain, gainRef.current);
-      const packed0 = packParams(0 as ModeId, paramsByModeRef.current[0 as ModeId] ?? defaultsForMode(0 as ModeId));
-      if (u.uModeParams) setFv(u.uModeParams, packed0);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.viewport(0, 0, canvas.width, canvas.height);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    } else {
-      setI1(u.uMode, modeRef.current);
-      setF1(u.uGain, gainRef.current);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.viewport(0, 0, canvas.width, canvas.height);
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    }
+    const useCombo = comboModeRef.current && liveLayers.length > 0 && anyArmed && !fxOverride;
+    // Combo = one unified pass in mode 0: the shader's pre-mode signal stage
+    // already routes every rack uniform into the same color.
+    const modeId = (useCombo ? 0 : modeRef.current) as ModeId;
+    setI1(u.uMode, modeId);
+    setF1(u.uGain, gainRef.current);
+    if (u.uModeParams) setFv(u.uModeParams, packParams(modeId, paramsByModeRef.current[modeId] ?? defaultsForMode(modeId)));
+      },
+    });
 
     // Copy rendered framebuffer to previous frame texture for temporal feedback effects
     // v1.2.57 / v1.2.59 — Skip the full-canvas copy when no FX actually
     // samples uPrevFrame this frame. Only uDatamosh / uChrash now read
     // the previous-frame texture. When both are below their shader-side
     // thresholds the copy is wasted fillrate.
-    const _needsPrevCopy =
-      (datamoshRef.current > 0.02) ||
-      (chrashRef.current > 0.001);
-    if (_needsPrevCopy) {
-      gl.activeTexture(gl.TEXTURE1);
-      gl.bindTexture(gl.TEXTURE_2D, prevTex);
-      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, canvas.width, canvas.height);
-    }
-
-    frameIdxRef.current = 1 - frameIdxRef.current;
 
     // FPS
-    fpsFrames.current++;
     const now = performance.now();
 
     // v1.3.70 — restore GIF capture bucket scheduler.
@@ -5613,22 +5213,8 @@ export default function SpectraAfter() {
     // goes away, remove the heatsinks that are doing that". fxQuality
     // and renderScale are now pinned to 1.0 forever; only the EWMA is
     // still tracked so the FPS readout works.
-    if (lastFrameTsRef.current > 0) {
-      const dt = now - lastFrameTsRef.current;
-      frametimeAvgRef.current = frametimeAvgRef.current * 0.92 + dt * 0.08;
-      bootFrameRef.current = Math.min(100000, bootFrameRef.current + 1);
-      fxQualityRef.current = 1.0;
-      if (renderScaleRef.current !== 1.0) {
-        renderScaleRef.current = 1.0;
-        resize();
-      }
-    }
-    lastFrameTsRef.current = now;
-    if (now - fpsTime.current >= 1000) {
-      setFps(fpsFrames.current);
-      fpsFrames.current = 0;
-      fpsTime.current = now;
-    }
+    bootFrameRef.current = Math.min(100000, bootFrameRef.current + 1);
+    fxQualityRef.current = 1.0;
   }, []);
   // ── v1.3.66 — Mic capture removed.
   // The previous getUserMedia / AudioContext / analyser pipeline was
@@ -5977,7 +5563,7 @@ export default function SpectraAfter() {
       video.playsInline = true;
       video.muted = true;
       await video.play();
-      firstFrameRef.current = true;
+      engineRef.current?.resetSource();
       setCameraActive(true);
       setSourceError(null);
     } catch (err) {
@@ -5993,7 +5579,7 @@ export default function SpectraAfter() {
           video.playsInline = true;
           video.muted = true;
           await video.play();
-          firstFrameRef.current = true;
+          engineRef.current?.resetSource();
           setCameraActive(true);
           setSourceError(null);
           return;
@@ -6066,7 +5652,7 @@ export default function SpectraAfter() {
       v.muted = true;
       v.playsInline = true;
       v.crossOrigin = "anonymous";
-      v.addEventListener("loadeddata", () => { firstFrameRef.current = true; });
+      v.addEventListener("loadeddata", () => { engineRef.current?.resetSource(); });
       v.play().catch(() => { /* user gesture not required since muted */ });
       uploadVideoRef.current = v;
       setUploadKind("video");
@@ -6074,7 +5660,7 @@ export default function SpectraAfter() {
       const img = new Image();
       img.crossOrigin = "anonymous";
       img.src = url;
-      img.addEventListener("load", () => { firstFrameRef.current = true; });
+      img.addEventListener("load", () => { engineRef.current?.resetSource(); });
       uploadImgRef.current = img;
       setUploadKind("image");
     }
@@ -6202,121 +5788,6 @@ export default function SpectraAfter() {
   // comparison. The first 50% of the recording is excluded from the
   // search so we never trim too aggressively (loops shorter than half
   // the recording usually look samey).
-  function trimToLoopPoint(frames: Uint8ClampedArray[], gw: number, gh: number): Uint8ClampedArray[] {
-    if (frames.length < 12) return frames;
-    // Honour the EXPORT panel's PERFECT LOOP toggle. When off, the user
-    // gets the entire recording at the requested duration with no trim.
-    if (!perfectLoopRef.current) return frames;
-    const G = 32;
-    const sx = Math.max(1, Math.floor(gw / G));
-    const sy = Math.max(1, Math.floor(gh / G));
-    const luma = (f: Uint8ClampedArray): Uint8Array => {
-      const out = new Uint8Array(G * G);
-      let p = 0;
-      for (let y = 0; y < G; y++) {
-        const yy = Math.min(gh - 1, y * sy);
-        for (let x = 0; x < G; x++) {
-          const xx = Math.min(gw - 1, x * sx);
-          const i = (yy * gw + xx) << 2;
-          // Rec.601 luma, fast int (>>8 ≈ /256).
-          out[p++] = (f[i] * 77 + f[i+1] * 150 + f[i+2] * 29) >> 8;
-        }
-      }
-      return out;
-    };
-    const first = luma(frames[0]);
-    // Restrict the search to the LAST ~22% of the recording so we trim
-    // only a small near-loop tail, preserving the user's chosen length.
-    const startSearch = Math.floor(frames.length * 0.78);
-    let bestIdx = frames.length - 1;
-    let bestSad = Infinity;
-    for (let k = startSearch; k < frames.length; k++) {
-      const cur = luma(frames[k]);
-      let sad = 0;
-      for (let q = 0; q < first.length; q++) {
-        sad += Math.abs(first[q] - cur[q]);
-      }
-      if (sad < bestSad) { bestSad = sad; bestIdx = k; }
-    }
-    // bestIdx is the new last frame; drop everything after it. We keep
-    // frame[bestIdx] (rather than dropping it too) because in GIF the
-    // last frame's delay still elapses before the loop restarts, so the
-    // output reads as: ... near-match → frame[0] → ... = perfect loop.
-    return frames.slice(0, bestIdx + 1);
-  }
-
-  function encodeGIF(gw: number, gh: number, frames: Uint8ClampedArray[], delays: number[] | Uint16Array, ditherStrength = 2.0): Uint8Array {
-    const buf: number[] = [];
-    const wb = (b:number) => buf.push(b & 0xFF);
-    const w16 = (v:number) => { wb(v); wb(v>>8); };
-    const ws = (s:string) => { for(let i=0;i<s.length;i++) wb(s.charCodeAt(i)); };
-    const palette: number[] = [];
-    // Higher-fidelity fixed palette: 8x8x4 RGB cube (256 colors)
-    for (let ri = 0; ri < 8; ri++) {
-      for (let gi = 0; gi < 8; gi++) {
-        for (let bi = 0; bi < 4; bi++) {
-          palette.push(
-            Math.round((ri * 255) / 7),
-            Math.round((gi * 255) / 7),
-            Math.round((bi * 255) / 3),
-          );
-        }
-      }
-    }
-    const bayer4 = [
-      [0, 8, 2, 10],
-      [12, 4, 14, 6],
-      [3, 11, 1, 9],
-      [15, 7, 13, 5],
-    ];
-    const quant = (r:number, g:number, b:number) => {
-      const qr = Math.max(0, Math.min(7, Math.round((r * 7) / 255)));
-      const qg = Math.max(0, Math.min(7, Math.round((g * 7) / 255)));
-      const qb = Math.max(0, Math.min(3, Math.round((b * 3) / 255)));
-      return qr * 32 + qg * 4 + qb;
-    };
-    function lzwEnc(px:Uint8Array){
-      let cs=9,next=258,mx=512,bits=0,bc=0;
-      const dict:Record<string,number>={},out:number[]=[];
-      const emit=(code:number)=>{bits|=code<<bc;bc+=cs;while(bc>=8){out.push(bits&0xFF);bits>>=8;bc-=8;}};
-      const reset=()=>{Object.keys(dict).forEach(k=>delete dict[k]);cs=9;next=258;mx=512;};
-      emit(256); let pre=px[0];
-      for(let i=1;i<px.length;i++){
-        const suf=px[i],key=pre+","+suf;
-        if(dict[key]!==undefined){pre=dict[key];}
-        else{emit(pre);if(next<4096){dict[key]=next++;if(next>mx&&cs<12){cs++;mx<<=1;}}else{emit(256);reset();}pre=suf;}
-      }
-      emit(pre);emit(257);if(bc>0)out.push(bits&0xFF);return out;
-    }
-    ws("GIF89a");w16(gw);w16(gh);wb(0xF7);wb(0);wb(0);
-    for(let p=0;p<palette.length;p++)wb(palette[p]);
-    wb(0x21);wb(0xFF);wb(11);ws("NETSCAPE2.0");wb(3);wb(1);w16(0);wb(0);
-    for(let f=0;f<frames.length;f++){
-      const px=frames[f];
-      // v1.3.31 — per-frame delay so dropped render frames extend the
-      // current frame's playback time (matches wall-clock motion).
-      const fd = Math.max(2, (delays[f] ?? delays[delays.length - 1] ?? 4) | 0);
-      wb(0x21);wb(0xF9);wb(4);wb(0);w16(fd);wb(0);wb(0);
-      wb(0x2C);w16(0);w16(0);w16(gw);w16(gh);wb(0);
-      const idx=new Uint8Array(gw*gh);
-      for (let y = 0; y < gh; y++) {
-        for (let x = 0; x < gw; x++) {
-          const p = y * gw + x;
-          const d = (bayer4[y & 3][x & 3] - 7.5) * ditherStrength;
-          const r = Math.max(0, Math.min(255, px[p * 4] + d));
-          const g = Math.max(0, Math.min(255, px[p * 4 + 1] + d));
-          const b = Math.max(0, Math.min(255, px[p * 4 + 2] + d));
-          idx[p] = quant(r, g, b);
-        }
-      }
-      wb(8);
-      const enc=lzwEnc(idx);let off=0;
-      while(off<enc.length){const sz=Math.min(255,enc.length-off);wb(sz);for(let j=0;j<sz;j++)buf.push(enc[off+j]);off+=sz;}
-      wb(0);
-    }
-    wb(0x3B);
-    return new Uint8Array(buf);
-  }
 
   // Snap a requested fps to the closest cadence GIF can actually play
   // back. GIF frame delays are stored in centiseconds (1cs = 10ms), so
@@ -6330,8 +5801,7 @@ export default function SpectraAfter() {
 
   const captureFrame = useCallback((delayCs: number) => {
     const canvas = canvasRef.current;
-    const gl = glRef.current;
-    if (!canvas || !gl) return;
+    if (!canvas || !engineRef.current) return;
     const w = canvas.width, h = canvas.height;
     const maxDim = getGifProfile(exportQuality).maxDim;
     const { w: gw, h: gh } = getExportDimensions(w, h, exportProfile, maxDim);
@@ -6528,29 +5998,23 @@ export default function SpectraAfter() {
     gifDelaysRef.current = [];
     if (frames.length < 2) return;
     setProcessingStatus({ label: `Encoding GIF (${frames.length} frames)…` });
-    setTimeout(() => {
-      const size = gifSizeRef.current;
-      if (!size) { setProcessingStatus(null); return; }
-      const { w: gw, h: gh } = size;
-      // ── Perfect-loop trim ──────────────────────────────────
-      // Walk the back half of the recording, comparing each candidate
-      // "end" frame against the FIRST frame using a downsampled luma SAD
-      // (sum of absolute differences). The candidate with the lowest
-      // delta becomes the new last frame, so frame[N-1] visually matches
-      // frame[0]. For generative content this finds a near-perfect loop
-      // point in almost every recording over ~2 seconds.
-      const looped = trimToLoopPoint(frames, gw, gh);
-      // v1.3.31 — trim per-frame delays parallel to the trimmed frame
-      // count; encodeGIF writes each frame's delay individually so
-      // playback motion exactly mirrors the live preview's cadence
-      // (no more "plays slightly faster than the live preview" bug).
-      const loopedDelays = delays.slice(0, looped.length);
-      const data = encodeGIF(gw, gh, looped, loopedDelays, gifDitherRef.current);
-      const blob = new Blob([data as unknown as BlobPart], { type: "image/gif" });
-      const filename = `gps-${(MODES.find(m => m.id === mode)?.short ?? "PXL").toLowerCase()}-${Date.now()}.gif`;
-      setProcessingStatus({ label: "Saving GIF…" });
-      saveBlobToDevice(blob, filename).finally(() => setProcessingStatus(null));
-    }, 50);
+    const size = gifSizeRef.current;
+    if (!size) { setProcessingStatus(null); return; }
+    const { w: gw, h: gh } = size;
+    // Encode off the main thread (gps-engine/gif): frame buffers are
+    // transferred to a Worker, which applies the perfect-loop trim (delays
+    // trimmed in parallel — v1.3.31 per-frame cadence) and encodes. Inline
+    // fallback if Workers are unavailable; identical output either way.
+    gifFrames.current = [];
+    encodeGifAsync({ gw, gh, frames, delayCs: delays, dither: gifDitherRef.current, perfectLoop: perfectLoopRef.current })
+      .then((data) => {
+        const blob = new Blob([data as unknown as BlobPart], { type: "image/gif" });
+        const filename = `gps-${(MODES.find(m => m.id === mode)?.short ?? "PXL").toLowerCase()}-${Date.now()}.gif`;
+        setProcessingStatus({ label: "Saving GIF…" });
+        return saveBlobToDevice(blob, filename);
+      })
+      .catch((e) => { console.warn("[GPS] GIF export failed", e); })
+      .finally(() => setProcessingStatus(null));
   }, [exportFormat, mode]);
 
   useEffect(() => {
@@ -6995,22 +6459,31 @@ export default function SpectraAfter() {
     if (!bootDone) return;
     const ok = initGL();
     if (!ok) return;
+    const sched = createScheduler({
+      render,
+      onScaleChange: () => resize(),
+      onFps: (fps) => setFps(fps),
+      // v1.3.49: fxQuality / renderScale pinned at 1.0 — no adaptive scaling.
+      adaptiveResolution: false,
+    });
+    schedulerRef.current = sched;
     resize();
     window.addEventListener("resize", resize);
-    rafRef.current = requestAnimationFrame(render);
-    // v1.2.54: when the app comes back to foreground, the render loop has
-    // exited (it returns early on hidden). Kick it back off here.
+    sched.start();
+    // v1.2.54: the loop parks itself while hidden (Capacitor fires
+    // visibilitychange on background). Kick it back off on return.
     const onVisChange = () => {
       if (typeof document === "undefined") return;
-      if (document.visibilityState === "visible" && !rafRef.current) {
-        rafRef.current = requestAnimationFrame(render);
-      }
+      if (document.visibilityState === "visible") sched.resume();
     };
     document.addEventListener("visibilitychange", onVisChange);
     return () => {
-      cancelAnimationFrame(rafRef.current);
+      sched.stop();
       window.removeEventListener("resize", resize);
       document.removeEventListener("visibilitychange", onVisChange);
+      schedulerRef.current = null;
+      engineRef.current?.dispose();
+      engineRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bootDone]);

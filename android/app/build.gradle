@@ -2,8 +2,9 @@ apply plugin: 'com.android.application'
 
 // ── Glitch Pixel Studio (GPS) signing config ──────────────────────────────
 // Reads credentials from android/keystore.properties (gitignored).
-// If absent (e.g. CI without secrets), release builds fall back to
-// the debug signing key so assembleDebug still works.
+// If absent (e.g. CI / a build box without the keystore), release builds
+// are produced UNSIGNED so they can be signed afterwards with the release
+// key (jarsigner), instead of being debug-signed and unusable for Play.
 def keystorePropertiesFile = rootProject.file("keystore.properties")
 def keystoreProperties = new Properties()
 if (keystorePropertiesFile.exists()) {
@@ -17,8 +18,8 @@ android {
         applicationId "com.lovebeing.glitchpixelstudio"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 197
-        versionName "1.3.85"
+        versionCode 198
+        versionName "1.4.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -40,7 +41,7 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
-            signingConfig keystorePropertiesFile.exists() ? signingConfigs.release : signingConfigs.debug
+            signingConfig keystorePropertiesFile.exists() ? signingConfigs.release : null
         }
     }
 }

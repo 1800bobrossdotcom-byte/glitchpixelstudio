@@ -9,3 +9,20 @@ android/local.properties
 *.jks
 keystore.properties
 .env*
+
+# ── build artifacts, logs and editor state (untracked 2026-10-05) ──
+backups/
+tools/bundletool/
+/*.aab
+/*.apk
+*.apks
+*.log
+*.tsbuildinfo
+.idea/
+android/.idea/
+src/components/*.bak*
+src/components/*.broken_*
+*.zip
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json
