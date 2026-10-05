@@ -1,80 +1,11 @@
-# dependencies
-node_modules/
-.pnp/
-.pnp.js
-
-# next.js
-.next/
+﻿node_modules/
 out/
-
-# production
-build/
-dist/
-
-# misc
-.DS_Store
-*.pem
-Thumbs.db
-
-# debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# local env
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# typescript
-*.tsbuildinfo
-next-env.d.ts
-
-# editor
-.vscode/
-.idea/
-*.swp
-
-# logs
-*.log
-build.log
-sync.log
-gradle.log
-
-# android build outputs
-android/.gradle/
-android/build/
+.next/
 android/app/build/
-android/app/release/
+android/build/
+android/.gradle/
 android/local.properties
-android/captures/
-android/.idea/
-android/*.iml
-android/app/*.iml
-
-# capacitor generated
-android/app/src/main/assets/public/
-android/app/src/main/assets/capacitor.config.json
-android/app/src/main/assets/capacitor.plugins.json
-
-# secrets — DO NOT COMMIT
-android/keystore.properties
-android/app/spectra-upload.keystore
 *.keystore
 *.jks
-
-# backups (keep release archive, ignore dev .bak files)
-*.bak
-*.bak.*
-*.broken_*
-SpectraApp.tsx.bak*
-SpectraApp.tsx.broken*
-
-# bundletool intermediate
-tools/bundletool/*.apks
-tools/bundletool/gps-*-extract/
-
-# OS
-desktop.ini
+keystore.properties
+.env*

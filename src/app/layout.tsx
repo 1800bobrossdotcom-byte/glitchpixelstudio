@@ -22,12 +22,20 @@ const spaceMono = Space_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://glitchpixelstudio.app"),
   title: "Glitch Pixel Studio",
   description: "Real-time glitch & pixel FX camera studio — GPS 42069+",
   applicationName: "Glitch Pixel Studio",
+  category: "photography",
+  alternates: {
+    canonical: "/",
+  },
   keywords: ["glitch", "pixel", "camera", "art", "effects", "GPS", "glitch art"],
   authors: [{ name: "GPS 42069+" }],
-  themeColor: "#030510",
+  other: {
+    "privacy-policy": "https://glitchpixelstudio.app/privacy",
+    "terms-of-service": "https://glitchpixelstudio.app/terms",
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
@@ -35,6 +43,7 @@ export const metadata: Metadata = {
   },
   openGraph: {
     type: "website",
+    url: "https://glitchpixelstudio.app",
     title: "Glitch Pixel Studio — GPS 42069+",
     description: "Real-time glitch & pixel FX camera studio. Pixel sort, datamosh, GLSL shaders & more.",
     siteName: "Glitch Pixel Studio",
@@ -61,6 +70,7 @@ export const viewport: Viewport = {
   maximumScale: 1,
   userScalable: false,
   viewportFit: "cover",
+  themeColor: "#030510",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

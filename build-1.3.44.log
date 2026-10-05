@@ -1,0 +1,53 @@
+﻿
+> spectra-app@1.0.0 build
+> next build
+
+   Γû▓ Next.js 15.5.15
+
+   Creating an optimized production build ...
+ Γ£ô Compiled successfully in 5.3s
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/7) ...
+node.exe :  ΓÜá metadataBase property in metadata export is not set for 
+resolving social open graph or twitter images, using "http://localhost:3000". 
+See https://nextjs.org/docs/app/api-reference/functions/generate-metadata#metad
+atabase
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ( ΓÜá metadataBa...ta#metadatabase 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+ ΓÜá Unsupported metadata themeColor is configured in metadata export in 
+/_not-found. Please move it to viewport export instead.
+Read more: 
+https://nextjs.org/docs/app/api-reference/functions/generate-viewport
+ ΓÜá Unsupported metadata themeColor is configured in metadata export in /. 
+Please move it to viewport export instead.
+Read more: 
+https://nextjs.org/docs/app/api-reference/functions/generate-viewport
+   Generating static pages (1/7) 
+   Generating static pages (3/7) 
+   Generating static pages (5/7) 
+ Γ£ô Generating static pages (7/7)
+   Finalizing page optimization ...
+   Collecting build traces ...
+   Exporting (0/2) ...
+ Γ£ô Exporting (2/2)
+
+Route (app)                                 Size  First Load JS
+Γöî Γùï /                                    97.7 kB         200 kB
+Γö£ Γùï /_not-found                            993 B         103 kB
+Γö£ Γùï /apple-icon.png                          0 B            0 B
+Γö£ Γùï /icon.png                                0 B            0 B
+Γöö Γùï /manifest.webmanifest                  123 B         103 kB
++ First Load JS shared by all             102 kB
+  Γö£ chunks/255-dda36e826969d334.js       46.1 kB
+  Γö£ chunks/4bd1b696-c023c6e3521b1417.js  54.2 kB
+  Γöö other shared chunks (total)          2.12 kB
+
+
+Γùï  (Static)  prerendered as static content
+

@@ -1,0 +1,26 @@
+# Large platform projects — not needed on Vercel
+android/
+ios/
+backups/
+out/
+assets/
+tools/
+scripts/
+
+# Build artifacts / IDE
+.next/
+.idea/
+*.tsbuildinfo
+
+# Log files at root
+*.log
+
+# Local Android binaries (host these from public/ explicitly if needed)
+*.apk
+*.aab
+
+# Notes / docs
+*.md
+draw-refs.txt
+pointers.txt
+refs.txt

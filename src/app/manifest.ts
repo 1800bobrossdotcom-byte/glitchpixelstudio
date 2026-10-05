@@ -20,5 +20,19 @@ export default function manifest(): MetadataRoute.Manifest {
         purpose: "maskable",
       },
     ],
+    shortcuts: [
+      {
+        name: "Privacy Policy",
+        short_name: "Privacy",
+        description: "View the app privacy policy",
+        url: "/privacy/",
+      },
+      {
+        name: "Terms of Service",
+        short_name: "Terms",
+        description: "View the app terms of service",
+        url: "/terms/",
+      },
+    ],
   };
 }
