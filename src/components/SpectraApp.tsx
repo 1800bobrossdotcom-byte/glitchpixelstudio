@@ -8385,7 +8385,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.5.0 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `${sm} · FX ${fx} · CAM ${cam} · SEG ${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
@@ -8409,8 +8409,9 @@ export default function SpectraAfter() {
                   // Active = the renderer is actually consuming this feed.
                   // CAM is "active" whenever the camera is live (covers
                   // both pure CAM and any GEN-overlay-on-camera combo).
+                  // v1.5.4 — one lit tile: the feed the renderer is actually using.
                   const active =
-                    sm === "camera" ? cameraActive :
+                    sm === "camera" ? (sourceMode === "camera" && cameraActive) :
                     sourceMode === "upload";
                   return (
                     <button
