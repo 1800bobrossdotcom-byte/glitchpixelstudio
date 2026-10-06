@@ -19,6 +19,8 @@ public class MainActivity extends BridgeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         // Edge-to-edge before Capacitor sets up the window.
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        // VJ I/O: external-display detection + keep-awake for projector output.
+        registerPlugin(VjDisplayPlugin.class);
         super.onCreate(savedInstanceState);
 
         // Request CAMERA + RECORD_AUDIO up-front so the WebView's

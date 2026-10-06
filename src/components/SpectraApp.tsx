@@ -12,6 +12,8 @@ import { Capacitor } from "@capacitor/core";
 import { Filesystem, Directory, Encoding } from "@capacitor/filesystem";
 import { Media } from "@capacitor-community/media";
 import { Share } from "@capacitor/share";
+import { createAudioInputManager, type AudioInputDevice, type AudioInputInfo, type AudioInputManager, type AudioInputPref } from "@/lib/vj-io/audio-input";
+import { createDisplayOutput, type DisplayState } from "@/lib/vj-io/display-output";
 // v1.3.41 — shaders moved out of JS template literals into standalone files
 // loaded as raw strings via webpack asset/source (see next.config.ts +
 // src/types/glsl.d.ts). Permanently retires the recurring
@@ -640,6 +642,17 @@ const PRESETS_KEY = "spectra-presets-v1";
 const QUICK_SLOTS_KEY = "spectra-quick-slots-v1";
 const SESSION_KEY = "spectra-session-v1";
 const WALKTHROUGH_SEEN_KEY = "gps.walkthroughSeen.v1";
+// vj-io preferences (v1.4.1)
+const AUDIO_IN_PREF_KEY = "gps.vj.audioIn.v1";
+const VJ_OUT_AUTO_KEY = "gps.vj.outAuto.v1";
+function loadAudioInPref(): AudioInputPref {
+  try {
+    const v = localStorage.getItem(AUDIO_IN_PREF_KEY);
+    if (v === "builtin") return "builtin";
+    if (v && v.startsWith("id:")) return { deviceId: v.slice(3) };
+  } catch { /* SSR / storage blocked */ }
+  return "auto";
+}
 const PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=com.lovebeing.glitchpixelstudio";
 const PRIVACY_URL = "https://glitchpixelstudio.app/privacy";
 const TERMS_URL = "https://glitchpixelstudio.app/terms";
@@ -1415,6 +1428,20 @@ export default function SpectraAfter() {
     const audioAnalyserRef = useRef<AnalyserNode|null>(null);
     const audioDataArrayRef: React.MutableRefObject<Uint8Array | null> = useRef<Uint8Array | null>(null);
     const [audioActive, setAudioActive] = useState(false);
+    // vj-io (v1.4.1): plug-and-play audio input + display output.
+    const audioInPrefRef = useRef<AudioInputPref>(loadAudioInPref());
+    const [audioInPref, setAudioInPrefState] = useState<AudioInputPref>(audioInPrefRef.current);
+    const [audioInputs, setAudioInputs] = useState<AudioInputDevice[]>([]);
+    const [audioInInfo, setAudioInInfo] = useState<AudioInputInfo | null>(null);
+    const audioInMgrRef = useRef<AudioInputManager | null>(null);
+    const setAudioInPref = useCallback((p: AudioInputPref) => {
+      audioInPrefRef.current = p;
+      setAudioInPrefState(p);
+      try { localStorage.setItem(AUDIO_IN_PREF_KEY, p === "auto" ? "auto" : p === "builtin" ? "builtin" : `id:${p.deviceId}`); } catch { /* ignore */ }
+      void audioInMgrRef.current?.setPref(p);
+    }, []);
+    const [vjOutAuto, setVjOutAuto] = useState<boolean>(() => { try { return localStorage.getItem(VJ_OUT_AUTO_KEY) !== "0"; } catch { return true; } });
+    const [vjOutDisplay, setVjOutDisplay] = useState<DisplayState | null>(null);
   // ── Boot state
   const [bootProgress, setBootProgress] = useState(0);
   const [bootDone, setBootDone] = useState(false);
@@ -5392,65 +5419,88 @@ export default function SpectraAfter() {
       }
     }, 80);
 
-    // ── Best-effort mic capture for real audio reactivity ──
-    // Wrapped in try/catch + permission probe; on any failure we silently
-    // fall back to the render loop's synthetic LFO branch.
+    // ── Plug-and-play audio input (vj-io, v1.4.1) ──
+    // Opens the preferred input RAW (no AEC / AGC / NS, stereo, 48 kHz) and
+    // follows hot-plug: a USB audio interface or a DJ mixer / controller that
+    // exposes USB audio takes over the analyser the moment it appears, and
+    // the phone mic comes back when it is unplugged. Any failure leaves the
+    // render loop on its synthetic LFO branch, exactly as before.
     let cancelled = false;
-    let stream: MediaStream | null = null;
-    let actx: AudioContext | null = null;
-    let src: MediaStreamAudioSourceNode | null = null;
-    let analyser: AnalyserNode | null = null;
-    (async () => {
-      try {
-        // If a local track is already feeding the analyser, leave it alone.
-        if (trackAnalyserRef.current) return;
-        if (!navigator.mediaDevices?.getUserMedia) return;
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: false,
-            noiseSuppression: false,
-            autoGainControl: false,
-          },
-        });
-        if (cancelled) {
-          stream.getTracks().forEach(t => t.stop());
-          return;
-        }
-        const Ctor = (window.AudioContext
-          || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext);
-        actx = new Ctor();
-        try { await actx.resume(); } catch { /* ignore */ }
-        src = actx.createMediaStreamSource(stream);
-        analyser = actx.createAnalyser();
-        analyser.fftSize = 1024;
-        analyser.smoothingTimeConstant = 0.55;
-        src.connect(analyser);
-        // Hand the analyser to the render loop's existing real-audio branch.
-        audioAnalyserRef.current = analyser;
-        audioDataArrayRef.current = new Uint8Array(analyser.fftSize);
-        audioStreamRef.current = stream;
-        setAudioActive(true);
-      } catch {
-        // Permission denied / unsupported / WebView quirks — silent fallback.
-      }
-    })();
+    let mgr: AudioInputManager | null = null;
+    // If a local track is already feeding the analyser, leave it alone.
+    if (!trackAnalyserRef.current && typeof navigator !== "undefined" && navigator.mediaDevices) {
+      mgr = createAudioInputManager({
+        pref: audioInPrefRef.current,
+        onDevices: (list) => { if (!cancelled) setAudioInputs(list); },
+        onChange: (session, reason) => {
+          if (cancelled) return;
+          if (!session) { setAudioInInfo(null); setAudioActive(false); return; }
+          // Hand the analyser to the render loop's existing real-audio branch.
+          audioAnalyserRef.current = session.analyser;
+          audioDataArrayRef.current = new Uint8Array(session.analyser.fftSize);
+          audioStreamRef.current = session.stream;
+          setAudioInInfo(session.info);
+          setAudioActive(true);
+          if (reason === "hotplug" || reason === "pref") {
+            setFaceFxToast(`AUDIO IN → ${session.info.label.toUpperCase()}`);
+            window.setTimeout(() => setFaceFxToast(null), 2200);
+          }
+        },
+        onError: () => { /* permission denied / unsupported / WebView quirks — silent fallback */ },
+      });
+      audioInMgrRef.current = mgr;
+    }
 
     return () => {
       cancelled = true;
       window.clearInterval(pollId);
+      if (audioInMgrRef.current === mgr) audioInMgrRef.current = null;
+      mgr?.dispose();
       // Don't tear down the analyser if the local-track loader installed it.
       if (!trackAnalyserRef.current) {
         try { audioAnalyserRef.current = null; } catch { /* ignore */ }
         try { audioDataArrayRef.current = null; } catch { /* ignore */ }
       }
-      try { src?.disconnect(); } catch { /* ignore */ }
-      try { analyser?.disconnect(); } catch { /* ignore */ }
-      try { actx?.close(); } catch { /* ignore */ }
-      try { stream?.getTracks().forEach(t => t.stop()); } catch { /* ignore */ }
       try { audioStreamRef.current = null; } catch { /* ignore */ }
+      setAudioInInfo(null);
       setAudioActive(false);
     };
   }, [vjMode]);
+
+  // ── Plug-and-play display output (vj-io, v1.4.1) ──
+  // Android mirrors the screen to whatever is on the USB-C port (HDMI /
+  // DisplayPort adapter, capture stick) or cast target. When one appears and
+  // VJ OUT is on AUTO: drop the chrome so the mirrored picture is canvas-only
+  // and keep the screen awake. Put everything back when it goes away.
+  const vjOutAutoRef = useRef(vjOutAuto);
+  useEffect(() => {
+    vjOutAutoRef.current = vjOutAuto;
+    try { localStorage.setItem(VJ_OUT_AUTO_KEY, vjOutAuto ? "1" : "0"); } catch { /* ignore */ }
+  }, [vjOutAuto]);
+  useEffect(() => {
+    let wasExternal = false;
+    const out = createDisplayOutput({
+      onChange: (state) => {
+        const external = state.externalCount > 0;
+        setVjOutDisplay(external ? state : null);
+        if (external === wasExternal) return;
+        wasExternal = external;
+        if (!vjOutAutoRef.current) return;
+        setUiHidden(external);
+        void out.setKeepAwake(external);
+        if (Capacitor.isNativePlatform()) {
+          import("@capacitor/status-bar").then(({ StatusBar }) => {
+            if (external) { StatusBar.hide().catch(() => {}); StatusBar.setOverlaysWebView({ overlay: true }).catch(() => {}); }
+            else { StatusBar.show().catch(() => {}); StatusBar.setOverlaysWebView({ overlay: false }).catch(() => {}); }
+          }).catch(() => {});
+        }
+        const size = state.width ? ` · ${state.width}×${state.height}` : "";
+        setFaceFxToast(external ? `VJ OUT → ${(state.name ?? "EXTERNAL DISPLAY").toUpperCase()}${size}` : "VJ OUT · DISPLAY DISCONNECTED");
+        window.setTimeout(() => setFaceFxToast(null), 2600);
+      },
+    });
+    return () => { void out.setKeepAwake(false); out.dispose(); };
+  }, []);
 
   // ── (v1.3.57 — entire DRAW overlay rendering + paint pixel stamping +
   // pointer handler block removed.) ─────────────────────────────────
@@ -9396,6 +9446,41 @@ export default function SpectraAfter() {
 
           <Section title="EXPORT · CAMERA · PROJECT" id="user" open={openSections.has("user")} onToggle={toggleSection}>
             <div style={{ padding: "8px 10px", display: "grid", gap: 10 }}>
+              {/* vj-io (v1.4.1) — plug-and-play audio in / display out */}
+              <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>VJ · Audio In</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <button className="sp-tile" onClick={() => setAudioInPref("auto")} title="External input whenever one is plugged in, phone mic otherwise"
+                  style={{ ...modeBtnStyle, ...(audioInPref === "auto" ? modeBtnActive : {}), minWidth: 70 }}>AUTO</button>
+                <button className="sp-tile" onClick={() => setAudioInPref("builtin")}
+                  style={{ ...modeBtnStyle, ...(audioInPref === "builtin" ? modeBtnActive : {}), minWidth: 70 }}>PHONE MIC</button>
+                {audioInputs.filter(d => d.kind === "external").map(d => (
+                  <button key={d.deviceId} className="sp-tile" onClick={() => setAudioInPref({ deviceId: d.deviceId })} title={d.label}
+                    style={{ ...modeBtnStyle, ...(typeof audioInPref === "object" && audioInPref.deviceId === d.deviceId ? modeBtnActive : {}), minWidth: 70, maxWidth: 170, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {d.label.replace(/\s*\([^)]*\)\s*$/, "").slice(0, 20).toUpperCase()}
+                  </button>
+                ))}
+              </div>
+              <div style={{ fontSize: 8, letterSpacing: "1px", color: audioInInfo ? "rgba(174,255,231,0.8)" : "rgba(200,180,220,0.55)", textTransform: "uppercase" }}>
+                {audioInInfo
+                  ? `IN · ${audioInInfo.label} · ${Math.round(audioInInfo.sampleRate / 1000)} kHz · ${audioInInfo.channelCount >= 2 ? "stereo" : "mono"}${audioInInfo.kind === "external" ? " · line" : ""}`
+                  : vjMode
+                    ? "IN · opening audio input…"
+                    : "IN · turn on AUTO-VJ (○) to open the input · a USB interface or DJ mixer takes over when plugged in"}
+              </div>
+
+              <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>VJ · Display Out</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <button className="sp-tile" onClick={() => setVjOutAuto(true)} title="Hide the UI and keep the screen awake whenever an external display is connected"
+                  style={{ ...modeBtnStyle, ...(vjOutAuto ? modeBtnActive : {}), minWidth: 70 }}>AUTO</button>
+                <button className="sp-tile" onClick={() => setVjOutAuto(false)}
+                  style={{ ...modeBtnStyle, ...(!vjOutAuto ? modeBtnActive : {}), minWidth: 70 }}>MANUAL</button>
+              </div>
+              <div style={{ fontSize: 8, letterSpacing: "1px", color: vjOutDisplay ? "rgba(174,255,231,0.8)" : "rgba(200,180,220,0.55)", textTransform: "uppercase" }}>
+                {vjOutDisplay
+                  ? `OUT · ${vjOutDisplay.name ?? "external display"}${vjOutDisplay.width ? ` · ${vjOutDisplay.width}×${vjOutDisplay.height}` : ""} · mirrored`
+                  : "OUT · plug a USB-C → HDMI adapter or cast · the canvas goes full-bleed on its own"}
+              </div>
+
               <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>Format</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <button
@@ -9458,7 +9543,7 @@ export default function SpectraAfter() {
               </div>
               {exportFormat === "video" && !audioActive && (
                 <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(200,180,220,0.55)", textAlign: "center", textTransform: "uppercase" }}>
-                  Tap 🔈 in top bar to include microphone audio
+                  Turn on AUTO-VJ (○) to record audio from the selected input
                 </div>
               )}
               {exportFormat === "gif" && (
