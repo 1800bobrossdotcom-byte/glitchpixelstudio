@@ -1,6 +1,6 @@
 "use client";
 // (Capacitor mirror — no next/link)
-import { useRef, useState, useEffect, useCallback, useMemo, useContext, createContext } from "react";
+import { Fragment, useRef, useState, useEffect, useCallback, useMemo, useContext, createContext } from "react";
 import { useReducer } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { throttle } from "@/utils/performance";
@@ -645,6 +645,21 @@ const WALKTHROUGH_SEEN_KEY = "gps.walkthroughSeen.v1";
 // vj-io preferences (v1.4.1)
 const AUDIO_IN_PREF_KEY = "gps.vj.audioIn.v1";
 const VJ_OUT_AUTO_KEY = "gps.vj.outAuto.v1";
+const AUDIO_REACT_KEY = "gps.vj.audioReact.v1";
+// v1.5.0 — the rack is five tabs instead of two collapsible sections + a
+// nine-rack accordion.
+type RackTab = "source" | "fx" | "look" | "vj" | "export";
+const RACK_TABS: ReadonlyArray<{ id: RackTab; label: string; pip: string }> = [
+  { id: "source", label: "SOURCE", pip: "#4B9EFF" },
+  { id: "fx",     label: "FX",     pip: "#E03D3D" },
+  { id: "look",   label: "LOOK",   pip: "#C765FF" },
+  { id: "vj",     label: "VJ",     pip: "#52C97A" },
+  { id: "export", label: "EXPORT", pip: "#E8A020" },
+];
+const TAB_FIRST_PANEL: Record<RackTab, string> = {
+  source: "INPUT", fx: "PIXEL SORT", look: "COLOR", vj: "VJ", export: "EXPORT",
+};
+const RACK_TAB_KEY = "gps.rackTab.v1";
 function loadAudioInPref(): AudioInputPref {
   try {
     const v = localStorage.getItem(AUDIO_IN_PREF_KEY);
@@ -1441,6 +1456,15 @@ export default function SpectraAfter() {
       void audioInMgrRef.current?.setPref(p);
     }, []);
     const [vjOutAuto, setVjOutAuto] = useState<boolean>(() => { try { return localStorage.getItem(VJ_OUT_AUTO_KEY) !== "0"; } catch { return true; } });
+    // AUDIO REACT power: listens to the selected input whenever ON — no longer
+    // tied to AUTO-VJ (which only adds autonomous preset cycling on top).
+    const [audioReactOn, setAudioReactOnState] = useState<boolean>(() => { try { return localStorage.getItem(AUDIO_REACT_KEY) !== "0"; } catch { return true; } });
+    const setAudioReactOn = useCallback((on: boolean) => {
+      setAudioReactOnState(on);
+      try { localStorage.setItem(AUDIO_REACT_KEY, on ? "1" : "0"); } catch { /* ignore */ }
+    }, []);
+    const [audioMeter, setAudioMeter] = useState({ level: 0, bass: 0, beat: 0 });
+    const [vjRowFlash, setVjRowFlash] = useState(false);
     const [vjOutDisplay, setVjOutDisplay] = useState<DisplayState | null>(null);
   // ── Boot state
   const [bootProgress, setBootProgress] = useState(0);
@@ -1513,6 +1537,17 @@ export default function SpectraAfter() {
   // immediately see/feel the procedural texture controls instead of
   // landing on a quiet pixel-sort screen and wondering if anything works.
   const [openPanelTitle, setOpenPanelTitle] = useState<string | null>(null);
+  // v1.5.0 — rack tabs. Switching a tab opens that tab's first rack.
+  const [activeTab, setActiveTabState] = useState<RackTab>(() => {
+    try { const v = localStorage.getItem(RACK_TAB_KEY); if (v && RACK_TABS.some(t => t.id === v)) return v as RackTab; } catch { /* ignore */ }
+    return "fx";
+  });
+  const setActiveTab = useCallback((t: RackTab) => {
+    setActiveTabState(t);
+    setOpenPanelTitle(TAB_FIRST_PANEL[t]);
+    try { localStorage.setItem(RACK_TAB_KEY, t); } catch { /* ignore */ }
+  }, []);
+  const [rawFxOpen, setRawFxOpen] = useState(false);
   const accordionCtx = useMemo(
     () => ({ openTitle: openPanelTitle, setOpenTitle: setOpenPanelTitle }),
     [openPanelTitle]
@@ -1857,28 +1892,8 @@ export default function SpectraAfter() {
   // work without rippling changes through the file.
   const neonMode = true;
 
-  // ── v1.3.30 — UI SKIN selector. Three readability-focused chassis looks
-  //    that all sit on top of the existing neon-mode glass scaffolding:
-  //      MOOG  — warm walnut + cream/orange (default; vintage analog console)
-  //      808   — Roland TR-808 grey + red/orange/yellow stripe (drum machine)
-  //      NEON  — original purple glass (legacy)
-  //    Skin only changes panel/button chrome and accent colors, not layout
-  //    or FX. Persisted in localStorage so 14-day testers keep their choice.
-  type UiSkin = "MOOG" | "808" | "NEON";
-  const SKIN_KEY = "gps:ui-skin";
-  const [uiSkin, setUiSkin] = useState<UiSkin>("MOOG");
-  useEffect(() => {
-    try {
-      const v = localStorage.getItem(SKIN_KEY);
-      if (v === "MOOG" || v === "808" || v === "NEON") setUiSkin(v);
-    } catch { /* noop */ }
-  }, []);
-  useEffect(() => {
-    try { localStorage.setItem(SKIN_KEY, uiSkin); } catch { /* noop */ }
-  }, [uiSkin]);
-  const cycleUiSkin = useCallback(() => {
-    setUiSkin(s => s === "MOOG" ? "808" : s === "808" ? "NEON" : "MOOG");
-  }, []);
+  // v1.5.0 — single UI skin (NEON glass). The MOOG / 808 chassis skins and
+  // their CSS were removed to cut the styling surface in three.
   const tiltRootRef = useRef<HTMLDivElement>(null);
   // ── FACE FX cycle: universal mask that gates ALL FX inside or
   //    outside an AI-segmented person. Uses MediaPipe Tasks Vision
@@ -2376,6 +2391,13 @@ export default function SpectraAfter() {
   ]);
   // selectedLayer: 0..3 = layer index, 4 = MASTER (broadcasts to all)
   const [selectedLayer, setSelectedLayer] = useState<number>(0);
+  // v1.5.0 — one generator layer. Layers 2-4 stay in state for preset
+  // round-trips but are never enabled; layer 1 is live whenever the
+  // generator is the source or MIX > 0.
+  useEffect(() => {
+    setSelectedLayer(0);
+    setGenLayers(prev => prev.map((l, i) => (i === 0 || !l.enabled) ? l : { ...l, enabled: false }));
+  }, []);
   const selectedLayerRef = useRef(selectedLayer);
   useEffect(() => { selectedLayerRef.current = selectedLayer; }, [selectedLayer]);
   const [genBlend, setGenBlend] = useState<GenBlend>("AVG");
@@ -3041,8 +3063,9 @@ export default function SpectraAfter() {
   // Audio-react drive: how much the analyser RMS modulates the per-layer
   // mosh + scatter knobs in real time. 0 = audio button purely visual via
   // shader uAudio; 1 = full-range mosh swing on every beat.
-  const [audioReactAmt, setAudioReactAmt] = useState(0.0);
-  const audioReactAmtRef = useRef(0.0);
+  const [audioReactAmt, setAudioReactAmt] = useState(() => { try { const v = parseFloat(localStorage.getItem("gps.vj.reactAmt.v1") ?? ""); return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.6; } catch { return 0.6; } });
+  const audioReactAmtRef = useRef(0.6);
+  useEffect(() => { try { localStorage.setItem("gps.vj.reactAmt.v1", String(audioReactAmt)); } catch { /* ignore */ } }, [audioReactAmt]);
   useEffect(() => { audioReactAmtRef.current = audioReactAmt; }, [audioReactAmt]);
   // Cross-feed: feed the camera signal into generators (and vice versa)
   // so the generator can pixel-sort/mosh the camera, and the camera can
@@ -5015,9 +5038,10 @@ export default function SpectraAfter() {
     const _aBass  = audioBassRef.current;
     const _aBeat  = audioBeatRef.current;
     const _aLvl   = audioLevelRef.current;
-    const _aGate  = Math.min(1.0, _aBass * 1.4 + _aBeat * 0.9 + _aLvl * 0.5);
+    // v1.5.0 — REACT knob scales how hard the input drives the racks (0 = uniforms only, no auto sort/mosh lift).
+    const _aGate  = Math.min(1.0, _aBass * 1.4 + _aBeat * 0.9 + _aLvl * 0.5) * audioReactAmtRef.current;
     const _sortBase = sortAmtRef.current;
-    const _sortAudio = Math.min(1.0, _sortBase * (1 + _aGate * 0.7) + _aGate * 0.18);
+    const _sortAudio = Math.min(1.0, _sortBase * (1 + _aGate * 0.7) + _aBeat * audioReactAmtRef.current * 0.22);
     // v1.2.68 — DECOUPLE the shader sort knobs from REALSORT. Previously
     // every shader knob (AMOUNT/LOW/HIGH/SEGMENT/NOISE/WOBBLE/TEAR/MODE/
     // INTERVAL/ANGLE) was multiplied by sortMix, so when REALSORT was at
@@ -5042,7 +5066,11 @@ export default function SpectraAfter() {
     // mapped intensity on bass/beat so the rack visibly reacts to a
     // mic stream even when the slider is partway down. Capped at the
     // HARD ceiling so we don't push past what the shader was tuned for.
-    dmMapped = Math.min(5.5, dmMapped * (1 + _aGate * 0.55) + _aGate * 0.22);
+    // v1.5.0 — mosh reacts multiplicatively only. The old "+ gate*0.22" floor
+    // meant any steady bass moshed a still image into noise through the
+    // rendered feedback loop even with INTENS at 0. Sort keeps its glimmer
+    // floor (it reads the source, so it never accumulates).
+    dmMapped = Math.min(5.5, dmMapped * (1 + _aGate * 0.9));
     setF1(u.uDatamosh, dmMapped * _mI + PB("uDatamosh"));
     setF1(u.uChrash, chrashRef.current * _mB + PB("uChrash"));
     setF1(u.uLiquid, liquidRef.current * _mI + PB("uLiquid"));
@@ -5419,44 +5447,51 @@ export default function SpectraAfter() {
       }
     }, 80);
 
-    // ── Plug-and-play audio input (vj-io, v1.4.1) ──
-    // Opens the preferred input RAW (no AEC / AGC / NS, stereo, 48 kHz) and
-    // follows hot-plug: a USB audio interface or a DJ mixer / controller that
-    // exposes USB audio takes over the analyser the moment it appears, and
-    // the phone mic comes back when it is unplugged. Any failure leaves the
-    // render loop on its synthetic LFO branch, exactly as before.
-    let cancelled = false;
-    let mgr: AudioInputManager | null = null;
-    // If a local track is already feeding the analyser, leave it alone.
-    if (!trackAnalyserRef.current && typeof navigator !== "undefined" && navigator.mediaDevices) {
-      mgr = createAudioInputManager({
-        pref: audioInPrefRef.current,
-        onDevices: (list) => { if (!cancelled) setAudioInputs(list); },
-        onChange: (session, reason) => {
-          if (cancelled) return;
-          if (!session) { setAudioInInfo(null); setAudioActive(false); return; }
-          // Hand the analyser to the render loop's existing real-audio branch.
-          audioAnalyserRef.current = session.analyser;
-          audioDataArrayRef.current = new Uint8Array(session.analyser.fftSize);
-          audioStreamRef.current = session.stream;
-          setAudioInInfo(session.info);
-          setAudioActive(true);
-          if (reason === "hotplug" || reason === "pref") {
-            setFaceFxToast(`AUDIO IN → ${session.info.label.toUpperCase()}`);
-            window.setTimeout(() => setFaceFxToast(null), 2200);
-          }
-        },
-        onError: () => { /* permission denied / unsupported / WebView quirks — silent fallback */ },
-      });
-      audioInMgrRef.current = mgr;
-    }
+    return () => { window.clearInterval(pollId); };
+  }, [vjMode]);
 
+  // ── Plug-and-play audio input (vj-io, v1.4.2) ──
+  // Runs whenever AUDIO REACT is on (default). Opens the preferred input RAW
+  // (no AEC / AGC / NS, stereo, 48 kHz) and follows hot-plug: a USB audio
+  // interface or a DJ mixer / controller that exposes USB audio takes over
+  // the analyser the moment it appears; the phone mic comes back when it is
+  // unplugged. A loaded track (LOAD TRACK) keeps priority over the live input.
+  useEffect(() => {
+    if (!audioReactOn) return;
+    if (trackAnalyserRef.current) return;
+    if (typeof navigator === "undefined" || !navigator.mediaDevices) return;
+    let cancelled = false;
+    const mgr = createAudioInputManager({
+      pref: audioInPrefRef.current,
+      onDevices: (list) => { if (!cancelled) setAudioInputs(list); },
+      onChange: (session, reason) => {
+        if (cancelled) return;
+        if (!session) { setAudioInInfo(null); setAudioActive(false); return; }
+        // Hand the analyser to the render loop's existing real-audio branch.
+        audioAnalyserRef.current = session.analyser;
+        audioDataArrayRef.current = new Uint8Array(session.analyser.fftSize);
+        audioStreamRef.current = session.stream;
+        setAudioInInfo(session.info);
+        setAudioActive(true);
+        try { console.log("[GPS] audio-in", reason, session.info.label, session.info.sampleRate, "Hz", session.info.channelCount, "ch", session.context.state); } catch { /* noop */ }
+        if (reason === "hotplug" || reason === "pref") {
+          setFaceFxToast(`AUDIO IN → ${session.info.label.toUpperCase()}`);
+          window.setTimeout(() => setFaceFxToast(null), 2200);
+        }
+      },
+      onError: (e) => {
+        if (cancelled) return;
+        const name = (e as { name?: string })?.name || String(e);
+        try { console.warn("[GPS] audio-in error:", e); } catch { /* noop */ }
+        setFaceFxToast(`AUDIO IN · ${name === "NotAllowedError" ? "MIC PERMISSION DENIED" : name.toUpperCase()}`);
+        window.setTimeout(() => setFaceFxToast(null), 3000);
+      },
+    });
+    audioInMgrRef.current = mgr;
     return () => {
       cancelled = true;
-      window.clearInterval(pollId);
       if (audioInMgrRef.current === mgr) audioInMgrRef.current = null;
-      mgr?.dispose();
-      // Don't tear down the analyser if the local-track loader installed it.
+      mgr.dispose();
       if (!trackAnalyserRef.current) {
         try { audioAnalyserRef.current = null; } catch { /* ignore */ }
         try { audioDataArrayRef.current = null; } catch { /* ignore */ }
@@ -5465,7 +5500,29 @@ export default function SpectraAfter() {
       setAudioInInfo(null);
       setAudioActive(false);
     };
-  }, [vjMode]);
+  }, [audioReactOn]);
+
+  // Live meter for the VJ · Audio In row (only while that section is open).
+  const vjPanelOpen = activeTab === "vj";
+  useEffect(() => {
+    if (!audioReactOn || !vjPanelOpen) return;
+    const id = window.setInterval(() => {
+      setAudioMeter({ level: audioLevelRef.current, bass: audioBassRef.current, beat: audioBeatRef.current });
+    }, 160);
+    return () => window.clearInterval(id);
+  }, [audioReactOn, vjPanelOpen]);
+
+  // ♪ in the top bar: quick link to the VJ · Audio In row (and switches
+  // AUDIO REACT on if it was off).
+  const openVjAudioPanel = useCallback(() => {
+    if (!audioReactOn) setAudioReactOn(true);
+    setActiveTab("vj");
+    setVjRowFlash(true);
+    window.setTimeout(() => {
+      document.getElementById("gps-vj-audio-in")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+    window.setTimeout(() => setVjRowFlash(false), 1800);
+  }, [audioReactOn, setAudioReactOn, setActiveTab]);
 
   // ── Plug-and-play display output (vj-io, v1.4.1) ──
   // Android mirrors the screen to whatever is on the USB-C port (HDMI /
@@ -6914,7 +6971,7 @@ export default function SpectraAfter() {
   return (
     <div
       ref={tiltRootRef}
-      className={"flex flex-col h-dvh overflow-hidden text-white" + (neonMode ? " neon-mode" : "") + (uiHidden ? " ui-hidden" : "") + " skin-" + uiSkin.toLowerCase()}
+      className={"flex flex-col h-dvh overflow-hidden text-white" + (neonMode ? " neon-mode" : "") + (uiHidden ? " ui-hidden" : "") + " skin-neon"}
       style={{ fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", background: "#000" }}
     >
       <style>{`
@@ -7161,6 +7218,7 @@ export default function SpectraAfter() {
             0 1px 0 rgba(0,0,0,0.85) !important;
           transition: transform 0.08s ease, box-shadow 0.18s ease, background 0.18s ease;
         }
+@media (hover: hover) and (pointer: fine) {
         .neon-mode .sp-btn:hover,
         .neon-mode .sp-tile:hover {
           background: linear-gradient(180deg,
@@ -7174,6 +7232,7 @@ export default function SpectraAfter() {
             inset 0 0 32px rgba(255,80,255,0.28),
             0 6px 20px rgba(255,40,255,0.42),
             0 0 0 1px rgba(255,200,255,0.12) !important;
+        }
         }
         .neon-mode .sp-btn:active,
         .neon-mode .sp-tile:active,
@@ -7230,6 +7289,7 @@ export default function SpectraAfter() {
             0 0 2px rgba(0,0,0,0.95),
             0 1px 0 rgba(0,0,0,0.85) !important;
         }
+@media (hover: hover) and (pointer: fine) {
         .neon-mode .sp-panel-glass button:hover {
           background: linear-gradient(180deg,
             rgba(120,40,170,0.18) 0%,
@@ -7241,6 +7301,7 @@ export default function SpectraAfter() {
             inset 0 -2px 0 rgba(0,0,0,0.5),
             inset 0 0 30px rgba(255,80,255,0.28),
             0 6px 18px rgba(255,40,255,0.42) !important;
+        }
         }
         /* PHOTO button must float ABOVE the glass panel in NEON mode
            so the user can still snap a still while controls overlay
@@ -7316,208 +7377,6 @@ export default function SpectraAfter() {
           text-shadow: 0 0 8px rgba(255,80,255,0.95);
         }
 
-        /* ── v1.3.30 SKIN: MOOG ────────────────────────────────────────────
-           Vintage Moog-console look: walnut wood end-cheeks framing a black
-           anodized control panel; cream chiclet buttons with orange-amber
-           accents; high contrast white labels. Sits over the live FX but
-           reads as solid panels for max readability. */
-        .skin-moog .sp-panel-glass,
-        .skin-moog.neon-mode .sp-panel-glass {
-          background:
-            linear-gradient(180deg, rgba(20,16,14,0.92) 0%, rgba(12,9,7,0.94) 100%),
-            repeating-linear-gradient(90deg, rgba(255,255,255,0.02) 0 1px, transparent 1px 4px) !important;
-          backdrop-filter: blur(8px) saturate(1.1) !important;
-          -webkit-backdrop-filter: blur(8px) saturate(1.1) !important;
-          border-top: 6px solid #5a3a1c !important;
-          box-shadow:
-            0 -2px 0 rgba(255,180,90,0.35),
-            0 -10px 30px rgba(0,0,0,0.7),
-            inset 0 1px 0 rgba(255,210,140,0.18) !important;
-        }
-        .skin-moog .sp-rack,
-        .skin-moog.neon-mode .sp-rack {
-          background: linear-gradient(180deg, #1a1614 0%, #0e0b09 100%) !important;
-          backdrop-filter: none !important;
-          -webkit-backdrop-filter: none !important;
-          border: 1px solid #3a2818 !important;
-          border-left: 4px solid #6a4220 !important;
-          box-shadow:
-            inset 0 1px 0 rgba(255,200,120,0.10),
-            0 2px 6px rgba(0,0,0,0.5) !important;
-        }
-        .skin-moog .sp-rack-inner,
-        .skin-moog.neon-mode .sp-rack-inner {
-          background:
-            repeating-linear-gradient(0deg, rgba(0,0,0,0.18) 0 1px, transparent 1px 3px),
-            linear-gradient(180deg, #1f1a16 0%, #15110e 100%) !important;
-          backdrop-filter: none !important;
-          -webkit-backdrop-filter: none !important;
-          border: 1px solid #2a1f16 !important;
-          box-shadow: inset 0 2px 4px rgba(0,0,0,0.55) !important;
-        }
-        .skin-moog .sp-btn,
-        .skin-moog .sp-tile,
-        .skin-moog.neon-mode .sp-btn,
-        .skin-moog.neon-mode .sp-tile,
-        .skin-moog.neon-mode button.sp-btn,
-        .skin-moog.neon-mode button.sp-tile,
-        .skin-moog.neon-mode .sp-panel-glass button {
-          background: linear-gradient(180deg, #f4e6c8 0%, #d9c098 55%, #b89870 100%) !important;
-          backdrop-filter: none !important;
-          -webkit-backdrop-filter: none !important;
-          border: 1px solid #5a3a1c !important;
-          border-radius: 4px !important;
-          color: #2a1810 !important;
-          box-shadow:
-            inset 0 1px 0 rgba(255,255,255,0.7),
-            inset 0 -2px 0 rgba(120,70,30,0.55),
-            0 2px 4px rgba(0,0,0,0.45) !important;
-          text-shadow: none !important;
-          font-weight: 700 !important;
-        }
-        .skin-moog .sp-btn:hover,
-        .skin-moog .sp-tile:hover,
-        .skin-moog.neon-mode .sp-btn:hover,
-        .skin-moog.neon-mode .sp-tile:hover,
-        .skin-moog.neon-mode .sp-panel-glass button:hover {
-          background: linear-gradient(180deg, #ffb64a 0%, #ff8a1c 55%, #c25c00 100%) !important;
-          color: #1a0a00 !important;
-          border-color: #8a4a10 !important;
-          box-shadow:
-            inset 0 1px 0 rgba(255,255,255,0.55),
-            inset 0 -2px 0 rgba(80,30,0,0.6),
-            0 0 12px rgba(255,140,40,0.55),
-            0 2px 4px rgba(0,0,0,0.55) !important;
-        }
-        .skin-moog.neon-mode .sp-panel-glass button,
-        .skin-moog.neon-mode .sp-panel-glass label,
-        .skin-moog.neon-mode .sp-panel-glass span {
-          text-shadow: none !important;
-          color: #f0e0c4;
-        }
-        .skin-moog input[type="range"],
-        .skin-moog.neon-mode input[type="range"] {
-          background: linear-gradient(180deg, #0a0705 0%, #1a1410 100%) !important;
-          border: 1px solid #4a3018 !important;
-          box-shadow: inset 0 2px 3px rgba(0,0,0,0.7), 0 0 0 1px #2a1810 !important;
-        }
-        .skin-moog .topnav-neon-on,
-        .skin-moog.neon-mode .topnav-neon-on {
-          background: linear-gradient(180deg, #ffb64a 0%, #c25c00 100%) !important;
-          color: #1a0a00 !important;
-          border-color: #ffd080 !important;
-          box-shadow:
-            inset 0 1px 0 rgba(255,255,255,0.6),
-            0 0 14px rgba(255,140,40,0.7) !important;
-          text-shadow: none !important;
-        }
-
-        /* ── v1.3.30 SKIN: 808 ─────────────────────────────────────────────
-           Roland TR-808 drum machine look: brushed graphite chassis with the
-           iconic red / orange / yellow / cream button-row colors. Solid panel
-           for high readability, no glass blur. Buttons are square-ish chiclets. */
-        .skin-808 .sp-panel-glass,
-        .skin-808.neon-mode .sp-panel-glass {
-          background:
-            repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0 1px, transparent 1px 3px),
-            linear-gradient(180deg, #2a2a2c 0%, #1a1a1c 100%) !important;
-          backdrop-filter: blur(4px) saturate(1.05) !important;
-          -webkit-backdrop-filter: blur(4px) saturate(1.05) !important;
-          border-top: 3px solid #d04020 !important;
-          box-shadow:
-            0 -2px 0 #f0a020,
-            0 -4px 0 #e8d040,
-            0 -10px 24px rgba(0,0,0,0.7),
-            inset 0 1px 0 rgba(255,255,255,0.10) !important;
-        }
-        .skin-808 .sp-rack,
-        .skin-808.neon-mode .sp-rack {
-          background: linear-gradient(180deg, #2e2e30 0%, #1c1c1e 100%) !important;
-          backdrop-filter: none !important;
-          -webkit-backdrop-filter: none !important;
-          border: 1px solid #404044 !important;
-          border-top: 2px solid #555558 !important;
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 2px 4px rgba(0,0,0,0.5) !important;
-        }
-        .skin-808 .sp-rack-inner,
-        .skin-808.neon-mode .sp-rack-inner {
-          background:
-            repeating-linear-gradient(0deg, rgba(255,255,255,0.02) 0 1px, transparent 1px 2px),
-            linear-gradient(180deg, #232326 0%, #18181a 100%) !important;
-          backdrop-filter: none !important;
-          -webkit-backdrop-filter: none !important;
-          border: 1px solid #38383c !important;
-          box-shadow: inset 0 2px 4px rgba(0,0,0,0.55) !important;
-        }
-        /* TR-808 chiclet pattern: cycle red / orange / yellow / cream
-           across consecutive buttons using nth-child. Cream is the
-           bass-pattern row color on a real 808. */
-        .skin-808 .sp-btn,
-        .skin-808 .sp-tile,
-        .skin-808.neon-mode .sp-btn,
-        .skin-808.neon-mode .sp-tile,
-        .skin-808.neon-mode button.sp-btn,
-        .skin-808.neon-mode button.sp-tile,
-        .skin-808.neon-mode .sp-panel-glass button {
-          background: linear-gradient(180deg, #f5ecd4 0%, #d8cdb0 100%) !important;
-          backdrop-filter: none !important;
-          -webkit-backdrop-filter: none !important;
-          border: 1px solid #2a2a2c !important;
-          border-radius: 3px !important;
-          color: #1a1a1c !important;
-          box-shadow:
-            inset 0 1px 0 rgba(255,255,255,0.65),
-            inset 0 -2px 0 rgba(80,70,40,0.45),
-            0 2px 3px rgba(0,0,0,0.45) !important;
-          text-shadow: none !important;
-          font-weight: 700 !important;
-        }
-        .skin-808.neon-mode .sp-panel-glass button:nth-of-type(4n+1) {
-          background: linear-gradient(180deg, #ff5a3a 0%, #c02a0a 100%) !important;
-          color: #1a0500 !important;
-        }
-        .skin-808.neon-mode .sp-panel-glass button:nth-of-type(4n+2) {
-          background: linear-gradient(180deg, #ffaa30 0%, #d06800 100%) !important;
-          color: #200a00 !important;
-        }
-        .skin-808.neon-mode .sp-panel-glass button:nth-of-type(4n+3) {
-          background: linear-gradient(180deg, #ffe040 0%, #c8a000 100%) !important;
-          color: #1a1400 !important;
-        }
-        .skin-808 .sp-btn:hover,
-        .skin-808 .sp-tile:hover,
-        .skin-808.neon-mode .sp-btn:hover,
-        .skin-808.neon-mode .sp-tile:hover,
-        .skin-808.neon-mode .sp-panel-glass button:hover {
-          filter: brightness(1.15) !important;
-          border-color: #f0e040 !important;
-          box-shadow:
-            inset 0 1px 0 rgba(255,255,255,0.7),
-            inset 0 -2px 0 rgba(0,0,0,0.4),
-            0 0 12px rgba(255,200,40,0.55),
-            0 2px 4px rgba(0,0,0,0.55) !important;
-        }
-        .skin-808.neon-mode .sp-panel-glass label,
-        .skin-808.neon-mode .sp-panel-glass span {
-          text-shadow: none !important;
-          color: #e8e8ec !important;
-        }
-        .skin-808 input[type="range"],
-        .skin-808.neon-mode input[type="range"] {
-          background: linear-gradient(180deg, #0a0a0c 0%, #1a1a1c 100%) !important;
-          border: 1px solid #404044 !important;
-          box-shadow: inset 0 2px 3px rgba(0,0,0,0.7), 0 0 0 1px #2a2a2c !important;
-        }
-        .skin-808 .topnav-neon-on,
-        .skin-808.neon-mode .topnav-neon-on {
-          background: linear-gradient(180deg, #ff5a3a 0%, #c02a0a 100%) !important;
-          color: #1a0500 !important;
-          border-color: #ffaa30 !important;
-          box-shadow:
-            inset 0 1px 0 rgba(255,255,255,0.55),
-            0 0 14px rgba(255,90,40,0.7) !important;
-          text-shadow: none !important;
-        }
       `}</style>
       {introVisible && <SpectraIntro onDone={() => setIntroWantsClose(true)} />}
       <BugReportModal open={bugOpen} onClose={() => setBugOpen(false)} />
@@ -7918,25 +7777,23 @@ export default function SpectraAfter() {
               and the analyser is handed to AUTO-VJ for true beat-matched FX cycling. */}
           <button
             className="sp-btn"
-            onClick={() => {
-              if (trackName) { toggleTrackPlayback(); playSfx("click"); }
-              else { trackFileInputRef.current?.click(); playSfx("open"); }
-            }}
-            onContextMenu={(e) => { e.preventDefault(); stopTrack(); playSfx("close"); }}
+            onClick={() => { openVjAudioPanel(); playSfx("open"); }}
             style={{
               ...topBtnStyle,
               width: 36, height: 36, padding: 0, fontSize: 12, borderRadius: 9, letterSpacing: 0,
-              color: trackName ? T.ochre : undefined,
-              borderColor: trackName ? T.amber : undefined,
-              boxShadow: trackName ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
-              ...(trackPlaying ? { animation: "activeGlow 1.6s ease-in-out infinite" } : {}),
+              color: (audioInInfo || trackName) ? T.ochre : undefined,
+              borderColor: (audioInInfo || trackName) ? T.amber : undefined,
+              boxShadow: (audioInInfo || trackName) ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
+              ...((audioInInfo || trackPlaying) ? { animation: "activeGlow 1.6s ease-in-out infinite" } : {}),
             }}
             title={
-              trackName
-                ? `Track: ${trackName} — tap to ${trackPlaying ? "PAUSE" : "PLAY"} · long-press to UNLOAD`
-                : "Load audio track from device for true beat-matched AUTO-VJ"
+              audioInInfo
+                ? `AUDIO IN · ${audioInInfo.label} — tap for VJ audio settings`
+                : trackName
+                  ? `Track: ${trackName} — tap for VJ audio settings`
+                  : "AUDIO — open VJ audio in / out (mic, USB interface, DJ mixer, track)"
             }
-          >{trackName ? (trackPlaying ? "▮▮" : "▶") : "♪"}</button>
+          >♪</button>
           <input
             ref={trackFileInputRef}
             type="file"
@@ -7968,36 +7825,6 @@ export default function SpectraAfter() {
               TOP of the bottom panel (see sp-snap-rec-strip below) so
               the user's thumbs naturally land on them while holding
               the phone in shooting position. */}
-          {/* v1.3.30 — UI SKIN cycle: MOOG (walnut/cream) → 808 (Roland) → NEON (glass). */}
-          <button
-            className="sp-btn"
-            onClick={cycleUiSkin}
-            style={{
-              ...topBtnStyle,
-              width: 46, height: 36, padding: 0, fontSize: 9, borderRadius: 9, letterSpacing: "0.5px",
-            }}
-            title={`UI SKIN — ${uiSkin} (tap: MOOG → 808 → NEON)`}
-          >{uiSkin}</button>
-          {/* v1.2.73 — HANDS-FREE always-visible top-bar tile so it
-              works regardless of whether EXPORT panel is open.
-              v1.2.77 — tightened to icon + tiny number so it fits in one row. */}
-          <button
-            className="sp-btn"
-            onClick={startHandsFree}
-            style={{
-              ...topBtnStyle,
-              width: 46, height: 36, padding: 0, fontSize: 10, borderRadius: 9, letterSpacing: "0.4px",
-              color: handsFreeCountdown != null ? T.ochre : undefined,
-              borderColor: handsFreeCountdown != null ? T.amber : undefined,
-              boxShadow: handsFreeCountdown != null ? `${T.glow}, ${T.bevel}` : topBtnStyle.boxShadow,
-              ...(handsFreeCountdown != null ? { animation: "activeGlow 1s ease-in-out infinite" } : {}),
-            }}
-            title="HANDS-FREE: 3-2-1 then auto-record 60s, then auto-stop"
-          >{handsFreeCountdown == null
-              ? `⏱${HANDS_FREE_SEC}`
-              : handsFreeCountdown.phase === "in"
-                ? `${handsFreeCountdown.n}…`
-                : `●${handsFreeCountdown.n}`}</button>
           {/* v1.3.66 — RANDOMIZE FX (replaces the v1.2.73 fullscreen
               toggle). Tap to roll fresh values across ALL FX panels:
               ARTIST FX (9 families + variants), GLITCH rack, DATAMOSH
@@ -8473,7 +8300,18 @@ export default function SpectraAfter() {
             }}
           />
 
-          <Section title="VISION MODE LAB" id="modes" open={openSections.has("modes")} onToggle={toggleSection}>
+          {/* v1.5.0 — five tabs: SOURCE · FX · LOOK · VJ · EXPORT */}
+          <div className="sp-rack-tabs" role="tablist">
+            {RACK_TABS.map(t => (
+              <button key={t.id} role="tab" aria-selected={activeTab === t.id} data-active={activeTab === t.id} className="sp-rack-tab"
+                onClick={() => { setActiveTab(t.id); playSfx("click"); }} style={{ color: activeTab === t.id ? "#fff" : undefined }}>
+                <span className="pip" style={{ background: t.pip, color: t.pip }} />
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          <div style={{ display: activeTab === "source" ? "contents" : "none" }}>
 
             {/* ── INPUT ───────────────────────────────────────────────
                 v1.3.4 — split the old 4-way SOURCE picker into two
@@ -8497,7 +8335,7 @@ export default function SpectraAfter() {
                 const fx = faceFxMode;
                 const cam = cameraActive ? "Y" : "n";
                 const seg = faceFxRef.current.texValid ? "Y" : "n";
-                return `v1.3.69 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
+                return `v1.5.0 src:${sm} fx:${fx} cam:${cam} seg:${seg}`;
               })()}
               accent="rgba(255,210,140,0.85)"
             >
@@ -8734,8 +8572,91 @@ export default function SpectraAfter() {
                 </div>
             </SynthPanel>
 
+            {/* ── PIXEL GENERATOR RACK ──────────────────────────────── */}
+            <SynthPanel title="PIXEL GENERATOR" subtitle={`GEN · ${genStyle} · 1 LAYER`} accent="rgba(255,210,140,0.95)">
+              {/* v1.3.44 — MIX: pre-FX hard-light blend of generator over the
+                  active source (camera or upload). At 0 the generator only
+                  appears when SOURCE = GEN (legacy). At >0 the generator
+                  pixel-integrates with the camera/upload feed BEFORE the
+                  shader FX run, so PIXEL SORT / DATAMOSH / WARPS act on the
+                  blended pixel signal — generator stops being an island. */}
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "auto 1fr",
+                gap: 10,
+                alignItems: "center",
+                marginBottom: 8,
+                padding: "6px 8px",
+                borderRadius: 6,
+                border: "1px solid rgba(255,210,140,0.25)",
+                background: "linear-gradient(180deg, rgba(255,210,140,0.06), rgba(0,0,0,0.0))",
+              }}>
+                <Knob label="MIX" value={genMix} min={0} max={1} step={0.01} defaultValue={0.0} onChange={setGenMixThrottled}/>
+                <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(255,210,140,0.62)", lineHeight: 1.3 }}>
+                  Blend GEN over CAM/UPLD before FX run. 0 = isolated source,
+                  &gt;0 pixel-integrates so SORT/MOSH/WARPS chew on both.
+                </div>
+              </div>
+              <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(255,210,140,0.7)", textTransform: "uppercase", marginBottom: 4, paddingLeft: 2, display: "flex", justifyContent: "space-between" }}>
+                <span>Style · {FAMILY_NAMES[(FV_BY_STYLE[genStyle]?.[0] ?? 3)]}</span>
+                <span style={{ opacity: 0.6 }}>{genStyle}</span>
+              </div>
+              {/* v1.5.0 — direct style picker (replaces the FAMILY / VARIANT knobs). */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(6,minmax(0,1fr))", gap: 4, marginBottom: 10 }}>
+                {GEN_STYLES.map((st) => {
+                  const on = genStyle === st;
+                  const meta = GEN_STYLE_META[st];
+                  return (
+                    <button key={st} onClick={() => setGenStyleThrottled(st)} title={st} style={{
+                      padding: "6px 1px", fontSize: 7.5, letterSpacing: "0.4px", fontWeight: 700,
+                      fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
+                      cursor: "pointer", borderRadius: 4,
+                      border: on ? `1px solid ${meta?.color ?? "#fff"}` : "1px solid rgba(0,0,0,0.7)",
+                      color: on ? "#fff" : (meta?.color ? `${meta.color}bb` : "rgba(255,210,140,0.7)"),
+                      background: on ? (meta?.bg ?? "linear-gradient(180deg,#3A0852,#1A0224)") : "linear-gradient(180deg,#1a1a1e 0%,#0a0a12 100%)",
+                      boxShadow: on ? `0 0 8px ${meta?.glow ?? "#fff"}66` : "inset 0 1px 1px rgba(255,255,255,0.05)",
+                      textShadow: on ? `0 0 5px ${meta?.glow ?? "#fff"}` : "none",
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}>{st}</button>
+                  );
+                })}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, marginBottom: 8, justifyItems: "center" }}>
+                <SynthSelector label="BLEND" options={[...GEN_BLEND_KEYS]} value={Math.max(0, GEN_BLEND_KEYS.indexOf(genBlend))} onChange={(i) => setGenBlend(GEN_BLEND_KEYS[i] as GenBlend)}/>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 6, justifyItems: "center" }}>
+                <Knob label="DENSITY" value={genDensity}    min={0}    max={1} step={0.01} defaultValue={0.55} onChange={setGenDensityThrottled}/>
+                <Knob label="SCALE"   value={genScale}      min={0.25} max={4} step={0.01} defaultValue={1.0}  onChange={setGenScaleThrottled}/>
+                <Knob label="SPEED"   value={genSpeed}      min={0}    max={3} step={0.01} defaultValue={0.6}  onChange={setGenSpeedThrottled}/>
+                <Knob label="WARP"    value={genWarp}       min={0}    max={1} step={0.01} defaultValue={0.25} onChange={setGenWarpThrottled}/>
+                <Knob label="RES"     value={genResolution} min={8}    max={160} step={1}  defaultValue={48}   onChange={setGenResolutionThrottled}/>
+              </div>
+              <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 12 }}>
+                <SynthSwitch label="INVERT" on={genInvert} onChange={setGenInvert} onLabel="ON" offLabel="OFF"/>
+                <button
+                  onClick={() => setGenSeed(Math.floor(Math.random() * 999))}
+                  style={{
+                    padding: "6px 12px", fontSize: 10, letterSpacing: "1.4px",
+                    fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontWeight: 700,
+                    cursor: "pointer", borderRadius: 5,
+                    border: "1px solid rgba(0,0,0,0.7)",
+                    color: "rgba(255,210,140,0.95)",
+                    background: "linear-gradient(180deg, #3A0852 0%, #1A0224 100%)",
+                    boxShadow: "inset 0 1px 1px rgba(255,255,255,0.12), inset 0 -2px 3px rgba(0,0,0,0.7)",
+                    textShadow: "0 0 5px rgba(232,160,32,0.55)",
+                    alignSelf: "center", height: 30,
+                  }}
+                >⟲ RANDOM</button>
+              </div>
+            </SynthPanel>
+
+
+          </div>
+
+          <div style={{ display: activeTab === "fx" ? "contents" : "none" }}>
+
             {/* ── PIXEL SORT RACK ───────────────────────────────────── */}
-            <SynthPanel title="PIXEL SORT" subtitle="SHADER SORT · 9 CTRL" accent="rgba(174,255,231,0.95)">
+            <SynthPanel title="PIXEL SORT" subtitle="SORT · HOMAGE · 9 CTRL" accent="rgba(174,255,231,0.95)">
               {/* v1.3.44 — REALSORT moved out of this panel (it was a
                   duplicate of the same knob in ASENDORF / GYSIN, which is
                   its real home as the CPU Asendorf homage cross-fade).
@@ -8743,14 +8664,20 @@ export default function SpectraAfter() {
                   from REALSORT — AMOUNT directly drives the shader sort
                   uniform, so each sub-knob produces a visible, independent
                   change without needing REALSORT lifted at all. */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
                 <Knob label="AMOUNT"  value={sortAmt}      min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortAmt}/>
                 <Knob label="LOW"     value={sortLow}      min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortLow}/>
                 <Knob label="HIGH"    value={sortHigh}     min={0} max={1}    step={0.01} defaultValue={1.0}  onChange={setSortHigh}/>
                 <Knob label="SEGMENT" value={sortSegment}  min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortSegment}/>
                 <Knob label="NOISE"   value={sortRandom}   min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortRandom}/>
-                <Knob label="WOBBLE"  value={sortWobble}   min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setSortWobble}/>
-                <Knob label="TEAR"    value={scanTear}     min={0} max={1}    step={0.01} defaultValue={0.0}  onChange={setScanTear}/>
+              </div>
+              {/* v1.5.0 — ASENDORF / GYSIN homage rack folded in here. */}
+              <div style={{ fontSize: 8, letterSpacing: "1.4px", color: "rgba(174,255,231,0.6)", textTransform: "uppercase", margin: "10px 0 4px", paddingLeft: 2 }}>Homage · Asendorf / Gysin</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
+                <Knob label="REALSORT" value={sortMix}  min={0} max={1} step={0.01} defaultValue={0.0} onChange={setSortMix}/>
+                <Knob label="GLYPH"    value={glyph}    min={0} max={1} step={0.01} defaultValue={0.0} onChange={setGlyph}/>
+                <Knob label="REACT-D"  value={reactD}   min={0} max={1} step={0.01} defaultValue={0.0} onChange={setReactD}/>
+                <Knob label="VOROSRT"  value={voroSort} min={0} max={1} step={0.01} defaultValue={0.0} onChange={setVoroSort}/>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
                 <SynthSelector label="MODE" options={["LINE","SPIRAL","BLOCK","SLICE","HILBERT","ASENDORF"]} value={Math.round(sortMode)} onChange={(v) => setSortMode(v)}/>
@@ -8768,6 +8695,7 @@ export default function SpectraAfter() {
                     setSortAmt(0.0); setSortLow(0.0); setSortHigh(1.0); setSortSegment(0.0);
                     setSortRandom(0.0); setSortWobble(0.0); setScanTear(0.0);
                     setSortMode(0); setSortInterval(0); setSortAngle(0);
+                    setGlyph(0); setSortMix(0); setReactD(0); setVoroSort(0);
                   }}
                   style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
                   title="Reset every PIXEL SORT control to null"
@@ -8788,16 +8716,11 @@ export default function SpectraAfter() {
                 v1.3.48 — added FAMILY as a Knob next to INTENS (per user) so it
                 lives in the knob rack; the SynthSelector below stays as a
                 visual legend showing which family the knob position maps to. */}
-            <SynthPanel title="DATAMOSH" subtitle="MOSH · 9 CTRL + FAMILY" accent="rgba(231,174,255,0.95)">
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
+            <SynthPanel title="DATAMOSH" subtitle="MOSH · 7 CTRL + FAMILY" accent="rgba(231,174,255,0.95)">
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
                 <Knob label="INTENS"   value={datamosh}     min={0} max={2}  step={0.01} defaultValue={0.0}  onChange={setDatamosh}/>
-                <Knob label="FAMILY"   value={moshFamily}   min={0} max={5}  step={1}    defaultValue={0}    onChange={(v) => {
-                  const fv = ([[0.20,0.10],[0.55,0.40],[0.10,0.75],[0.85,0.15],[0.60,0.60],[0.35,0.90]][v]) || [0,0];
-                  setMoshFamily(v); setMoshBleed(fv[0]); setMoshDistort(fv[1]);
-                }}/>
                 <Knob label="I-FRAME"  value={moshIFrame}   min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setMoshIFrame}/>
                 <Knob label="MOTION"   value={moshMotion}   min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setMoshMotion}/>
-                <Knob label="MAP"      value={moshMap}      min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setMoshMap}/>
                 <Knob label="CHRASH"   value={chrash}       min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setChrash}/>
                 <Knob label="FEEDBK"   value={feedback}     min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setFeedback}/>
                 <Knob label="BLOCK"    value={blockGlitch}  min={0} max={1}  step={0.01} defaultValue={0.0}  onChange={setBlockGlitch}/>
@@ -8841,281 +8764,8 @@ export default function SpectraAfter() {
               </div>
             </SynthPanel>
 
-            {/* ── v1.2.58 ASENDORF / GYSIN homage rack ──────────────────────────────────
-                STREAK   = Asendorf threshold directional smear (shader-only)
-                GLYPH    = Gysin (ertdfgcvb) ASCII glyph atlas grid
-                REALSORT = real CPU Asendorf row-sort, 256x144 @ 20 Hz, sampled back
-                REACT-D  = Gray-Scott reaction-diffusion mosh on prev-frame
-                VOROSRT  = Voronoi cell quantizer, brightest tap per cell
-                (v1.2.59: STREAK removed; HILBERT folded into PIXEL SORT MODE=4)
-            */}
-            <SynthPanel title="ASENDORF / GYSIN" subtitle="PIXEL HOMAGE · 4 CTRL" accent="rgba(174,255,231,0.95)">
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
-                <Knob label="GLYPH"    value={glyph}    min={0} max={1} step={0.01} defaultValue={0.0} onChange={setGlyph}/>
-                <Knob label="REALSORT" value={sortMix}  min={0} max={1} step={0.01} defaultValue={0.0} onChange={setSortMix}/>
-                <Knob label="REACT-D"  value={reactD}   min={0} max={1} step={0.01} defaultValue={0.0} onChange={setReactD}/>
-                <Knob label="VOROSRT"  value={voroSort} min={0} max={1} step={0.01} defaultValue={0.0} onChange={setVoroSort}/>
-              </div>
-              <div style={{ display: "flex", justifyContent: "center", marginTop: 10 }}>
-                <button
-                  className="sp-btn"
-                  onClick={() => {
-                    setGlyph(0); setSortMix(0); setReactD(0); setVoroSort(0);
-                  }}
-                  style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
-                  title="Reset every ASENDORF / GYSIN control to default"
-                >HARD RESET</button>
-              </div>
-            </SynthPanel>
-
-            {/* ── PIXEL GENERATOR RACK ──────────────────────────────── */}
-            <SynthPanel title="PIXEL GENERATOR" subtitle={`GEN · ${genStyle}`} accent="rgba(255,210,140,0.95)">
-              {/* Layer selector tabs (L1..L4) ────────────
-                  Tap a tab to select it — every knob, the style grid and
-                  the INVERT/RANDOM controls below then edit THAT layer's
-                  params. The small "●/○" pill inside each layer tab
-                  toggles whether the layer participates in the fused
-                  output (independent of selection).
-                  v1.3.37 — MASTER (broadcast) tab removed; broadcast-edit
-                  was rarely used and easy to trigger by mistake. Edit
-                  layers individually, or use a preset to set them all. */}
-              <div style={{
-                fontSize: 9, letterSpacing: "1.4px", color: "rgba(255,210,140,0.7)",
-                textTransform: "uppercase", marginBottom: 4, paddingLeft: 2,
-                display: "flex", justifyContent: "space-between", alignItems: "baseline",
-              }}>
-                <span>Layers · {genLayers.filter(l => l.enabled).length} active</span>
-                <span style={{ fontSize: 8, opacity: 0.6 }}>
-                  {`EDITING L${selectedLayer+1}`}
-                </span>
-              </div>
-              {/* v1.3.44 — MIX: pre-FX hard-light blend of generator over the
-                  active source (camera or upload). At 0 the generator only
-                  appears when SOURCE = GEN (legacy). At >0 the generator
-                  pixel-integrates with the camera/upload feed BEFORE the
-                  shader FX run, so PIXEL SORT / DATAMOSH / WARPS act on the
-                  blended pixel signal — generator stops being an island. */}
-              <div style={{
-                display: "grid",
-                gridTemplateColumns: "auto 1fr",
-                gap: 10,
-                alignItems: "center",
-                marginBottom: 8,
-                padding: "6px 8px",
-                borderRadius: 6,
-                border: "1px solid rgba(255,210,140,0.25)",
-                background: "linear-gradient(180deg, rgba(255,210,140,0.06), rgba(0,0,0,0.0))",
-              }}>
-                <Knob label="MIX" value={genMix} min={0} max={1} step={0.01} defaultValue={0.0} onChange={setGenMixThrottled}/>
-                <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(255,210,140,0.62)", lineHeight: 1.3 }}>
-                  Blend GEN over CAM/UPLD before FX run. 0 = isolated source,
-                  &gt;0 pixel-integrates so SORT/MOSH/WARPS chew on both.
-                </div>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 4, marginBottom: 8 }}>
-                {[0,1,2,3].map((i) => {
-                  const layer = genLayers[i];
-                  const accent = ["#1200FF","#ff7a3a","#3aff8e","#ff3aa3"][i];
-                  const selected = selectedLayer === i;
-                  const enabled = !!layer?.enabled;
-                  const label = `L${i+1}`;
-                  return (
-                    <div key={`tab${i}`} style={{
-                      position: "relative",
-                      display: "flex", flexDirection: "column",
-                      borderRadius: 6,
-                      border: selected ? `2px solid ${accent}` : `1px solid ${accent}55`,
-                      background: selected
-                        ? `linear-gradient(180deg, ${accent}33, #0a0a12)`
-                        : "linear-gradient(180deg,#15151c,#0a0a12)",
-                      boxShadow: selected
-                        ? `0 0 14px ${accent}88, inset 0 0 0 1px ${accent}33`
-                        : "inset 0 0 0 1px rgba(0,0,0,0.4)",
-                      transition: "all 0.12s ease",
-                      overflow: "hidden",
-                    }}>
-                      <button
-                        onPointerDown={(e) => e.stopPropagation()}
-                        onClick={(e) => { e.stopPropagation(); setSelectedLayer(i); }}
-                        title={`Edit Layer ${i+1}'s params`}
-                        style={{
-                          flex: 1, padding: "12px 4px 6px",
-                          fontSize: 12, fontWeight: 900, letterSpacing: "1.4px",
-                          fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
-                          color: selected ? "#f8f8f8" : `${accent}dd`,
-                          background: "transparent",
-                          border: "none",
-                          cursor: "pointer",
-                          textShadow: selected ? `0 0 10px ${accent}` : "none",
-                          minHeight: 56,
-                        }}
-                      >{label}</button>
-                      {layer && (
-                        <button
-                          onPointerDown={(e) => e.stopPropagation()}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setGenLayers(prev => prev.map(
-                              (l, idx) => idx === i ? { ...l, enabled: !l.enabled } : l
-                            ));
-                          }}
-                          title={enabled ? "Layer ON — tap to mute" : "Layer OFF — tap to unmute"}
-                          style={{
-                            margin: 4, padding: "3px 0",
-                            fontSize: 8, fontWeight: 800, letterSpacing: "0.8px",
-                            border: enabled ? `1px solid ${accent}` : `1px dashed ${accent}66`,
-                            color: enabled ? "#f8f8f8" : `${accent}aa`,
-                            background: enabled ? `${accent}55` : `${accent}11`,
-                            borderRadius: 3, cursor: "pointer",
-                            fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
-                          }}
-                        >{enabled ? "● ON" : "○ OFF"}</button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              {/* Family / Variant / Blend live as compact knobs (no preset grid). */}
-              <div style={{
-                fontSize: 9, letterSpacing: "1.4px", color: "rgba(255,210,140,0.7)",
-                textTransform: "uppercase", marginBottom: 4, paddingLeft: 2,
-                display: "flex", justifyContent: "space-between",
-              }}>
-                <span>{FAMILY_NAMES[(FV_BY_STYLE[genStyle]?.[0] ?? 3)]} · {genStyle}</span>
-                <span style={{ opacity: 0.6 }}>BLEND {genBlend}</span>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(6,minmax(0,1fr))", gap: 6, justifyItems: "center", marginBottom: 10 }}>
-                <Knob label="FAMILY"
-                  value={FV_BY_STYLE[genStyle]?.[0] ?? 3} min={0} max={9} step={1} defaultValue={3}
-                  onChange={(f) => {
-                    const v = FV_BY_STYLE[genStyle]?.[1] ?? 0;
-                    const row = STYLE_BY_FV[f] ?? STYLE_BY_FV[3];
-                    setGenStyleThrottled((row[v] ?? row[0]) as GenStyle);
-                  }}
-                />
-                <Knob label="VARIANT"
-                  value={FV_BY_STYLE[genStyle]?.[1] ?? 0} min={0} max={3} step={1} defaultValue={0}
-                  onChange={(v) => {
-                    const f = FV_BY_STYLE[genStyle]?.[0] ?? 3;
-                    const row = STYLE_BY_FV[f] ?? STYLE_BY_FV[3];
-                    setGenStyleThrottled((row[v] ?? row[0]) as GenStyle);
-                  }}
-                />
-                <Knob label="GLYPH"
-                  value={genGlyphMode} min={0} max={5} step={1} defaultValue={0}
-                  onChange={setGenGlyphMode}
-                />
-                <Knob label="BLEND"
-                  value={GEN_BLEND_KEYS.indexOf(genBlend)} min={0} max={GEN_BLEND_KEYS.length - 1} step={1} defaultValue={0}
-                  onChange={(i) => setGenBlend(GEN_BLEND_KEYS[i] as GenBlend)}
-                />
-                <Knob label="RES"     value={genResolution} min={8} max={160} step={1}    defaultValue={48}   onChange={setGenResolutionThrottled}/>
-                <Knob label="SEED"    value={genSeed}       min={0} max={999} step={1}    defaultValue={7}    onChange={setGenSeedThrottled}/>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 6, justifyItems: "center" }}>
-                <Knob label="DENSITY" value={genDensity}    min={0}    max={1} step={0.01} defaultValue={0.55} onChange={setGenDensityThrottled}/>
-                <Knob label="SCALE"   value={genScale}      min={0.25} max={4} step={0.01} defaultValue={1.0}  onChange={setGenScaleThrottled}/>
-                <Knob label="SPEED"   value={genSpeed}      min={0}    max={3} step={0.01} defaultValue={0.6}  onChange={setGenSpeedThrottled}/>
-                <Knob label="WARP"    value={genWarp}       min={0}    max={1} step={0.01} defaultValue={0.25} onChange={setGenWarpThrottled}/>
-                <Knob label="JITTER"  value={genJitter}     min={0}    max={1} step={0.01} defaultValue={0.15} onChange={setGenJitterThrottled}/>
-              </div>
-              <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 12 }}>
-                <SynthSwitch label="INVERT" on={genInvert} onChange={setGenInvert} onLabel="ON" offLabel="OFF"/>
-                <button
-                  onClick={() => setGenSeed(Math.floor(Math.random() * 999))}
-                  style={{
-                    padding: "6px 12px", fontSize: 10, letterSpacing: "1.4px",
-                    fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)", fontWeight: 700,
-                    cursor: "pointer", borderRadius: 5,
-                    border: "1px solid rgba(0,0,0,0.7)",
-                    color: "rgba(255,210,140,0.95)",
-                    background: "linear-gradient(180deg, #3A0852 0%, #1A0224 100%)",
-                    boxShadow: "inset 0 1px 1px rgba(255,255,255,0.12), inset 0 -2px 3px rgba(0,0,0,0.7)",
-                    textShadow: "0 0 5px rgba(232,160,32,0.55)",
-                    alignSelf: "center", height: 30,
-                  }}
-                >⟲ RANDOM</button>
-              </div>
-            </SynthPanel>
-
-            {/* ── COLOR (master color bus — every color control lives here) ── */}
-            <SynthPanel title="COLOR" subtitle={`PAL · ${genPalette}`} accent="rgba(255,180,255,0.95)">
-              {/* Palette selector — moved from PIXEL GENERATOR */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4, marginBottom: 8 }}>
-                {GEN_PALETTE_KEYS.map((pk) => {
-                  const active = genPalette === pk;
-                  const sw = pk === "MONO"    ? "linear-gradient(135deg,#fff,#888,#222)"
-                           : pk === "WARM"    ? "linear-gradient(135deg,#ffd27a,#ff7a3a,#a8003c)"
-                           : pk === "COOL"    ? "linear-gradient(135deg,#7ad6ff,#3a78ff,#001ea8)"
-                           : pk === "PINK"    ? "linear-gradient(135deg,#ffd2f0,#ff3aa3,#7a006a)"
-                           : pk === "ACID"    ? "linear-gradient(135deg,#d6ff3a,#3aff8e,#0a8000)"
-                           : pk === "RAINBOW" ? "linear-gradient(90deg,#ff3a3a,#ffd23a,#3aff7a,#3ad6ff,#7a3aff,#ff3ad6)"
-                           :                    "linear-gradient(135deg,#3A0852,#1A0224)";
-                  return (
-                    <button
-                      key={pk}
-                      onClick={() => setGenPalette(pk)}
-                      title={pk === "CUSTOM" ? "Use HUE / SPREAD / SAT knobs" : `${pk} palette`}
-                      style={{
-                        padding: "6px 2px 4px",
-                        fontSize: 8, letterSpacing: "0.6px", fontWeight: 700,
-                        fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
-                        cursor: "pointer", borderRadius: 4,
-                        border: active ? "1px solid rgba(255,180,255,0.95)" : "1px solid rgba(0,0,0,0.7)",
-                        color: active ? "#fff" : "rgba(255,180,255,0.7)",
-                        background: active
-                          ? "linear-gradient(180deg,#3A0852 0%,#1A0224 100%)"
-                          : "linear-gradient(180deg,#1a1a1e 0%,#0a0a12 100%)",
-                        boxShadow: active
-                          ? "inset 0 1px 1px rgba(255,255,255,0.18), 0 0 8px rgba(255,180,255,0.4)"
-                          : "inset 0 1px 1px rgba(255,255,255,0.05)",
-                        textShadow: active ? "0 0 5px rgba(255,180,255,0.8)" : "none",
-                        position: "relative", overflow: "hidden",
-                      }}
-                    >
-                      <div style={{
-                        height: 6, marginBottom: 3, borderRadius: 2, background: sw,
-                        opacity: active ? 1 : 0.7,
-                      }}/>
-                      {pk}
-                    </button>
-                  );
-                })}
-              </div>
-              {/* Generator color knobs (was in PIXEL GENERATOR) */}
-              <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(255,180,255,0.7)", textTransform: "uppercase", marginBottom: 4, paddingLeft: 2 }}>Generator Color</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center", marginBottom: 12 }}>
-                <Knob label="HUE"     value={genHue}        min={0} max={1}    step={0.01} defaultValue={0.78} onChange={setGenHueThrottled}/>
-                <Knob label="SPREAD"  value={genHueSpread}  min={0} max={1}    step={0.01} defaultValue={0.35} onChange={setGenHueSpreadThrottled}/>
-                <Knob label="SAT"     value={genSat}        min={0} max={1}    step={0.01} defaultValue={0.85} onChange={setGenSatThrottled}/>
-                <Knob label="CTRST"   value={genContrastG}  min={0} max={1}    step={0.01} defaultValue={0.7}  onChange={setGenContrastThrottled}/>
-              </div>
-              {/* Master tone/color (was in MASTER + PIXEL SORT) */}
-              <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(255,180,255,0.7)", textTransform: "uppercase", marginBottom: 4, paddingLeft: 2 }}>Master Color</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center", marginBottom: 12 }}>
-                <Knob label="HUE"     value={hueShift}    min={-0.5} max={0.5} step={0.01} defaultValue={0.0} onChange={setHueShift}/>
-                <Knob label="SAT"     value={saturation}  min={0} max={3}      step={0.01} defaultValue={1.0} onChange={setSaturation}/>
-                <Knob label="BRIGHT"  value={brightness}  min={0.2} max={2.0}  step={0.01} defaultValue={1.0} onChange={setBrightness}/>
-                <Knob label="CONT"    value={contrast}    min={0.2} max={3.0}  step={0.01} defaultValue={1.0} onChange={setContrast}/>
-              </div>
-              {/* v1.3.37 — Output bus row (was the standalone MASTER panel).
-                  Folded in here so every post-process control lives in one
-                  place: Master Color tints the output, OUT scales it. */}
-              <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(255,180,255,0.7)", textTransform: "uppercase", marginBottom: 4, paddingLeft: 2 }}>Output</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center", marginBottom: 12 }}>
-                <Knob label="GAIN"   value={gain}       min={0} max={1}  step={0.01} defaultValue={0.5} onChange={setGain}/>
-                <Knob label="SPEED"  value={speed}      min={0} max={4}  step={0.05} defaultValue={1.0} onChange={setSpeed}/>
-                <Knob label="SCAN"   value={scanlines}  min={0} max={1}  step={0.01} defaultValue={0.0} onChange={setScanlines}/>
-                <Knob label="ZOOM"   value={zoom}       min={0} max={2}  step={0.01} defaultValue={0.0} onChange={setZoom}/>
-              </div>
-              {/* Sort key (color channel that drives PIXEL SORT) */}
-              <div style={{ display: "flex", justifyContent: "center" }}>
-                <SynthSelector label="SORT KEY" options={["LUM","HUE","SAT","R","G","B","INTENS","MIN"]} value={Math.round(sortKey)} onChange={(v) => setSortKey(v)}/>
-              </div>
-            </SynthPanel>
-
             {/* ── FX SETTINGS ─────────────────────────────────────── */}
-            <SynthPanel title="FX SETTINGS" subtitle="VISUAL MODE · WARP · 5 CTRL" accent="rgba(231,174,255,0.95)">
+            <SynthPanel title="VISION" subtitle="VISUAL MODE · DISRUPT · 3 CTRL" accent="rgba(231,174,255,0.95)">
               {/* Full visual-mode picker (the classic NIGHT/THERMAL/EDGE/MOTION
                   /CMYK/etc. set). Selecting any of these overrides the LAYER
                   MODE PXL/MOSH selection so the entire shader pipeline runs
@@ -9158,11 +8808,10 @@ export default function SpectraAfter() {
                   );
                 })}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
                 <Knob label="DISRUPT"  value={disrupt}         min={0} max={1} step={0.01} defaultValue={0.0} onChange={setDisrupt}/>
                 <Knob label="COUNT"    value={disruptCount}    min={0} max={1} step={0.01} defaultValue={0.4} onChange={setDisruptCount}/>
                 <Knob label="SIZE"     value={disruptSize}     min={0} max={1} step={0.01} defaultValue={0.4} onChange={setDisruptSize}/>
-                <Knob label="CONTRARY" value={disruptContrary} min={0} max={1} step={0.01} defaultValue={1.0} onChange={setDisruptContrary}/>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
                 <SynthSelector label="SHAPE" options={["BLOB","RING","HEX","CROSS","STRIPE","SPIRAL"]} value={Math.round(disruptShape)} onChange={(v) => setDisruptShape(v)}/>
@@ -9209,80 +8858,84 @@ export default function SpectraAfter() {
                 chain any combo · each warp feeds the next · all mask-gated
               </div>
             </SynthPanel>
+          </div>
 
-            {/* ── v1.3.61 NOVEL CS FX rack ── 9 brand-new GPU shader
-                primitives, one per artist family. Each KNOB (0..1)
-                directly drives a unique mathematical primitive in
-                scene.frag — NOT a remix of existing rack uniforms:
-                  MENKMAN  — true 8x8 DCT block reconstruct (DC + first AC)
-                  MOLNÁR   — recursive golden-ratio Mondrian BSP
-                  UCNV     — Haar wavelet HF subband swap with prev frame
-                  GYSIN    — Gabor-patch phosphene synthesis
-                  ASENDORF — 2D vertical-band threshold sort
-                  JODI     — bit cellular automaton over RGB neighborhood
-                  ARCANGEL — NES nametable scroll w/ fine-X + 4-color quant
-                  PAIK     — magnetic dipole-field UV warp
-                  FENTON   — venetian-band SAD motion-vector swap (1978 algo)
-                Composes with everything else; runs at the very tail of
-                main(). v1.3.62+ will add rotary detents per knob to cycle
-                3-5 sub-variants per family. */}
-            <SynthPanel title="ARTIST FX" subtitle="RAW PRIMITIVES" accent="rgba(255,180,255,0.95)">
-              {/* v1.3.73 — text trim. Labels shortened to 4-char codes so
-                  they no longer overflow the 3-col phone grid; subtitle
-                  pared down; verbose footer removed. */}
-              {(() => {
-                const artistRows: Array<{ label: string; amt: number; setAmt: (v: number) => void; fam: number; setFam: (v: number) => void }> = [
-                  { label: "MENK", amt: menkmanFX,  setAmt: setMenkmanFX,  fam: menkmanFam,  setFam: setMenkmanFam  },
-                  { label: "MOLN", amt: molnarFX,   setAmt: setMolnarFX,   fam: molnarFam,   setFam: setMolnarFam   },
-                  { label: "UCNV", amt: ucnvFX,     setAmt: setUcnvFX,     fam: ucnvFam,     setFam: setUcnvFam     },
-                  { label: "GYSN", amt: gysinFX,    setAmt: setGysinFX,    fam: gysinFam,    setFam: setGysinFam    },
-                  { label: "ASEN", amt: asendorfFX, setAmt: setAsendorfFX, fam: asendorfFam, setFam: setAsendorfFam },
-                  { label: "JODI", amt: jodiFX,     setAmt: setJodiFX,     fam: jodiFam,     setFam: setJodiFam     },
-                  { label: "ARCN", amt: arcangelFX, setAmt: setArcangelFX, fam: arcangelFam, setFam: setArcangelFam },
-                  { label: "PAIK", amt: paikFX,     setAmt: setPaikFX,     fam: paikFam,     setFam: setPaikFam     },
-                  { label: "FENT", amt: fentonFX,   setAmt: setFentonFX,   fam: fentonFam,   setFam: setFentonFam   },
-                ];
-                return (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10, marginTop: 4, justifyItems: "center" }}>
-                    {artistRows.map(row => (
-                      <div key={row.label} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                        <Knob label={row.label} value={row.amt} min={0} max={1} step={0.01} defaultValue={0} onChange={row.setAmt} size={46} />
-                        <Knob label="FAM"        value={row.fam} min={0} max={2} step={1}    defaultValue={0} onChange={row.setFam} size={26} />
-                      </div>
-                    ))}
-                  </div>
-                );
-              })()}
-              {/* v1.3.64 — touch-bend strength scales how hard ARTIST FX warp toward the finger */}
-              <div style={{ marginTop: 10, display: "flex", justifyContent: "center" }}>
-                <Knob label="TOUCH" value={artistTouchStr} min={0} max={1} step={0.01} defaultValue={0.7} onChange={setArtistTouchStr} size={48} />
+          <div style={{ display: activeTab === "look" ? "contents" : "none" }}>
+            {/* ── COLOR (master color bus — every color control lives here) ── */}
+            <SynthPanel title="COLOR" subtitle={`PAL · ${genPalette}`} accent="rgba(255,180,255,0.95)">
+              {/* Palette selector — moved from PIXEL GENERATOR */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", gap: 4, marginBottom: 8 }}>
+                {GEN_PALETTE_KEYS.map((pk) => {
+                  const active = genPalette === pk;
+                  const sw = pk === "MONO"    ? "linear-gradient(135deg,#fff,#888,#222)"
+                           : pk === "WARM"    ? "linear-gradient(135deg,#ffd27a,#ff7a3a,#a8003c)"
+                           : pk === "COOL"    ? "linear-gradient(135deg,#7ad6ff,#3a78ff,#001ea8)"
+                           : pk === "PINK"    ? "linear-gradient(135deg,#ffd2f0,#ff3aa3,#7a006a)"
+                           : pk === "ACID"    ? "linear-gradient(135deg,#d6ff3a,#3aff8e,#0a8000)"
+                           : pk === "RAINBOW" ? "linear-gradient(90deg,#ff3a3a,#ffd23a,#3aff7a,#3ad6ff,#7a3aff,#ff3ad6)"
+                           :                    "linear-gradient(135deg,#3A0852,#1A0224)";
+                  return (
+                    <button
+                      key={pk}
+                      onClick={() => setGenPalette(pk)}
+                      title={pk === "CUSTOM" ? "Use HUE / SPREAD / SAT knobs" : `${pk} palette`}
+                      style={{
+                        padding: "6px 2px 4px",
+                        fontSize: 8, letterSpacing: "0.6px", fontWeight: 700,
+                        fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
+                        cursor: "pointer", borderRadius: 4,
+                        border: active ? "1px solid rgba(255,180,255,0.95)" : "1px solid rgba(0,0,0,0.7)",
+                        color: active ? "#fff" : "rgba(255,180,255,0.7)",
+                        background: active
+                          ? "linear-gradient(180deg,#3A0852 0%,#1A0224 100%)"
+                          : "linear-gradient(180deg,#1a1a1e 0%,#0a0a12 100%)",
+                        boxShadow: active
+                          ? "inset 0 1px 1px rgba(255,255,255,0.18), 0 0 8px rgba(255,180,255,0.4)"
+                          : "inset 0 1px 1px rgba(255,255,255,0.05)",
+                        textShadow: active ? "0 0 5px rgba(255,180,255,0.8)" : "none",
+                        position: "relative", overflow: "hidden",
+                      }}
+                    >
+                      <div style={{
+                        height: 6, marginBottom: 3, borderRadius: 2, background: sw,
+                        opacity: active ? 1 : 0.7,
+                      }}/>
+                      {pk}
+                    </button>
+                  );
+                })}
               </div>
-              <div style={{ marginTop: 10, display: "flex", justifyContent: "center" }}>
-                <button
-                  onClick={() => {
-                    setMenkmanFX(0); setMolnarFX(0); setUcnvFX(0); setGysinFX(0);
-                    setAsendorfFX(0); setJodiFX(0); setArcangelFX(0); setPaikFX(0); setFentonFX(0);
-                    setMenkmanFam(0); setMolnarFam(0); setUcnvFam(0); setGysinFam(0);
-                    setAsendorfFam(0); setJodiFam(0); setArcangelFam(0); setPaikFam(0); setFentonFam(0);
-                  }}
-                  style={{
-                    padding: "5px 14px", fontSize: 9, letterSpacing: "1.4px", fontWeight: 700,
-                    background: "rgba(255,180,255,0.08)",
-                    border: "1px solid rgba(255,180,255,0.45)",
-                    color: "rgba(255,210,255,0.92)", cursor: "pointer", borderRadius: 4,
-                    fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
-                  }}
-                  title="Reset all 9 ARTIST FX knobs + families to 0"
-                >ALL OFF</button>
+              {/* Master tone/color (was in MASTER + PIXEL SORT) */}
+              <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(255,180,255,0.7)", textTransform: "uppercase", marginBottom: 4, paddingLeft: 2 }}>Master Color</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,minmax(0,1fr))", gap: 8, justifyItems: "center", marginBottom: 12 }}>
+                <Knob label="HUE"     value={hueShift}    min={-0.5} max={0.5} step={0.01} defaultValue={0.0} onChange={setHueShift}/>
+                <Knob label="SAT"     value={saturation}  min={0} max={3}      step={0.01} defaultValue={1.0} onChange={setSaturation}/>
+                <Knob label="BRIGHT"  value={brightness}  min={0.2} max={2.0}  step={0.01} defaultValue={1.0} onChange={setBrightness}/>
+                <Knob label="CONT"    value={contrast}    min={0.2} max={3.0}  step={0.01} defaultValue={1.0} onChange={setContrast}/>
+              </div>
+              {/* v1.3.37 — Output bus row (was the standalone MASTER panel).
+                  Folded in here so every post-process control lives in one
+                  place: Master Color tints the output, OUT scales it. */}
+              <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(255,180,255,0.7)", textTransform: "uppercase", marginBottom: 4, paddingLeft: 2 }}>Output</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 8, justifyItems: "center", marginBottom: 12 }}>
+                <Knob label="SPEED"  value={speed}      min={0} max={4}  step={0.05} defaultValue={1.0} onChange={setSpeed}/>
+                <Knob label="SCAN"   value={scanlines}  min={0} max={1}  step={0.01} defaultValue={0.0} onChange={setScanlines}/>
+                <Knob label="ZOOM"   value={zoom}       min={0} max={2}  step={0.01} defaultValue={0.0} onChange={setZoom}/>
+              </div>
+              {/* Sort key (color channel that drives PIXEL SORT) */}
+              <div style={{ display: "flex", justifyContent: "center" }}>
+                <SynthSelector label="SORT KEY" options={["LUM","HUE","SAT","R","G","B","INTENS","MIN"]} value={Math.round(sortKey)} onChange={(v) => setSortKey(v)}/>
               </div>
             </SynthPanel>
+
+
 
             {/* v1.3.78 — PIXEL GEN II removed (perf). */}
 
             {/* ── v1.3.58/v1.3.60 GLITCH PALETTE rack (kept as POWER-gated
                 fallback for the v1.3.60 modulator system; ARTIST FX above
                 is the new primitive layer). */}
-            <SynthPanel title="GLITCH PALETTE" subtitle="9 GENERATIVE HOMAGES · DYNAMIC FX" accent="rgba(255,180,255,0.95)">
+            <SynthPanel title="GLITCH PALETTE" subtitle="9 HOMAGES · LIVE + RAW" accent="rgba(255,180,255,0.95)">
               <SynthSwitch
                 label="POWER"
                 offLabel="OFF"
@@ -9326,16 +8979,51 @@ export default function SpectraAfter() {
                   );
                 })}
               </div>
+              {/* v1.5.0 — ARTIST FX raw primitives folded in here, behind a disclosure. */}
+              <button className="sp-tile" onClick={() => setRawFxOpen(v => !v)}
+                style={{ ...modeBtnStyle, width: "100%", marginTop: 10, fontSize: 9, letterSpacing: "1.6px" }}
+                title="Nine raw GPU primitives, one per artist family (the tiles above are the live, modulated versions)">
+                {rawFxOpen ? "▾ RAW PRIMITIVES" : "▸ RAW PRIMITIVES · 9 KNOBS"}
+              </button>
+              {rawFxOpen && (() => {
+                const artistRows: Array<{ label: string; amt: number; setAmt: (v: number) => void }> = [
+                  { label: "MENK", amt: menkmanFX,  setAmt: setMenkmanFX  },
+                  { label: "MOLN", amt: molnarFX,   setAmt: setMolnarFX   },
+                  { label: "UCNV", amt: ucnvFX,     setAmt: setUcnvFX     },
+                  { label: "GYSN", amt: gysinFX,    setAmt: setGysinFX    },
+                  { label: "ASEN", amt: asendorfFX, setAmt: setAsendorfFX },
+                  { label: "JODI", amt: jodiFX,     setAmt: setJodiFX     },
+                  { label: "ARCN", amt: arcangelFX, setAmt: setArcangelFX },
+                  { label: "PAIK", amt: paikFX,     setAmt: setPaikFX     },
+                  { label: "FENT", amt: fentonFX,   setAmt: setFentonFX   },
+                ];
+                return (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 8, marginTop: 10, justifyItems: "center" }}>
+                      {artistRows.map(row => (
+                        <Knob key={row.label} label={row.label} value={row.amt} min={0} max={1} step={0.01} defaultValue={0} onChange={row.setAmt} size={44} />
+                      ))}
+                    </div>
+                    <div style={{ marginTop: 8, display: "flex", justifyContent: "center" }}>
+                      <button className="sp-btn"
+                        onClick={() => {
+                          setMenkmanFX(0); setMolnarFX(0); setUcnvFX(0); setGysinFX(0);
+                          setAsendorfFX(0); setJodiFX(0); setArcangelFX(0); setPaikFX(0); setFentonFX(0);
+                          setMenkmanFam(0); setMolnarFam(0); setUcnvFam(0); setGysinFam(0);
+                          setAsendorfFam(0); setJodiFam(0); setArcangelFam(0); setPaikFam(0); setFentonFam(0);
+                        }}
+                        style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
+                        title="Reset all 9 raw primitives">ALL OFF</button>
+                    </div>
+                  </>
+                );
+              })()}
               <div style={{ marginTop: 8, fontSize: 8, letterSpacing: "1px", color: "rgba(255,180,255,0.55)", textAlign: "center" }}>
                 each preset is a live generator · uniforms breathe per frame
               </div>
             </SynthPanel>
+          </div>
 
-            {/* v1.3.37 — Standalone MASTER (OUT BUS) panel removed.
-                GAIN / SPEED / SCAN / ZOOM moved into COLOR → Output row
-                so the post-process controls all live in one rack. */}
-
-          </Section>
 
           {false && <Section title="PRESETS" id="presets" open={openSections.has("presets")} onToggle={toggleSection}>
             <div style={{ padding: "8px 10px", display: "grid", gap: 6 }}>
@@ -9444,10 +9132,54 @@ export default function SpectraAfter() {
             </div>
           </Section>}
 
-          <Section title="EXPORT · CAMERA · PROJECT" id="user" open={openSections.has("user")} onToggle={toggleSection}>
-            <div style={{ padding: "8px 10px", display: "grid", gap: 10 }}>
-              {/* vj-io (v1.4.1) — plug-and-play audio in / display out */}
-              <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>VJ · Audio In</div>
+          <div style={{ display: activeTab === "vj" ? "contents" : "none" }}>
+            <SynthPanel title="VJ" subtitle="AUTO-VJ · AUDIO IN · DISPLAY OUT" accent="rgba(82,201,122,0.95)">
+              <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>Auto-VJ</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <button className="sp-tile" onClick={() => { setVjMode(a => !a); playSfx("toggle"); }}
+                  title="Autonomous FX blending — presets cycle on the beat of the selected audio input"
+                  style={{ ...modeBtnStyle, ...(vjMode ? modeBtnActive : {}), minWidth: 120, ...(vjMode ? { animation: "activeGlow 1.6s ease-in-out infinite" } : {}) }}>
+                  {vjMode ? "◉ AUTO-VJ ON" : "○ AUTO-VJ OFF"}</button>
+              {/* v1.2.72 — HANDS-FREE compact button: 3-2-1 count-IN, then
+                  60 s auto-record, then 3-2-1 count-OUT, then auto-stop.
+                  Tap again at any phase to cancel/stop. Lives next to
+                  RECORD so it doesn't obscure other UI. */}
+              <button
+                className="sp-tile"
+                onClick={startHandsFree}
+                title="3-2-1 countdown, then auto-record 60 s, then auto-stop"
+                style={{
+                  ...modeBtnStyle,
+                  ...(handsFreeCountdown != null ? modeBtnActive : {}),
+                  minWidth: 150, minHeight: 36, fontSize: 10, letterSpacing: "1.5px",
+                  ...(handsFreeCountdown != null ? { animation: "activeGlow 1s ease-in-out infinite" } : {}),
+                }}
+              >{handsFreeCountdown == null
+                  ? `⏱ HANDS-FREE · ${HANDS_FREE_SEC}s`
+                  : handsFreeCountdown.phase === "in"
+                    ? `✕ CANCEL · ${handsFreeCountdown.n}…`
+                    : handsFreeCountdown.phase === "out"
+                      ? `✕ STOP · ${handsFreeCountdown.n}s`
+                      : `✕ STOP · ${handsFreeCountdown.n}s LEFT`}</button>
+              </div>
+              {/* vj-io (v1.4.2) — plug-and-play audio in / display out */}
+              <div id="gps-vj-audio-in" style={{
+                fontSize: 9, letterSpacing: "1.4px", color: vjRowFlash ? "rgba(174,255,231,1)" : "rgba(231,174,255,0.55)", textTransform: "uppercase",
+                scrollMarginTop: 12, transition: "color 0.4s",
+              }}>VJ · Audio In</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", outline: vjRowFlash ? "1px solid rgba(174,255,231,0.8)" : "1px solid transparent", outlineOffset: 4, borderRadius: 6, transition: "outline-color 0.4s" }}>
+                <button className="sp-tile" onClick={() => setAudioReactOn(!audioReactOn)} title="Listen to the selected input and drive the racks from it"
+                  style={{ ...modeBtnStyle, ...(audioReactOn ? modeBtnActive : {}), minWidth: 110 }}>{audioReactOn ? "● AUDIO REACT ON" : "○ AUDIO REACT OFF"}</button>
+                <button className="sp-tile"
+                  onClick={() => { if (trackName) toggleTrackPlayback(); else trackFileInputRef.current?.click(); }}
+                  title={trackName ? `Track: ${trackName} — tap to ${trackPlaying ? "pause" : "play"}` : "Load an audio file from the phone and react to it (plays through the speaker)"}
+                  style={{ ...modeBtnStyle, ...(trackName ? modeBtnActive : {}), minWidth: 90 }}>{trackName ? (trackPlaying ? "▮▮ TRACK" : "▶ TRACK") : "LOAD TRACK"}</button>
+                {trackName && (
+                  <button className="sp-tile" onClick={() => stopTrack()} title="Unload the track and go back to the live input"
+                    style={{ ...modeBtnStyle, minWidth: 70 }}>UNLOAD</button>
+                )}
+              </div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <button className="sp-tile" onClick={() => setAudioInPref("auto")} title="External input whenever one is plugged in, phone mic otherwise"
                   style={{ ...modeBtnStyle, ...(audioInPref === "auto" ? modeBtnActive : {}), minWidth: 70 }}>AUTO</button>
@@ -9460,12 +9192,31 @@ export default function SpectraAfter() {
                   </button>
                 ))}
               </div>
+              <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 10, alignItems: "center" }}>
+                <Knob label="REACT" value={audioReactAmt} min={0} max={1} step={0.01} defaultValue={0.6} onChange={setAudioReactAmt} size={46} />
+                <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(200,180,220,0.6)", lineHeight: 1.35, textTransform: "uppercase" }}>
+                  How hard the input pushes SORT / MOSH on top of your knobs. 0 = shader-only reactivity, 1 = full lift on every beat.
+                </div>
+              </div>
+              {/* live meter: level / bass / beat straight from the render loop's analysis */}
+              <div style={{ display: "grid", gridTemplateColumns: "34px 1fr", gap: "3px 8px", alignItems: "center", fontSize: 7, letterSpacing: "1px", color: "rgba(200,180,220,0.6)", textTransform: "uppercase" }}>
+                {([["LEVEL", audioMeter.level, "rgba(174,255,231,0.9)"], ["BASS", audioMeter.bass, "rgba(231,174,255,0.9)"], ["BEAT", audioMeter.beat, "rgba(255,180,80,0.95)"]] as [string, number, string][]).map(([lbl, v, c]) => (
+                  <Fragment key={lbl}>
+                    <span>{lbl}</span>
+                    <div style={{ height: 5, borderRadius: 3, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+                      <div style={{ height: "100%", width: `${Math.round(Math.min(1, Math.max(0, v)) * 100)}%`, background: c, transition: "width 120ms linear" }} />
+                    </div>
+                  </Fragment>
+                ))}
+              </div>
               <div style={{ fontSize: 8, letterSpacing: "1px", color: audioInInfo ? "rgba(174,255,231,0.8)" : "rgba(200,180,220,0.55)", textTransform: "uppercase" }}>
-                {audioInInfo
-                  ? `IN · ${audioInInfo.label} · ${Math.round(audioInInfo.sampleRate / 1000)} kHz · ${audioInInfo.channelCount >= 2 ? "stereo" : "mono"}${audioInInfo.kind === "external" ? " · line" : ""}`
-                  : vjMode
-                    ? "IN · opening audio input…"
-                    : "IN · turn on AUTO-VJ (○) to open the input · a USB interface or DJ mixer takes over when plugged in"}
+                {!audioReactOn
+                  ? "IN · OFF — tap AUDIO REACT or ♪ to listen"
+                  : trackName
+                    ? `IN · TRACK · ${trackName}${trackPlaying ? " · playing" : " · paused"}`
+                    : audioInInfo
+                      ? `IN · ${audioInInfo.label} · ${Math.round(audioInInfo.sampleRate / 1000)} kHz · ${audioInInfo.channelCount >= 2 ? "stereo" : "mono"}${audioInInfo.kind === "external" ? " · line" : ""}`
+                      : "IN · opening audio input… (allow the microphone if asked) · a USB interface or DJ mixer takes over when plugged in"}
               </div>
 
               <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>VJ · Display Out</div>
@@ -9481,6 +9232,13 @@ export default function SpectraAfter() {
                   : "OUT · plug a USB-C → HDMI adapter or cast · the canvas goes full-bleed on its own"}
               </div>
 
+              </div>
+            </SynthPanel>
+          </div>
+
+          <div style={{ display: activeTab === "export" ? "contents" : "none" }}>
+            <SynthPanel title="EXPORT" subtitle="GIF · VIDEO · CAMERA · PROJECT" accent="rgba(232,160,32,0.95)">
+            <div style={{ display: "grid", gap: 10 }}>
               <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>Format</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <button
@@ -9543,7 +9301,7 @@ export default function SpectraAfter() {
               </div>
               {exportFormat === "video" && !audioActive && (
                 <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(200,180,220,0.55)", textAlign: "center", textTransform: "uppercase" }}>
-                  Turn on AUTO-VJ (○) to record audio from the selected input
+                  Audio is recorded from the VJ · Audio In source (tap ♪)
                 </div>
               )}
               {exportFormat === "gif" && (
@@ -9562,27 +9320,6 @@ export default function SpectraAfter() {
                   ...(recording ? { animation: "activeGlow 1s ease-in-out infinite" } : {}),
                 }}
               >{recording ? "■ STOP RECORDING" : "● RECORD"}</button>
-              {/* v1.2.72 — HANDS-FREE compact button: 3-2-1 count-IN, then
-                  60 s auto-record, then 3-2-1 count-OUT, then auto-stop.
-                  Tap again at any phase to cancel/stop. Lives next to
-                  RECORD so it doesn't obscure other UI. */}
-              <button
-                className="sp-tile"
-                onClick={startHandsFree}
-                title="3-2-1 countdown, then auto-record 60 s, then auto-stop"
-                style={{
-                  ...modeBtnStyle,
-                  ...(handsFreeCountdown != null ? modeBtnActive : {}),
-                  width: "100%", minHeight: 36, fontSize: 10, letterSpacing: "1.5px",
-                  ...(handsFreeCountdown != null ? { animation: "activeGlow 1s ease-in-out infinite" } : {}),
-                }}
-              >{handsFreeCountdown == null
-                  ? `⏱ HANDS-FREE · ${HANDS_FREE_SEC}s`
-                  : handsFreeCountdown.phase === "in"
-                    ? `✕ CANCEL · ${handsFreeCountdown.n}…`
-                    : handsFreeCountdown.phase === "out"
-                      ? `✕ STOP · ${handsFreeCountdown.n}s`
-                      : `✕ STOP · ${handsFreeCountdown.n}s LEFT`}</button>
               <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(200,180,220,0.4)", textAlign: "center", textTransform: "uppercase" }}>
                 Tip: hold canvas also records
               </div>
@@ -9703,7 +9440,8 @@ export default function SpectraAfter() {
                 >★ RATE APP</button>
               </div>
             </div>
-          </Section>
+            </SynthPanel>
+          </div>
 
           <div style={{ height: 28 }}/>
           </>)}
@@ -9717,6 +9455,21 @@ export default function SpectraAfter() {
         @keyframes activeGlow{ 0%,100%{box-shadow:0 0 10px 1px rgba(200,134,10,0.3),0 3px 10px rgba(0,0,0,0.5)} 50%{box-shadow:0 0 22px 5px rgba(232,160,32,0.55),0 3px 10px rgba(0,0,0,0.5)} }
         .sp-btn:active  { animation: btnPress  0.18s ease forwards !important; filter: brightness(1.25); }
         .sp-tile:active { animation: tilePress 0.15s ease forwards !important; filter: brightness(1.2); }
+        /* v1.5.0 — on touch screens a tapped button used to keep its hover
+           look until the next tap landed elsewhere, so the previous choice
+           stayed lit next to the new one. No tap highlight, no focus ring,
+           hover styles only for mice (see @media (hover: hover) above). */
+        button { -webkit-tap-highlight-color: transparent; }
+        .sp-btn:focus:not(:focus-visible), .sp-tile:focus:not(:focus-visible) { outline: none; }
+        .sp-rack-tabs { position: sticky; top: 56px; z-index: 29; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; padding: 6px 10px 8px;
+          background: linear-gradient(180deg, rgba(15,0,28,0.96) 0%, rgba(15,0,28,0.86) 100%); border-bottom: 1px solid rgba(231,174,255,0.25); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+        .sp-rack-tab { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 2px 6px; border-radius: 8px; cursor: pointer;
+          font-family: var(--font-space-mono,'Space Mono','Courier New',monospace); font-size: 9px; font-weight: 700; letter-spacing: 1.4px;
+          color: rgba(237,232,248,0.6); background: linear-gradient(180deg,#1a1a22 0%,#0e0e14 100%); border: 1px solid rgba(0,0,0,0.7); }
+        .sp-rack-tab[data-active="true"] { color: #fff; background: linear-gradient(180deg,#3a1a4d 0%,#1a0a25 100%); border-color: rgba(231,174,255,0.85);
+          box-shadow: inset 0 1px 1px rgba(255,220,255,0.18), 0 0 10px rgba(231,174,255,0.35); text-shadow: 0 0 6px rgba(231,174,255,0.7); }
+        .sp-rack-tab .pip { width: 6px; height: 6px; border-radius: 50%; opacity: 0.55; }
+        .sp-rack-tab[data-active="true"] .pip { opacity: 1; box-shadow: 0 0 6px currentColor; }
         input[type=range] { -webkit-appearance:none; appearance:none; height:12px; border-radius:7px; cursor:pointer; outline:none; }
         input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:28px; height:28px; border-radius:50%; cursor:grab; background:#B014F0; border:3px solid #D34BFF; box-shadow:0 2px 10px rgba(0,0,0,0.7),0 0 10px rgba(176,20,240,0.5); transition:transform .1s,box-shadow .1s; }
         input[type=range]:active::-webkit-slider-thumb { transform:scale(1.28); box-shadow:0 0 18px 4px rgba(211,75,255,0.7); cursor:grabbing; }

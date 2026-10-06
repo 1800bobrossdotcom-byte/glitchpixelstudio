@@ -121,6 +121,10 @@ export async function openAudioInput(
     window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
   const context = new Ctor();
   try { await context.resume(); } catch { /* ignore */ }
+  // Android WebView / Chrome autoplay policy: a context created without a
+  // recent user gesture stays "suspended" and the analyser reads silence.
+  // Resume it on the next tap anywhere.
+  if (context.state !== "running") armResumeOnGesture(context);
   const src = context.createMediaStreamSource(stream);
   const analyser = context.createAnalyser();
   analyser.fftSize = opts.fftSize ?? 1024;
@@ -138,6 +142,14 @@ export async function openAudioInput(
     channelCount: settings.channelCount || 1,
   };
   return { stream, context, analyser, info };
+}
+
+function armResumeOnGesture(context: AudioContext) {
+  const events = ["pointerdown", "touchend", "keydown", "click"] as const;
+  const off = () => events.forEach((e) => window.removeEventListener(e, onGesture, true));
+  const onGesture = () => { context.resume().then(() => { if (context.state === "running") off(); }).catch(() => {}); };
+  events.forEach((e) => window.addEventListener(e, onGesture, true));
+  context.addEventListener("statechange", () => { if (context.state === "running") off(); });
 }
 
 export function closeAudioInput(s: AudioInputSession | null | undefined) {
