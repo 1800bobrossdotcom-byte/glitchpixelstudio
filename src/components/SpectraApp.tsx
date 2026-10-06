@@ -14,6 +14,7 @@ import { Media } from "@capacitor-community/media";
 import { Share } from "@capacitor/share";
 import { createAudioInputManager, type AudioInputDevice, type AudioInputInfo, type AudioInputManager, type AudioInputPref } from "@/lib/vj-io/audio-input";
 import { createDisplayOutput, type DisplayState } from "@/lib/vj-io/display-output";
+import { createAudioFeatures, type AudioFeatureAnalyser } from "@/lib/vj-io/audio-features";
 // v1.3.41 — shaders moved out of JS template literals into standalone files
 // loaded as raw strings via webpack asset/source (see next.config.ts +
 // src/types/glsl.d.ts). Permanently retires the recurring
@@ -1438,14 +1439,20 @@ export default function SpectraAfter() {
     const audioTrebleRef = useRef(0);
     const audioBeatRef   = useRef(0); // rising-edge bass impulse, decays each frame
     const audioBassAvgRef = useRef(0); // long-term bass average for beat detection
+    // v1.5.4 — Terminal Velocity feature analyser (bands / flux / beat / hits
+    // with auto-gain). When present it replaces the legacy RMS+FFT block.
+    const audioFeaturesRef = useRef<AudioFeatureAnalyser | null>(null);
+    const audioSilentSinceRef = useRef(0);   // ms timestamp when the live input went quiet (0 = not quiet)
+    const audioSyntheticRef = useRef(false); // true while AUTO-VJ runs on the synthetic LFO drive
     const audioFreqArrayRef: React.MutableRefObject<Uint8Array | null> = useRef<Uint8Array | null>(null);
     const audioStreamRef = useRef<MediaStream|null>(null);
     const audioAnalyserRef = useRef<AnalyserNode|null>(null);
     const audioDataArrayRef: React.MutableRefObject<Uint8Array | null> = useRef<Uint8Array | null>(null);
     const [audioActive, setAudioActive] = useState(false);
     // vj-io (v1.4.1): plug-and-play audio input + display output.
-    const audioInPrefRef = useRef<AudioInputPref>(loadAudioInPref());
-    const [audioInPref, setAudioInPrefState] = useState<AudioInputPref>(audioInPrefRef.current);
+    const audioInPrefRef = useRef<AudioInputPref>("auto");
+    const [audioInPref, setAudioInPrefState] = useState<AudioInputPref>("auto");
+    useEffect(() => { const p = loadAudioInPref(); audioInPrefRef.current = p; setAudioInPrefState(p); }, []);
     const [audioInputs, setAudioInputs] = useState<AudioInputDevice[]>([]);
     const [audioInInfo, setAudioInInfo] = useState<AudioInputInfo | null>(null);
     const audioInMgrRef = useRef<AudioInputManager | null>(null);
@@ -1455,10 +1462,12 @@ export default function SpectraAfter() {
       try { localStorage.setItem(AUDIO_IN_PREF_KEY, p === "auto" ? "auto" : p === "builtin" ? "builtin" : `id:${p.deviceId}`); } catch { /* ignore */ }
       void audioInMgrRef.current?.setPref(p);
     }, []);
-    const [vjOutAuto, setVjOutAuto] = useState<boolean>(() => { try { return localStorage.getItem(VJ_OUT_AUTO_KEY) !== "0"; } catch { return true; } });
+    const [vjOutAuto, setVjOutAuto] = useState<boolean>(true);
+    useEffect(() => { try { if (localStorage.getItem(VJ_OUT_AUTO_KEY) === "0") setVjOutAuto(false); } catch { /* ignore */ } }, []);
     // AUDIO REACT power: listens to the selected input whenever ON — no longer
     // tied to AUTO-VJ (which only adds autonomous preset cycling on top).
-    const [audioReactOn, setAudioReactOnState] = useState<boolean>(() => { try { return localStorage.getItem(AUDIO_REACT_KEY) !== "0"; } catch { return true; } });
+    const [audioReactOn, setAudioReactOnState] = useState<boolean>(true);
+    useEffect(() => { try { if (localStorage.getItem(AUDIO_REACT_KEY) === "0") setAudioReactOnState(false); } catch { /* ignore */ } }, []);
     const setAudioReactOn = useCallback((on: boolean) => {
       setAudioReactOnState(on);
       try { localStorage.setItem(AUDIO_REACT_KEY, on ? "1" : "0"); } catch { /* ignore */ }
@@ -1466,6 +1475,7 @@ export default function SpectraAfter() {
     // Meter bars are written straight to the DOM (no React state) so the
     // 6 Hz update never re-renders the whole shell.
     const meterRefs = useRef<Array<HTMLDivElement | null>>([null, null, null]);
+    const audioDiagRef = useRef<HTMLDivElement | null>(null);
     // The WebView can only service one permission prompt at a time: opening the
     // mic while the camera is still being granted makes Capacitor deny the mic.
     // Arm the audio input once the camera is live, or 4 s after mount if the
@@ -1545,13 +1555,15 @@ export default function SpectraAfter() {
   // landing on a quiet pixel-sort screen and wondering if anything works.
   const [openPanelTitle, setOpenPanelTitle] = useState<string | null>(null);
   // v1.5.0 — rack tabs. Switching a tab opens that tab's first rack.
-  const [activeTab, setActiveTabState] = useState<RackTab>(() => {
-    try { const v = localStorage.getItem(RACK_TAB_KEY); if (v && RACK_TABS.some(t => t.id === v)) return v as RackTab; } catch { /* ignore */ }
-    return "fx";
-  });
+  const [activeTab, setActiveTabState] = useState<RackTab>("fx");
+  useEffect(() => {
+    // Hydration-safe: the static HTML is rendered with defaults, saved prefs land after mount.
+    try { const v = localStorage.getItem(RACK_TAB_KEY); if (v && RACK_TABS.some(t => t.id === v)) setActiveTabState(v as RackTab); } catch { /* ignore */ }
+  }, []);
   const setActiveTab = useCallback((t: RackTab) => {
     setActiveTabState(t);
     setOpenPanelTitle(TAB_FIRST_PANEL[t]);
+    requestAnimationFrame(() => { if (panelRef.current) panelRef.current.scrollTop = 0; });
     try { localStorage.setItem(RACK_TAB_KEY, t); } catch { /* ignore */ }
   }, []);
   const [rawFxOpen, setRawFxOpen] = useState(false);
@@ -2897,6 +2909,7 @@ export default function SpectraAfter() {
     try { audioDataArrayRef.current = null; } catch { /* ignore */ }
     try { trackSrcNodeRef.current?.disconnect(); } catch { /* ignore */ }
     try { trackAnalyserRef.current?.disconnect(); } catch { /* ignore */ }
+    try { audioFeaturesRef.current = null; } catch { /* ignore */ }
     try { trackCtxRef.current?.close(); } catch { /* ignore */ }
     if (trackObjectUrlRef.current) {
       try { URL.revokeObjectURL(trackObjectUrlRef.current); } catch { /* ignore */ }
@@ -2932,16 +2945,15 @@ export default function SpectraAfter() {
       const actx = new Ctor();
       try { await actx.resume(); } catch { /* ignore */ }
       const src = actx.createMediaElementSource(el);
-      const analyser = actx.createAnalyser();
-      analyser.fftSize = 1024;
-      analyser.smoothingTimeConstant = 0.55;
-      src.connect(analyser);
-      // Branch to speakers so the user actually hears the track.
-      analyser.connect(actx.destination);
+      // v1.5.4 — Terminal Velocity analysis tap; the audible path is a
+      // separate branch straight to the speakers.
+      const feats = createAudioFeatures(actx, src);
+      const analyser = feats.analyser;
+      src.connect(actx.destination);
       trackCtxRef.current = actx;
       trackSrcNodeRef.current = src;
       trackAnalyserRef.current = analyser;
-      // Hand to render loop's existing real-audio path.
+      audioFeaturesRef.current = feats;
       audioAnalyserRef.current = analyser;
       audioDataArrayRef.current = new Uint8Array(analyser.fftSize);
       setTrackName(file.name.replace(/\.[^.]+$/, "").slice(0, 28));
@@ -3070,8 +3082,9 @@ export default function SpectraAfter() {
   // Audio-react drive: how much the analyser RMS modulates the per-layer
   // mosh + scatter knobs in real time. 0 = audio button purely visual via
   // shader uAudio; 1 = full-range mosh swing on every beat.
-  const [audioReactAmt, setAudioReactAmt] = useState(() => { try { const v = parseFloat(localStorage.getItem("gps.vj.reactAmt.v1") ?? ""); return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : 0.6; } catch { return 0.6; } });
+  const [audioReactAmt, setAudioReactAmt] = useState(0.6);
   const audioReactAmtRef = useRef(0.6);
+  useEffect(() => { try { const v = parseFloat(localStorage.getItem("gps.vj.reactAmt.v1") ?? ""); if (Number.isFinite(v)) setAudioReactAmt(Math.min(1, Math.max(0, v))); } catch { /* ignore */ } }, []);
   useEffect(() => { try { localStorage.setItem("gps.vj.reactAmt.v1", String(audioReactAmt)); } catch { /* ignore */ } }, [audioReactAmt]);
   useEffect(() => { audioReactAmtRef.current = audioReactAmt; }, [audioReactAmt]);
   // Cross-feed: feed the camera signal into generators (and vice versa)
@@ -3153,55 +3166,16 @@ export default function SpectraAfter() {
   const panelRef = useRef<HTMLDivElement>(null);
   const pullStartYRef = useRef<number|null>(null);
 
-  // ── 2.5D slot-machine wheel for SynthPanel racks ──────────────────
-  // On every scroll/resize, walk all `.sp-rack` cards in the panel
-  // container and apply a perspective-aware transform based on the
-  // rack's distance from the visible center. The card nearest the
-  // center stays flat & fully opaque; siblings tilt back along X,
-  // shrink, and fade — giving the whole list the feel of a slot reel.
+  // v1.5.4 — the 2.5D slot-machine wheel (tilt / shrink / fade racks by their
+  // distance from the panel centre) is retired. With every rack on a tab
+  // expanded it shrank most controls to slivers (a 3 px-tall button) and made
+  // taps miss. Racks are flat, full-size and scroll normally.
   useEffect(() => {
     const el = panelRef.current;
     if (!el) return;
-    let raf = 0;
-    const apply = () => {
-      raf = 0;
-      const cRect = el.getBoundingClientRect();
-      const cy = cRect.top + cRect.height / 2;
-      const racks = el.querySelectorAll<HTMLElement>(".sp-rack");
-      racks.forEach((r) => {
-        const rRect = r.getBoundingClientRect();
-        const itemCy = rRect.top + rRect.height / 2;
-        // Normalised distance from center: 0 at center, ±1 at edges.
-        const norm = Math.max(-2.0, Math.min(2.0, (itemCy - cy) / (cRect.height * 0.42)));
-        const a = Math.abs(norm);
-        // Heavier perspective so off-center racks recede dramatically and
-        // their visual footprint shrinks — the wheel saves vertical space
-        // by trading it for z-depth.
-        const rotX = -norm * 38;            // slot-reel tilt
-        const transY = -norm * 4;           // tiny vertical lift
-        const transZ = -a * 220;            // recede away (deep z)
-        const scale = Math.max(0.55, 1 - a * 0.32);
-        const opacity = 1 - a * 0.55;
-        r.style.transform = `translate3d(0, ${transY}px, ${transZ}px) rotateX(${rotX}deg) scale(${scale})`;
-        r.style.opacity = String(Math.max(0.22, opacity));
-        r.style.transformOrigin = "center center";
-        r.style.willChange = "transform, opacity";
-      });
-    };
-    const schedule = () => { if (!raf) raf = requestAnimationFrame(apply); };
-    apply();
-    el.addEventListener("scroll", schedule, { passive: true });
-    const ro = new ResizeObserver(schedule);
-    ro.observe(el);
-    // Re-run when the rack count or open-panel changes (children mutate).
-    const mo = new MutationObserver(schedule);
-    mo.observe(el, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
-    return () => {
-      el.removeEventListener("scroll", schedule);
-      ro.disconnect();
-      mo.disconnect();
-      if (raf) cancelAnimationFrame(raf);
-    };
+    el.querySelectorAll<HTMLElement>(".sp-rack").forEach((r) => {
+      r.style.transform = ""; r.style.opacity = ""; r.style.transformOrigin = ""; r.style.willChange = "";
+    });
   }, []);
   const [presetName, setPresetName] = useState("");
   const [presets, setPresets] = useState<SpectraPreset[]>([]);
@@ -3832,77 +3806,86 @@ export default function SpectraAfter() {
     // 60 fps render). Audio energy doesn't change meaningfully faster
     // than that and the cached refs are what the shader sees, so the
     // visual reactivity is identical while CPU drops measurably.
-    audioFrameToggleRef.current ^= 1;
-    const _doAudio = audioFrameToggleRef.current === 0;
-    if (_doAudio && audioAnalyserRef.current && audioDataArrayRef.current) {
-      // @ts-expect-error: TypeScript type mismatch, runtime is correct
-      audioAnalyserRef.current.getByteTimeDomainData(audioDataArrayRef.current);
-      // Compute RMS (root mean square) for audio level
-      let sum = 0;
-      for (let i = 0; i < audioDataArrayRef.current.length; i++) {
-        const v = (audioDataArrayRef.current[i] - 128) / 128;
-        sum += v * v;
-      }
-      const rms = Math.sqrt(sum / audioDataArrayRef.current.length);
-      // Clamp and smooth
-      audioLevelRef.current = audioLevelRef.current * 0.85 + Math.min(1, rms * 2.5) * 0.15;
-
-      // Frequency-domain bass/treble (lazy-allocate matching freq buffer).
-      const an = audioAnalyserRef.current;
-      const bins = an.frequencyBinCount;
-      let freq = audioFreqArrayRef.current;
-      if (!freq || freq.length !== bins) {
-        freq = new Uint8Array(bins);
-        audioFreqArrayRef.current = freq;
-      }
-      // @ts-expect-error: TypeScript type mismatch, runtime is correct
-      an.getByteFrequencyData(freq);
-      const bassEnd = Math.max(2, Math.floor(bins * 0.06));   // ~ <250Hz
-      const trebStart = Math.floor(bins * 0.45);
-      let bSum = 0, tSum = 0;
-      for (let i = 0; i < bassEnd; i++) bSum += freq[i];
-      for (let i = trebStart; i < bins; i++) tSum += freq[i];
-      const bassNorm = (bSum / (bassEnd * 255)) || 0;
-      const trebNorm = (tSum / ((bins - trebStart) * 255)) || 0;
-      audioBassRef.current   = audioBassRef.current   * 0.78 + bassNorm * 0.22;
-      audioTrebleRef.current = audioTrebleRef.current * 0.78 + trebNorm * 0.22;
-      // Long-term bass average for beat detection.
-      audioBassAvgRef.current = audioBassAvgRef.current * 0.97 + audioBassRef.current * 0.03;
-      const beatGap = audioBassRef.current - audioBassAvgRef.current * 1.35;
-      // Beat ref: instant rise on threshold cross, slow decay.
-      const beatTarget = beatGap > 0 ? Math.min(1, beatGap * 4) : 0;
+    // v1.5.4 — Terminal Velocity feature analyser, every frame (256 bins).
+    // Falls back to the legacy RMS + FFT block if only a bare analyser exists,
+    // and to the synthetic LFO drive while AUTO-VJ is on and the input is
+    // silent (suspended context, muted mic, quiet room) so AUTO-VJ always moves.
+    const _nowMs = performance.now();
+    const _feat = audioFeaturesRef.current;
+    let _realLevel = -1;
+    if (_feat) {
+      const f = _feat.sample();
+      audioLevelRef.current  = f.level;
+      audioBassRef.current   = f.bass;
+      audioTrebleRef.current = f.treble;
+      // Beat impulse: TV beat (bass over slow average) OR a bass hit; decays like before.
+      const beatTarget = Math.max(f.beat, f.bassHit * 0.85);
       if (beatTarget > audioBeatRef.current) audioBeatRef.current = beatTarget;
       else audioBeatRef.current *= 0.90;
-    } else if (!audioAnalyserRef.current) {
-      if (vjModeRef.current) {
-        // v1.3.66 Auto-VJ — synthesize audio reactivity from LFOs so all
-        // existing uAudio/uABass/uATreb/uABeat reactivity machinery still
-        // animates without needing a microphone.
-        // v1.3.68 — amplitude bumped + faster sub-LFOs layered in so the
-        // shader uniforms swing harder and feel more obviously "reacting".
-        const _t = performance.now() * 0.001;
-        const lvl  = 0.55 + 0.42 * Math.sin(_t * 0.93) * Math.cos(_t * 0.31)
-                          + 0.18 * Math.sin(_t * 4.7);
-        const bass = 0.55 + 0.50 * Math.sin(_t * 1.71)
-                          + 0.20 * Math.sin(_t * 5.3 + 0.7);
-        const treb = 0.50 + 0.50 * Math.sin(_t * 2.93 + 1.3)
-                          + 0.22 * Math.sin(_t * 7.1);
-        audioLevelRef.current  = audioLevelRef.current  * 0.55 + Math.min(1, Math.abs(lvl))  * 0.45;
-        audioBassRef.current   = audioBassRef.current   * 0.55 + Math.min(1, Math.abs(bass)) * 0.45;
-        audioTrebleRef.current = audioTrebleRef.current * 0.55 + Math.min(1, Math.abs(treb)) * 0.45;
-        // Synthetic beat ~ every ~0.93s (~ 65 bpm) — slower than mic-driven
-        // beats but predictable so the cycle counter still ticks.
-        const beatPhase = (_t * 1.07) % 1;
-        const beatTarget = beatPhase < 0.05 ? 1.0 : 0.0;
+      _realLevel = f.level;
+    } else if (audioAnalyserRef.current && audioDataArrayRef.current) {
+      audioFrameToggleRef.current ^= 1;
+      if (audioFrameToggleRef.current === 0) {
+        // @ts-expect-error: TypeScript type mismatch, runtime is correct
+        audioAnalyserRef.current.getByteTimeDomainData(audioDataArrayRef.current);
+        let sum = 0;
+        for (let i = 0; i < audioDataArrayRef.current.length; i++) {
+          const v = (audioDataArrayRef.current[i] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / audioDataArrayRef.current.length);
+        audioLevelRef.current = audioLevelRef.current * 0.85 + Math.min(1, rms * 2.5) * 0.15;
+        const an = audioAnalyserRef.current;
+        const bins = an.frequencyBinCount;
+        let freq = audioFreqArrayRef.current;
+        if (!freq || freq.length !== bins) { freq = new Uint8Array(bins); audioFreqArrayRef.current = freq; }
+        // @ts-expect-error: TypeScript type mismatch, runtime is correct
+        an.getByteFrequencyData(freq);
+        const bassEnd = Math.max(2, Math.floor(bins * 0.06));
+        const trebStart = Math.floor(bins * 0.45);
+        let bSum = 0, tSum = 0;
+        for (let i = 0; i < bassEnd; i++) bSum += freq[i];
+        for (let i = trebStart; i < bins; i++) tSum += freq[i];
+        const bassNorm = (bSum / (bassEnd * 255)) || 0;
+        const trebNorm = (tSum / ((bins - trebStart) * 255)) || 0;
+        audioBassRef.current   = audioBassRef.current   * 0.78 + bassNorm * 0.22;
+        audioTrebleRef.current = audioTrebleRef.current * 0.78 + trebNorm * 0.22;
+        audioBassAvgRef.current = audioBassAvgRef.current * 0.97 + audioBassRef.current * 0.03;
+        const beatGap = audioBassRef.current - audioBassAvgRef.current * 1.35;
+        const beatTarget = beatGap > 0 ? Math.min(1, beatGap * 4) : 0;
         if (beatTarget > audioBeatRef.current) audioBeatRef.current = beatTarget;
-        else audioBeatRef.current *= 0.88;
-      } else {
-        // Decay everything when audio is off so generator returns to ambient.
-        audioLevelRef.current  *= 0.92;
-        audioBassRef.current   *= 0.92;
-        audioTrebleRef.current *= 0.92;
-        audioBeatRef.current   *= 0.88;
+        else audioBeatRef.current *= 0.90;
       }
+      _realLevel = audioLevelRef.current;
+    }
+    // Silence tracking on the live input.
+    if (_realLevel >= 0) {
+      if (_realLevel > 0.015) audioSilentSinceRef.current = 0;
+      else if (!audioSilentSinceRef.current) audioSilentSinceRef.current = _nowMs;
+    }
+    const _noInput = _realLevel < 0;
+    const _silent = _noInput || (audioSilentSinceRef.current > 0 && _nowMs - audioSilentSinceRef.current > 1500);
+    audioSyntheticRef.current = vjModeRef.current && _silent;
+    if (audioSyntheticRef.current) {
+      // Synthetic LFO drive (v1.3.66/68) so every uAudio/uABass/uATreb/uABeat
+      // consumer and the beat-cycle counter keep animating without a signal.
+      const _t = _nowMs * 0.001;
+      const lvl  = 0.55 + 0.42 * Math.sin(_t * 0.93) * Math.cos(_t * 0.31) + 0.18 * Math.sin(_t * 4.7);
+      const bass = 0.55 + 0.50 * Math.sin(_t * 1.71) + 0.20 * Math.sin(_t * 5.3 + 0.7);
+      const treb = 0.50 + 0.50 * Math.sin(_t * 2.93 + 1.3) + 0.22 * Math.sin(_t * 7.1);
+      audioLevelRef.current  = audioLevelRef.current  * 0.55 + Math.min(1, Math.abs(lvl))  * 0.45;
+      audioBassRef.current   = audioBassRef.current   * 0.55 + Math.min(1, Math.abs(bass)) * 0.45;
+      audioTrebleRef.current = audioTrebleRef.current * 0.55 + Math.min(1, Math.abs(treb)) * 0.45;
+      const beatPhase = (_t * 1.07) % 1;
+      const beatTarget = beatPhase < 0.05 ? 1.0 : 0.0;
+      if (beatTarget > audioBeatRef.current) audioBeatRef.current = beatTarget;
+      else audioBeatRef.current *= 0.88;
+    } else if (_noInput) {
+      // No input and no AUTO-VJ: decay to ambient.
+      audioLevelRef.current  *= 0.92;
+      audioBassRef.current   *= 0.92;
+      audioTrebleRef.current *= 0.92;
+      audioBeatRef.current   *= 0.88;
     }
 
     // ── v1.3.68 Auto-VJ beat-matched cycle trigger ───────────────
@@ -5488,6 +5471,7 @@ export default function SpectraAfter() {
         // Hand the analyser to the render loop's existing real-audio branch.
         audioAnalyserRef.current = session.analyser;
         audioDataArrayRef.current = new Uint8Array(session.analyser.fftSize);
+        audioFeaturesRef.current = session.features;
         audioStreamRef.current = session.stream;
         setAudioInInfo(session.info);
         setAudioActive(true);
@@ -5522,6 +5506,7 @@ export default function SpectraAfter() {
       if (!trackAnalyserRef.current) {
         try { audioAnalyserRef.current = null; } catch { /* ignore */ }
         try { audioDataArrayRef.current = null; } catch { /* ignore */ }
+        try { audioFeaturesRef.current = null; } catch { /* ignore */ }
       }
       try { audioStreamRef.current = null; } catch { /* ignore */ }
       setAudioInInfo(null);
@@ -5536,6 +5521,13 @@ export default function SpectraAfter() {
     const id = window.setInterval(() => {
       const vals = [audioLevelRef.current, audioBassRef.current, audioBeatRef.current];
       meterRefs.current.forEach((el, i) => { if (el) el.style.width = `${Math.round(Math.min(1, Math.max(0, vals[i])) * 100)}%`; });
+      const diag = audioDiagRef.current;
+      if (diag) {
+        const sess = audioInMgrRef.current?.session;
+        const f = audioFeaturesRef.current?.features;
+        const drive = audioSyntheticRef.current ? "SYNTH LFO" : f ? "LIVE" : sess ? "LIVE (legacy)" : "NO INPUT";
+        diag.textContent = `${drive} · ctx ${sess?.context.state ?? "—"} · gain ×${f ? f.gain.toFixed(1) : "—"} · flux ${f ? f.flux.toFixed(2) : "—"}`;
+      }
     }, 120);
     return () => window.clearInterval(id);
   }, [vjPanelOpen]);
@@ -5911,7 +5903,25 @@ export default function SpectraAfter() {
     setSourceError(null);
     clearUploadSource();
     touchRef.current.active = false;
-    await startCamera(true, "user");
+    // v1.5.4 — RAW CAMERA. The old reset left sort / mosh sub-knobs at demo
+    // values and never touched the homage knobs, RGB shift, artist primitives,
+    // glitch palette, generator mix, macros or AUTO-VJ. Everything to neutral:
+    setSortLow(0.0); setSortHigh(1.0); setSortSegment(0.0); setSortRandom(0.0); setSortWobble(0.0);
+    setSortInterval(0); setSortAngle(0);
+    setMoshIFrame(0.0); setMoshMotion(0.0); setMoshBleed(0.0); setMoshMap(0.0); setMoshDistort(0.0); setMoshFamily(0);
+    setGlyph(0); setSortMix(0); setReactD(0); setVoroSort(0);
+    setRgbR(0); setRgbG(0); setRgbB(0); setRgbBars(0); setRupture(0); setHsync(0);
+    setMenkmanFX(0); setMolnarFX(0); setUcnvFX(0); setGysinFX(0); setAsendorfFX(0);
+    setJodiFX(0); setArcangelFX(0); setPaikFX(0); setFentonFX(0);
+    setMenkmanFam(0); setMolnarFam(0); setUcnvFam(0); setGysinFam(0); setAsendorfFam(0);
+    setJodiFam(0); setArcangelFam(0); setPaikFam(0); setFentonFam(0);
+    setGlitchPresetEnabled(false);
+    setVjMode(false);
+    setGenMix(0); setGenScatter(0);
+    setIntensityMacro(1.0); setMotionMacro(1.0); setColorMacro(1.0); setBreakMacro(1.0);
+    setFaceFxMode("OFF");
+    setFaceFxToast("RESET → RAW CAMERA");
+    window.setTimeout(() => setFaceFxToast(null), 1800);
   }, [clearUploadSource, startCamera]);
 
   // ── GIF export ────────────────────────────────────────────
@@ -7049,11 +7059,7 @@ export default function SpectraAfter() {
            that gets perspective-tilted in JS based on distance from center.
            Scroll-snap pulls the nearest rack into the centered position. */
         .sp-panel-glass {
-          perspective: 1100px;
-          perspective-origin: 50% 50%;
-          scroll-snap-type: y proximity;
-          scroll-padding-top: 25%;
-          scroll-padding-bottom: 25%;
+          /* v1.5.4 — plain scrolling; the 2.5D snap wheel is retired. */
           /* v1.2.62 — reserve room for the Android gesture-nav bar at the
              bottom of the device. Without this, the last controls in an
              open section (RECORD button, CAM HARD RESET, etc.) sit
@@ -7061,7 +7067,6 @@ export default function SpectraAfter() {
           padding-bottom: max(env(safe-area-inset-bottom, 0px), 16px);
         }
         .sp-rack {
-          scroll-snap-align: center;
           transition: transform 160ms cubic-bezier(.22,.9,.32,1.2),
                       opacity   160ms ease,
                       padding   180ms ease,
@@ -7144,33 +7149,30 @@ export default function SpectraAfter() {
              always reads at ≥ 75% full. The wheel uses heavy z-depth
              (see .sp-rack transform in JS) so off-center racks recede
              instead of needing more vertical scroll real-estate. */
-          max-height: 24dvh;
+          /* v1.5.4 — the rack gets half the screen (was 24dvh, which left a
+             sliver under the tabs). The camera stays full-bleed behind it. */
+          max-height: 56dvh;
           overflow-y: auto;
           overscroll-behavior: contain;
           z-index: 5;
           /* v1.2.49 — full glass-bottom-boat: drop the panel tint to a
              whisper so the FX layer reads through almost unobstructed.
              The blur + tilt do the heavy visual lifting now. */
-          background: linear-gradient(180deg, rgba(15,0,28,0.02) 0%, rgba(8,0,18,0.04) 38%, rgba(8,0,18,0.08) 100%) !important;
-          backdrop-filter: blur(2.5px) saturate(1.25);
-          -webkit-backdrop-filter: blur(2.5px) saturate(1.25);
+          /* v1.5.4 — readable over a bright feed: real tint + stronger blur
+             (was 2–8% tint, which made labels vanish over white). */
+          background: linear-gradient(180deg, rgba(15,0,28,0.78) 0%, rgba(10,0,22,0.84) 38%, rgba(8,0,18,0.90) 100%) !important;
+          backdrop-filter: blur(10px) saturate(1.15);
+          -webkit-backdrop-filter: blur(10px) saturate(1.15);
           border-top: 1px solid rgba(231,174,255,0.35) !important;
           box-shadow:
             0 -10px 36px rgba(176,20,240,0.25),
             inset 0 1px 0 rgba(255,255,255,0.18),
             inset 0 -1px 0 rgba(0,0,0,0.4);
-          transform: translate3d(var(--tilt-tx, 0px), calc(var(--tilt-ty, 0px) * 0.5), 0)
-                     rotateX(var(--tilt-x, 0deg)) rotateY(var(--tilt-y, 0deg));
-          transform-origin: 50% 0%;
-          transform-style: preserve-3d;
+          transform: none;
           transition: background 0.3s ease, max-height 0.28s ease;
           will-change: transform;
         }
-        .neon-mode .sp-panel-glass.glass-expanded {
-          /* Open rack pops up to at most 38dvh so image is still ≥ 62%
-             visible. Inner content scrolls inside that band. */
-          max-height: 38dvh;
-        }
+
         /* v1.2.49 — racks themselves were fully-opaque deep purple
            chassis (the biggest opacity offender); make them whisper
            glass too so the FX layer reads through every rack body and
@@ -7337,7 +7339,7 @@ export default function SpectraAfter() {
         .neon-mode .sp-photo-btn-neon {
           position: fixed !important;
           right: 12px !important;
-          bottom: calc(28dvh + 12px) !important;
+          bottom: calc(56dvh + 12px) !important;
           z-index: 10 !important;
           transition: bottom 0.28s ease;
         }
@@ -8011,7 +8013,7 @@ export default function SpectraAfter() {
           className="sp-canvas-pane relative bg-black overflow-hidden flex items-center justify-center"
           style={isLandscape
             ? { flex: "1 1 0", height: "100%", minWidth: 0, minHeight: 0 }
-            : { flex: "none", height: openPanelTitle ? "26dvh" : "45dvh", transition: "height 220ms ease" }}
+            : { flex: "none", height: "44dvh" }}
         >
           <div style={isLandscape
             ? { position: "relative", width: "100%", height: "100%" }
@@ -8242,7 +8244,7 @@ export default function SpectraAfter() {
         {/* Settings panel — bottom half on mobile (scrollable), right pane on desktop */}
         <div
           ref={panelRef}
-          className={"sp-panel-glass flex-1 min-h-0 overflow-y-auto lg:w-[23rem] lg:flex-none" + (neonMode && openPanelTitle ? " glass-expanded" : "")}
+          className={"sp-panel-glass flex-1 min-h-0 overflow-y-auto lg:w-[23rem] lg:flex-none"}
           style={isLandscape
             ? { background: "linear-gradient(180deg,#0F001C 0%,#080012 100%)", borderTop: `1px solid rgba(61,10,92,0.9)`, position: "relative", flex: "0 0 17rem", width: "17rem", height: "100%" }
             : { background: "linear-gradient(180deg,#0F001C 0%,#080012 100%)", borderTop: `1px solid rgba(61,10,92,0.9)`, position: "relative" }}
@@ -8280,9 +8282,9 @@ export default function SpectraAfter() {
             setPullArmed(false);
           }}
         >
-          {(neonMode ? (children: React.ReactNode) => (
-            <SynthPanelAccordionContext.Provider value={accordionCtx}>{children}</SynthPanelAccordionContext.Provider>
-          ) : (children: React.ReactNode) => <>{children}</>)(<>
+          {/* v1.5.4 — no accordion: every rack on a tab is open, the tab scrolls.
+              (The accordion context stays defined for SynthPanel's prop types.) */}
+          {((children: React.ReactNode) => <>{children}</>)(<>
           {/* v1.3.72 — sticky SNAP / REC strip pinned to the TOP of the
               bottom panel. On mobile this is exactly where the user's
               thumbs naturally rest while holding the phone in shooting
@@ -9281,6 +9283,7 @@ export default function SpectraAfter() {
                   </Fragment>
                 ))}
               </div>
+              <div ref={audioDiagRef} style={{ fontSize: 7, letterSpacing: "1px", color: "rgba(200,180,220,0.5)", textTransform: "uppercase", fontVariantNumeric: "tabular-nums" }}>—</div>
               <div style={{ fontSize: 8, letterSpacing: "1px", color: audioInInfo ? "rgba(174,255,231,0.8)" : "rgba(200,180,220,0.55)", textTransform: "uppercase" }}>
                 {!audioReactOn
                   ? "IN · OFF — tap AUDIO REACT or ♪ to listen"

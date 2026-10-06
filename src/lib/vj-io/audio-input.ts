@@ -19,6 +19,8 @@
 // in native code. The built-in mic, a loaded track, or a line-in are the
 // supported sources.
 
+import { createAudioFeatures, type AudioFeatureAnalyser } from "./audio-features";
+
 export type AudioInputKind = "builtin" | "external";
 
 export interface AudioInputDevice {
@@ -39,7 +41,10 @@ export interface AudioInputInfo {
 export interface AudioInputSession {
   stream: MediaStream;
   context: AudioContext;
+  /** The feature analyser's node (512-point, hot). Kept for legacy readers. */
   analyser: AnalyserNode;
+  /** Terminal Velocity analysis: bands, flux, beat, hits, deltas, auto-gain. */
+  features: AudioFeatureAnalyser;
   info: AudioInputInfo;
 }
 
@@ -126,10 +131,10 @@ export async function openAudioInput(
   // Resume it on the next tap anywhere.
   if (context.state !== "running") armResumeOnGesture(context);
   const src = context.createMediaStreamSource(stream);
-  const analyser = context.createAnalyser();
-  analyser.fftSize = opts.fftSize ?? 1024;
-  analyser.smoothingTimeConstant = opts.smoothingTimeConstant ?? 0.55;
-  src.connect(analyser);
+  // Terminal Velocity analysis tap (gain-boosted, auto-gained, hot FFT).
+  const features = createAudioFeatures(context, src);
+  const analyser = features.analyser;
+  void opts;
 
   const track = stream.getAudioTracks()[0];
   const settings = track?.getSettings?.() ?? {};
@@ -141,7 +146,7 @@ export async function openAudioInput(
     sampleRate: settings.sampleRate || context.sampleRate,
     channelCount: settings.channelCount || 1,
   };
-  return { stream, context, analyser, info };
+  return { stream, context, analyser, features, info };
 }
 
 function armResumeOnGesture(context: AudioContext) {
@@ -154,7 +159,7 @@ function armResumeOnGesture(context: AudioContext) {
 
 export function closeAudioInput(s: AudioInputSession | null | undefined) {
   if (!s) return;
-  try { s.analyser.disconnect(); } catch { /* ignore */ }
+  try { s.features.dispose(); } catch { /* ignore */ }
   try { s.stream.getTracks().forEach((t) => t.stop()); } catch { /* ignore */ }
   try { void s.context.close(); } catch { /* ignore */ }
 }

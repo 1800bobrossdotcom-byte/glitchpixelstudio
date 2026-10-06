@@ -50,7 +50,10 @@ public class VjDisplayPlugin extends Plugin {
         int external = 0;
         Display first = null;
         if (displayManager != null) {
-            for (Display d : displayManager.getDisplays()) {
+            // Presentation-class displays only (HDMI / DisplayPort adapters, cast,
+            // DeX). Foldable cover screens, always-on and virtual displays are
+            // NOT in this category — counting them hid the UI on ordinary phones.
+            for (Display d : displayManager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)) {
                 if (d.getDisplayId() == Display.DEFAULT_DISPLAY) continue;
                 if (d.getState() == Display.STATE_OFF) continue;
                 external++;
