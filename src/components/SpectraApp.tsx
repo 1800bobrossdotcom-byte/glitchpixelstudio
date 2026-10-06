@@ -1463,7 +1463,14 @@ export default function SpectraAfter() {
       setAudioReactOnState(on);
       try { localStorage.setItem(AUDIO_REACT_KEY, on ? "1" : "0"); } catch { /* ignore */ }
     }, []);
-    const [audioMeter, setAudioMeter] = useState({ level: 0, bass: 0, beat: 0 });
+    // Meter bars are written straight to the DOM (no React state) so the
+    // 6 Hz update never re-renders the whole shell.
+    const meterRefs = useRef<Array<HTMLDivElement | null>>([null, null, null]);
+    // The WebView can only service one permission prompt at a time: opening the
+    // mic while the camera is still being granted makes Capacitor deny the mic.
+    // Arm the audio input once the camera is live, or 4 s after mount if the
+    // camera is off (upload / generator sessions).
+    const [audioArmed, setAudioArmed] = useState(false);
     const [vjRowFlash, setVjRowFlash] = useState(false);
     const [vjOutDisplay, setVjOutDisplay] = useState<DisplayState | null>(null);
   // ── Boot state
@@ -5041,7 +5048,10 @@ export default function SpectraAfter() {
     // v1.5.0 — REACT knob scales how hard the input drives the racks (0 = uniforms only, no auto sort/mosh lift).
     const _aGate  = Math.min(1.0, _aBass * 1.4 + _aBeat * 0.9 + _aLvl * 0.5) * audioReactAmtRef.current;
     const _sortBase = sortAmtRef.current;
-    const _sortAudio = Math.min(1.0, _sortBase * (1 + _aGate * 0.7) + _aBeat * audioReactAmtRef.current * 0.22);
+    // v1.5.3 — the beat glimmer only rides on a dialed-in sort (or AUTO-VJ), so
+    // HARD RESET / RESET ALL really do return a still picture.
+    const _glimmer = (_sortBase > 0.001 || vjModeRef.current) ? _aBeat * audioReactAmtRef.current * 0.22 : 0;
+    const _sortAudio = Math.min(1.0, _sortBase * (1 + _aGate * 0.7) + _glimmer);
     // v1.2.68 — DECOUPLE the shader sort knobs from REALSORT. Previously
     // every shader knob (AMOUNT/LOW/HIGH/SEGMENT/NOISE/WOBBLE/TEAR/MODE/
     // INTERVAL/ANGLE) was multiplied by sortMix, so when REALSORT was at
@@ -5457,10 +5467,18 @@ export default function SpectraAfter() {
   // the analyser the moment it appears; the phone mic comes back when it is
   // unplugged. A loaded track (LOAD TRACK) keeps priority over the live input.
   useEffect(() => {
-    if (!audioReactOn) return;
+    if (audioArmed) return;
+    if (cameraActive) { const t = window.setTimeout(() => setAudioArmed(true), 600); return () => window.clearTimeout(t); }
+    const t = window.setTimeout(() => setAudioArmed(true), 4000);
+    return () => window.clearTimeout(t);
+  }, [cameraActive, audioArmed]);
+  useEffect(() => {
+    if (!audioReactOn || !audioArmed) return;
     if (trackAnalyserRef.current) return;
     if (typeof navigator === "undefined" || !navigator.mediaDevices) return;
     let cancelled = false;
+    let retries = 0;
+    let retryTimer: number | null = null;
     const mgr = createAudioInputManager({
       pref: audioInPrefRef.current,
       onDevices: (list) => { if (!cancelled) setAudioInputs(list); },
@@ -5482,14 +5500,23 @@ export default function SpectraAfter() {
       onError: (e) => {
         if (cancelled) return;
         const name = (e as { name?: string })?.name || String(e);
-        try { console.warn("[GPS] audio-in error:", e); } catch { /* noop */ }
-        setFaceFxToast(`AUDIO IN · ${name === "NotAllowedError" ? "MIC PERMISSION DENIED" : name.toUpperCase()}`);
-        window.setTimeout(() => setFaceFxToast(null), 3000);
+        try { console.warn("[GPS] audio-in error:", name, retries); } catch { /* noop */ }
+        // A denial right after boot is usually the permission prompt still being
+        // busy with the camera. Retry a few times before telling the user.
+        if (retries < 4) {
+          retries += 1;
+          retryTimer = window.setTimeout(() => { retryTimer = null; if (!cancelled) void mgr.refresh(); }, 2500);
+          return;
+        }
+        if (mgr.session) return;
+        setFaceFxToast(`AUDIO IN · ${name === "NotAllowedError" ? "MIC BLOCKED — check app permissions" : name.toUpperCase()}`);
+        window.setTimeout(() => setFaceFxToast(null), 3200);
       },
     });
     audioInMgrRef.current = mgr;
     return () => {
       cancelled = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
       if (audioInMgrRef.current === mgr) audioInMgrRef.current = null;
       mgr.dispose();
       if (!trackAnalyserRef.current) {
@@ -5500,17 +5527,18 @@ export default function SpectraAfter() {
       setAudioInInfo(null);
       setAudioActive(false);
     };
-  }, [audioReactOn]);
+  }, [audioReactOn, audioArmed]);
 
-  // Live meter for the VJ · Audio In row (only while that section is open).
+  // Live meter for the VJ · Audio In row — direct DOM writes, no re-render.
   const vjPanelOpen = activeTab === "vj";
   useEffect(() => {
-    if (!audioReactOn || !vjPanelOpen) return;
+    if (!vjPanelOpen) return;
     const id = window.setInterval(() => {
-      setAudioMeter({ level: audioLevelRef.current, bass: audioBassRef.current, beat: audioBeatRef.current });
-    }, 160);
+      const vals = [audioLevelRef.current, audioBassRef.current, audioBeatRef.current];
+      meterRefs.current.forEach((el, i) => { if (el) el.style.width = `${Math.round(Math.min(1, Math.max(0, vals[i])) * 100)}%`; });
+    }, 120);
     return () => window.clearInterval(id);
-  }, [audioReactOn, vjPanelOpen]);
+  }, [vjPanelOpen]);
 
   // ♪ in the top bar: quick link to the VJ · Audio In row (and switches
   // AUDIO REACT on if it was off).
@@ -7923,7 +7951,8 @@ export default function SpectraAfter() {
               fontWeight: 800,
             }}
             title="RANDOMIZE — roll fresh values across ALL FX panels"
-          >?</button>
+            id="gps-randomize-btn"
+          >🎲</button>
           {/* v1.3.3 — CLOSE: hard-shutdown for Android. Stops camera/audio,
               clears the WebView, then asks Capacitor App to exit so the
               process is fully torn down (next launch is a cold start). */}
@@ -8360,7 +8389,19 @@ export default function SpectraAfter() {
             >
               {/* Row 1 — BASE FEED */}
               <div style={{ fontSize: 8, letterSpacing: "1.4px", color: "rgba(255,210,140,0.7)", marginBottom: 4 }}>BASE</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 6, marginBottom: 8 }}>
+              <div style={{ display: "grid", gridTemplateColumns: cameraActive ? "repeat(3,1fr)" : "repeat(2,1fr)", gap: 6, marginBottom: 8 }}>
+                {cameraActive && (
+                  <button
+                    onClick={() => { void flipCamera(); }}
+                    title={`Camera is ${cameraFacing === "user" ? "FRONT" : "REAR"} — tap to flip`}
+                    style={{
+                      padding: "11px 4px", fontSize: 11, letterSpacing: "1.4px", fontWeight: 700,
+                      fontFamily: "'Trebuchet MS',sans-serif", cursor: "pointer", borderRadius: 5,
+                      border: "1px solid rgba(255,210,140,0.7)", color: "rgba(255,235,200,0.95)",
+                      background: "linear-gradient(180deg, #2A1808 0%, #120A02 100%)",
+                    }}
+                  >{cameraFacing === "user" ? "⇄ FRONT" : "⇄ REAR"}</button>
+                )}
                 {(["camera","upload"] as const).map((sm) => {
                   const lbl = sm === "camera" ? "CAM" : "UPLD";
                   // Active = the renderer is actually consuming this feed.
@@ -8674,6 +8715,15 @@ export default function SpectraAfter() {
           </div>
 
           <div style={{ display: activeTab === "fx" ? "contents" : "none" }}>
+            {/* v1.5.3 — the two things people reach for most on the FX tab. */}
+            <div style={{ display: "flex", gap: 6, padding: "8px 10px 2px" }}>
+              <button className="sp-tile" onClick={() => document.getElementById("gps-randomize-btn")?.click()}
+                title="Roll fresh values across every FX rack (same as 🎲 in the top bar)"
+                style={{ ...modeBtnStyle, flex: 1, minHeight: 40, fontSize: 11, letterSpacing: "1.6px" }}>🎲 RANDOMIZE</button>
+              <button className="sp-tile" onClick={() => { void resetSettings(); }}
+                title="Reset every rack to neutral and return to the plain camera view"
+                style={{ ...modeBtnStyle, flex: 1, minHeight: 40, fontSize: 11, letterSpacing: "1.6px", color: "rgba(255,140,140,0.95)" }}>RESET ALL FX</button>
+            </div>
 
             {/* ── PIXEL SORT RACK ───────────────────────────────────── */}
             <SynthPanel title="PIXEL SORT" subtitle="SORT · HOMAGE · 9 CTRL" accent="rgba(174,255,231,0.95)">
@@ -9222,11 +9272,11 @@ export default function SpectraAfter() {
               </div>
               {/* live meter: level / bass / beat straight from the render loop's analysis */}
               <div style={{ display: "grid", gridTemplateColumns: "34px 1fr", gap: "3px 8px", alignItems: "center", fontSize: 7, letterSpacing: "1px", color: "rgba(200,180,220,0.6)", textTransform: "uppercase" }}>
-                {([["LEVEL", audioMeter.level, "rgba(174,255,231,0.9)"], ["BASS", audioMeter.bass, "rgba(231,174,255,0.9)"], ["BEAT", audioMeter.beat, "rgba(255,180,80,0.95)"]] as [string, number, string][]).map(([lbl, v, c]) => (
+                {([["LEVEL", "rgba(174,255,231,0.9)"], ["BASS", "rgba(231,174,255,0.9)"], ["BEAT", "rgba(255,180,80,0.95)"]] as [string, string][]).map(([lbl, c], i) => (
                   <Fragment key={lbl}>
                     <span>{lbl}</span>
                     <div style={{ height: 5, borderRadius: 3, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
-                      <div style={{ height: "100%", width: `${Math.round(Math.min(1, Math.max(0, v)) * 100)}%`, background: c, transition: "width 120ms linear" }} />
+                      <div ref={(el) => { meterRefs.current[i] = el; }} style={{ height: "100%", width: "0%", background: c, transition: "width 100ms linear" }} />
                     </div>
                   </Fragment>
                 ))}
