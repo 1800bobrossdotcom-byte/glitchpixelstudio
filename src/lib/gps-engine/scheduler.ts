@@ -18,9 +18,11 @@ export interface SchedulerHooks {
   /** Return true to drop every other frame (low-power / battery-low). */
   shouldSkipFrames?: () => boolean;
   /**
-   * v1.2.55 adaptive resolution (0.75 under sustained >22 ms, back to 1.0
-   * after ~2 s under 14 ms). Default true. The mobile app disabled it in
-   * v1.3.42 in favour of its FX-quality governor — pass false there.
+   * Adaptive resolution. v1.6.0 — stepped: 1.0 → 0.75 → 0.55 → 0.42 while
+   * the average frame stays over SLOW_MS for ~1.5 s per step, back up one
+   * step after ~2 s under FAST_MS. A phone that rendered datamosh at 5 fps
+   * at full DPR sits at 0.42 (≈ 6× fewer pixels) and moves again. Default
+   * true; pass false to pin 1.0.
    */
   adaptiveResolution?: boolean;
   isVisible?: () => boolean;
@@ -39,12 +41,12 @@ export interface Scheduler {
   readonly frameTimeMs: number;
 }
 
-// 7800 / 7807: sustained >22 ms → 0.75; sustained <14 ms for ~2 s → 1.0.
-const SLOW_MS = 22;
-const FAST_MS = 14;
-const DEADBAND_MS = 16;
-const DOWN_SCALE = 0.75;
-const RECOVER_STREAK = 120;
+const SCALE_STEPS = [1.0, 0.75, 0.55, 0.42];
+const SLOW_MS = 30;          // < 33 fps sustained → step down
+const FAST_MS = 15;          // > 66 fps sustained → step up
+const DEADBAND_MS = 18;
+const DOWN_STREAK = 40;      // frames over SLOW_MS before stepping down (~1.5 s at 25 fps)
+const RECOVER_STREAK = 120;  // frames under FAST_MS before stepping up (~2 s)
 
 export function createScheduler(hooks: SchedulerHooks): Scheduler {
   const now = hooks.now ?? (() => performance.now());
@@ -55,9 +57,10 @@ export function createScheduler(hooks: SchedulerHooks): Scheduler {
   let rafId = 0;
   let running = false;
   let skipToggle = false;
-  let renderScale = 1.0;
+  let scaleIdx = 0;
   let frametimeAvg = 16.7; // 4832: seeded at ~60 fps so the first second isn't skewed
   let fastStreak = 0;
+  let slowStreak = 0;
   let lastTs = 0;
   let fpsFrames = 0;
   let fpsTime = 0;
@@ -84,19 +87,27 @@ export function createScheduler(hooks: SchedulerHooks): Scheduler {
       const avg = frametimeAvg;
       if (hooks.adaptiveResolution === false) {
         // frame time still tracked (segmenter cadence reads it); scale stays 1.0
-      } else if (avg > SLOW_MS && renderScale > 0.76) {
-        renderScale = DOWN_SCALE;
+      } else if (avg > SLOW_MS && scaleIdx < SCALE_STEPS.length - 1) {
         fastStreak = 0;
-        hooks.onScaleChange(renderScale);
-      } else if (avg < FAST_MS && renderScale < 1.0) {
+        slowStreak++;
+        if (slowStreak > DOWN_STREAK) {
+          scaleIdx++;
+          slowStreak = 0;
+          frametimeAvg = Math.min(frametimeAvg, SLOW_MS); // give the new scale a fair start
+          hooks.onScaleChange(SCALE_STEPS[scaleIdx]);
+        }
+      } else if (avg < FAST_MS && scaleIdx > 0) {
+        slowStreak = 0;
         fastStreak++;
         if (fastStreak > RECOVER_STREAK) {
-          renderScale = 1.0;
+          scaleIdx--;
           fastStreak = 0;
-          hooks.onScaleChange(renderScale);
+          frametimeAvg = Math.max(frametimeAvg, DEADBAND_MS);
+          hooks.onScaleChange(SCALE_STEPS[scaleIdx]);
         }
-      } else if (avg > DEADBAND_MS) {
-        fastStreak = Math.max(0, fastStreak - 1);
+      } else {
+        if (avg > DEADBAND_MS) fastStreak = Math.max(0, fastStreak - 1);
+        if (avg < SLOW_MS) slowStreak = Math.max(0, slowStreak - 1);
       }
     }
     lastTs = t;
@@ -123,7 +134,7 @@ export function createScheduler(hooks: SchedulerHooks): Scheduler {
       if (running && !rafId) { lastTs = 0; rafId = raf(tick); }
     },
     get running() { return running; },
-    get renderScale() { return renderScale; },
+    get renderScale() { return SCALE_STEPS[scaleIdx]; },
     get frameTimeMs() { return frametimeAvg; },
   };
 }

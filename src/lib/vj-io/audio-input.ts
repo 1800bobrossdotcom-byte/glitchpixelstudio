@@ -133,6 +133,8 @@ export async function openAudioInput(
   const src = context.createMediaStreamSource(stream);
   // Terminal Velocity analysis tap (gain-boosted, auto-gained, hot FFT).
   const features = createAudioFeatures(context, src);
+  // v1.6.0 — analysis runs on its own 60 Hz clock, not the render loop.
+  features.startTicker(60);
   const analyser = features.analyser;
   void opts;
 

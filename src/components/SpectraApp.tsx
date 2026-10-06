@@ -14,7 +14,7 @@ import { Media } from "@capacitor-community/media";
 import { Share } from "@capacitor/share";
 import { createAudioInputManager, type AudioInputDevice, type AudioInputInfo, type AudioInputManager, type AudioInputPref } from "@/lib/vj-io/audio-input";
 import { createDisplayOutput, type DisplayState } from "@/lib/vj-io/display-output";
-import { createAudioFeatures, type AudioFeatureAnalyser } from "@/lib/vj-io/audio-features";
+import { createAudioFeatures, type AudioFeatureAnalyser, type AudioFrame } from "@/lib/vj-io/audio-features";
 // v1.3.41 — shaders moved out of JS template literals into standalone files
 // loaded as raw strings via webpack asset/source (see next.config.ts +
 // src/types/glsl.d.ts). Permanently retires the recurring
@@ -661,6 +661,13 @@ const TAB_FIRST_PANEL: Record<RackTab, string> = {
   source: "INPUT", fx: "PIXEL SORT", look: "COLOR", vj: "VJ", export: "EXPORT",
 };
 const RACK_TAB_KEY = "gps.rackTab.v1";
+// v1.6.0 — STAGE UI. The canvas is the whole screen; the rack is a sheet
+// that slides up over it from a floating dock (REC · tabs · SNAP). "closed"
+// is home. The last open size is remembered so the sheet comes back the way
+// it was left.
+type SheetPos = "closed" | "half" | "full";
+const SHEET_KEY = "gps.sheet.v1";
+const DOCK_H = 64; // px, dock height incl. padding (CSS var --sp-dock-h mirrors it)
 // v1.5.5 — AUDIO RACK. Port of Terminal Velocity's KINETIC rack
 // (tv-vj-rack.js: PUNCH / CHROMA / SHATTER / ECHO / STROBE / MOSAIC) onto GPS's
 // own GPU uniforms, plus SORT / MOSH / HUE. Each effect has a fixed source
@@ -1485,6 +1492,8 @@ export default function SpectraAfter() {
     // AUDIO REACT power: listens to the selected input whenever ON — no longer
     // tied to AUTO-VJ (which only adds autonomous preset cycling on top).
     const [audioReactOn, setAudioReactOnState] = useState<boolean>(true);
+    const audioReactOnRef = useRef(true);
+    useEffect(() => { audioReactOnRef.current = audioReactOn; }, [audioReactOn]);
     useEffect(() => { try { if (localStorage.getItem(AUDIO_REACT_KEY) === "0") setAudioReactOnState(false); } catch { /* ignore */ } }, []);
     const setAudioReactOn = useCallback((on: boolean) => {
       setAudioReactOnState(on);
@@ -1494,6 +1503,8 @@ export default function SpectraAfter() {
     // 6 Hz update never re-renders the whole shell.
     const meterRefs = useRef<Array<HTMLDivElement | null>>([null, null, null]);
     const audioDiagRef = useRef<HTMLDivElement | null>(null);
+    const audioHudCanvasRef = useRef<HTMLCanvasElement | null>(null);
+    const audioHudLabelRef = useRef<HTMLSpanElement | null>(null);
     // AUDIO RACK on/off per effect (persisted after mount).
     const [audioRackOn, setAudioRackOnState] = useState<Record<AudioRackId, boolean>>(() => Object.fromEntries(AUDIO_RACK.map(e => [e.id, e.on])) as Record<AudioRackId, boolean>);
     const audioRackOnRef = useRef(audioRackOn);
@@ -1504,9 +1515,17 @@ export default function SpectraAfter() {
     const toggleAudioRack = useCallback((id: AudioRackId) => {
       setAudioRackOnState(prev => { const next = { ...prev, [id]: !prev[id] }; try { localStorage.setItem(AUDIO_RACK_KEY, JSON.stringify(next)); } catch { /* ignore */ } return next; });
     }, []);
+    const setAudioRackAll = useCallback((ids: ReadonlyArray<AudioRackId>) => {
+      const next = Object.fromEntries(AUDIO_RACK.map(e => [e.id, ids.includes(e.id)])) as Record<AudioRackId, boolean>;
+      setAudioRackOnState(next);
+      try { localStorage.setItem(AUDIO_RACK_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+    }, []);
     // Per-frame rack output, and a fallback delta tracker for the legacy / synthetic drive.
     const audioRackOutRef = useRef({ punch: 0, strobe: 0, chroma: 0, shatter: 0, sort: 0, mosh: 0, echo: 0, tear: 0, hue: 0 });
     const audioPrevBandsRef = useRef({ bass: 0, mid: 0, treb: 0 });
+    // v1.6.0 — latest consumed analysis frame + beat-scene envelopes.
+    const audioFrameRef = useRef<AudioFrame | null>(null);
+    const audioSceneRef = useRef({ beatN: 0, kick: 0, shard: 0, hueJump: 0, lastBeatMs: 0, lastMs: 0 });
     // The WebView can only service one permission prompt at a time: opening the
     // mic while the camera is still being granted makes Capacitor deny the mic.
     // Arm the audio input once the camera is live, or 4 s after mount if the
@@ -1591,13 +1610,90 @@ export default function SpectraAfter() {
     // Hydration-safe: the static HTML is rendered with defaults, saved prefs land after mount.
     try { const v = localStorage.getItem(RACK_TAB_KEY); if (v && RACK_TABS.some(t => t.id === v)) setActiveTabState(v as RackTab); } catch { /* ignore */ }
   }, []);
+  // v1.6.0 — sheet: closed (home) / half / full. `sheetMemo` is the size the
+  // sheet opens to (last size the user left it at).
+  const [sheet, setSheetState] = useState<SheetPos>("closed");
+  const sheetMemoRef = useRef<Exclude<SheetPos, "closed">>("half");
+  useEffect(() => { try { const v = localStorage.getItem(SHEET_KEY); if (v === "half" || v === "full") sheetMemoRef.current = v; } catch { /* ignore */ } }, []);
+  const setSheet = useCallback((s: SheetPos) => {
+    setSheetState(s);
+    if (s !== "closed") { sheetMemoRef.current = s; try { localStorage.setItem(SHEET_KEY, s); } catch { /* ignore */ } }
+  }, []);
+  const openSheet = useCallback(() => setSheetState(s => s === "closed" ? sheetMemoRef.current : s), []);
+  const tabTrackRef = useRef<HTMLDivElement>(null);
+  const prevTabIdxRef = useRef(1);
+  // Slide the rack content sideways when the tab changes and stagger the
+  // racks in. Web Animations API on the live nodes: nothing remounts, so the
+  // hidden tabs' knob loops keep running.
+  const animateTabChange = useCallback((toTab: RackTab) => {
+    const toIdx = RACK_TABS.findIndex(t => t.id === toTab);
+    const dir = toIdx >= prevTabIdxRef.current ? 1 : -1;
+    prevTabIdxRef.current = toIdx;
+    requestAnimationFrame(() => {
+      const track = tabTrackRef.current;
+      if (!track || typeof track.animate !== "function") return;
+      try {
+        track.animate([
+          { transform: `translateX(${dir * 42}px)`, opacity: 0.0 },
+          { transform: "translateX(0px)", opacity: 1 },
+        ], { duration: 300, easing: "cubic-bezier(.22,1,.36,1)" });
+        const racks = track.querySelectorAll<HTMLElement>(`[data-tab="${toTab}"] .sp-rack`);
+        racks.forEach((el, i) => {
+          el.animate([
+            { transform: "translateY(18px) scale(0.985)", opacity: 0 },
+            { transform: "translateY(0) scale(1)", opacity: 1 },
+          ], { duration: 360, delay: 40 + i * 55, easing: "cubic-bezier(.22,1,.36,1)", fill: "backwards" });
+        });
+      } catch { /* older WebView: no animation, no harm */ }
+    });
+  }, []);
   const setActiveTab = useCallback((t: RackTab) => {
     setActiveTabState(t);
+    setSheetState(s => s === "closed" ? sheetMemoRef.current : s);
     setOpenPanelTitle(TAB_FIRST_PANEL[t]);
+    animateTabChange(t);
     requestAnimationFrame(() => { if (panelRef.current) panelRef.current.scrollTop = 0; });
     try { localStorage.setItem(RACK_TAB_KEY, t); } catch { /* ignore */ }
-  }, []);
+  }, [animateTabChange]);
   const [rawFxOpen, setRawFxOpen] = useState(false);
+  // Sheet drag: grab the handle, pull up/down, release snaps to the nearest
+  // position (velocity-aware). Direct style writes while dragging; the CSS
+  // transition takes over on release.
+  const sheetDragRef = useRef<{ y0: number; t0: number; dy: number; vy: number; lastY: number; lastT: number } | null>(null);
+  const onSheetHandleDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const el = panelRef.current; if (!el) return;
+    sheetDragRef.current = { y0: e.clientY, t0: performance.now(), dy: 0, vy: 0, lastY: e.clientY, lastT: performance.now() };
+    el.style.transition = "none";
+    try { (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId); } catch { /* ignore */ }
+  }, []);
+  const onSheetHandleMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const d = sheetDragRef.current; const el = panelRef.current; if (!d || !el) return;
+    const now = performance.now();
+    d.vy = (e.clientY - d.lastY) / Math.max(1, now - d.lastT);
+    d.lastY = e.clientY; d.lastT = now;
+    d.dy = e.clientY - d.y0;
+    // Pulling up past the top of a full sheet is resisted; pulling down is free.
+    const dy = d.dy < 0 ? -Math.pow(-d.dy, 0.82) : d.dy;
+    el.style.transform = `translateY(${dy}px)`;
+  }, []);
+  const onSheetHandleUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const d = sheetDragRef.current; const el = panelRef.current;
+    sheetDragRef.current = null;
+    if (!d || !el) return;
+    try { (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    el.style.transition = "";
+    el.style.transform = "";
+    const h = el.getBoundingClientRect().height || 1;
+    const flick = Math.abs(d.vy) > 0.6;
+    const cur = sheet;
+    let next: SheetPos = cur;
+    if (flick) next = d.vy > 0 ? (cur === "full" ? "half" : "closed") : (cur === "half" ? "full" : "full");
+    else if (d.dy > h * 0.33) next = cur === "full" ? "half" : "closed";
+    else if (d.dy < -h * 0.25) next = "full";
+    if (Math.abs(d.dy) < 6 && !flick) next = cur === "full" ? "half" : "full"; // a tap toggles size
+    setSheet(next);
+    playSfx("click");
+  }, [sheet, setSheet]);
   const accordionCtx = useMemo(
     () => ({ openTitle: openPanelTitle, setOpenTitle: setOpenPanelTitle }),
     [openPanelTitle]
@@ -2979,6 +3075,7 @@ export default function SpectraAfter() {
       // v1.5.4 — Terminal Velocity analysis tap; the audible path is a
       // separate branch straight to the speakers.
       const feats = createAudioFeatures(actx, src);
+      feats.startTicker(60);
       const analyser = feats.analyser;
       src.connect(actx.destination);
       trackCtxRef.current = actx;
@@ -3845,15 +3942,34 @@ export default function SpectraAfter() {
     const _feat = audioFeaturesRef.current;
     let _realLevel = -1;
     if (_feat) {
-      const f = _feat.sample();
+      // v1.6.0 — the analyser samples itself at 60 Hz; consume() hands over
+      // the latest bands plus peak-held transients since the previous frame,
+      // so every beat lands even when the renderer is at 5–18 fps.
+      const f = _feat.consume();
+      audioFrameRef.current = f;
       audioLevelRef.current  = f.level;
       audioBassRef.current   = f.bass;
       audioTrebleRef.current = f.treble;
-      // Beat impulse: TV beat (bass over slow average) OR a bass hit; decays like before.
-      const beatTarget = Math.max(f.beat, f.bassHit * 0.85);
+      const beatTarget = Math.max(f.beatPeak, f.bassHitPeak * 0.85);
       if (beatTarget > audioBeatRef.current) audioBeatRef.current = beatTarget;
       else audioBeatRef.current *= 0.90;
-      _realLevel = f.level;
+      // Discrete beat events → scene counter. Kick envelope for PUNCH, a
+      // shard burst every 4th beat, a hue jump every 8th (when those rack
+      // slots are on). This is what makes a beat *read* instead of nudge.
+      const sc = audioSceneRef.current;
+      if (f.beatsSince > 0 && !f.gated) {
+        sc.beatN += f.beatsSince;
+        sc.kick = 1;
+        if (sc.beatN % 4 === 0) sc.shard = 1;
+        if (sc.beatN % 8 === 0) sc.hueJump = (sc.hueJump + 0.125) % 1;
+        sc.lastBeatMs = _nowMs;
+      }
+      // frame-rate independent decay (~180 ms kick, ~260 ms shard)
+      const _dtS = Math.min(0.25, Math.max(0.001, (_nowMs - (sc.lastMs || _nowMs)) / 1000));
+      sc.lastMs = _nowMs;
+      sc.kick = Math.max(0, sc.kick - _dtS / 0.18);
+      sc.shard = Math.max(0, sc.shard - _dtS / 0.26);
+      _realLevel = f.gated ? 0 : Math.max(f.level, f.rawLevel * 12);
     } else if (audioAnalyserRef.current && audioDataArrayRef.current) {
       audioFrameToggleRef.current ^= 1;
       if (audioFrameToggleRef.current === 0) {
@@ -5064,18 +5180,23 @@ export default function SpectraAfter() {
     // v1.5.5 — AUDIO RACK (Terminal Velocity KINETIC rack on GPS uniforms).
     // intensity = gain × source × REACT (TV: intensityFor = i + gain·audioFor(src)).
     {
-      const F = audioFeaturesRef.current?.features;
+      const F = audioFrameRef.current && audioFeaturesRef.current ? audioFrameRef.current : null;
       const pb = audioPrevBandsRef.current;
+      const sc = audioSceneRef.current;
+      const live = !!F && !F.gated && !audioSyntheticRef.current;
       const bass = F ? F.bass : _aBass, mid = F ? F.mid : _aLvl, treb = F ? F.treble : audioTrebleRef.current;
-      const beat = F ? Math.max(F.beat, F.bassHit * 0.85) : _aBeat;
-      const bassD = F ? F.bassDelta : Math.max(0, bass - pb.bass);
-      const midD  = F ? F.midDelta  : Math.max(0, mid - pb.mid);
-      const trebD = F ? F.trebDelta : Math.max(0, treb - pb.treb);
+      const beat = F ? Math.max(F.beatPeak, F.bassHitPeak * 0.85, _aBeat) : _aBeat;
+      const bassD = F ? F.bassDeltaPeak : Math.max(0, bass - pb.bass);
+      const midD  = F ? F.midDeltaPeak  : Math.max(0, mid - pb.mid);
+      const trebD = F ? F.trebDeltaPeak : Math.max(0, treb - pb.treb);
       const flow  = F ? F.flow : _aLvl;
       pb.bass = bass; pb.mid = mid; pb.treb = treb;
+      // Transient sources ride the scene envelopes too, so a kick is a kick
+      // regardless of how small the per-tick delta happened to be.
+      const kick = live ? sc.kick : (audioSyntheticRef.current ? _aBeat : 0);
       const srcV = (src: string) => src === "BASS" ? bass : src === "MID" ? mid : src === "TREB" ? treb : src === "LEVEL" ? _aLvl
-        : src === "BASS-D" ? Math.min(1, bassD * 2.4) : src === "MID-D" ? Math.min(1, midD * 2.4) : src === "TREB-D" ? Math.min(1, trebD * 2.4)
-        : src === "BEAT" ? beat : src === "FLOW" ? flow : 0;
+        : src === "BASS-D" ? Math.max(Math.min(1, bassD * 2.4), kick) : src === "MID-D" ? Math.max(Math.min(1, midD * 2.4), kick * 0.7, live ? sc.shard : 0) : src === "TREB-D" ? Math.max(Math.min(1, trebD * 2.4), kick * 0.5)
+        : src === "BEAT" ? Math.max(beat, kick) : src === "FLOW" ? flow : 0;
       const on = audioRackOnRef.current;
       const rk = audioReactAmtRef.current * 1.6; // REACT 0.6 ≈ TV's 1.0
       const I = (e: typeof AUDIO_RACK[number]) => on[e.id] ? Math.min(1, e.gain * srcV(e.src) * rk) : 0;
@@ -5083,15 +5204,15 @@ export default function SpectraAfter() {
       for (const e of AUDIO_RACK) {
         const v = I(e);
         switch (e.id) {
-          case "punch":   o.punch   = v * 0.55; break;   // uZoom units (0..2)
-          case "strobe":  o.strobe  = v > 0.6 ? 0.9 : v * 0.75; break; // brightness lift
-          case "chroma":  o.chroma  = v * 0.22; break;   // ±uRgbR / uRgbB
-          case "shatter": o.shatter = v * 0.9;  break;   // uBlockGlitch
-          case "sort":    o.sort    = v * 0.55; break;   // uSortAmt
-          case "mosh":    o.mosh    = v * 1.6;  break;   // uDatamosh (0..5.5 scale)
+          case "punch":   o.punch   = v * 0.34; break;   // uZoom units (0..2)
+          case "strobe":  o.strobe  = v * 0.36; break;   // brightness lift — never a white-out
+          case "chroma":  o.chroma  = v * 0.26; break;   // ±uRgbR / uRgbB
+          case "shatter": o.shatter = v * 1.0;  break;   // uBlockGlitch
+          case "sort":    o.sort    = v * 0.6;  break;   // uSortAmt
+          case "mosh":    o.mosh    = v * 1.8;  break;   // uDatamosh (0..5.5 scale)
           case "echo":    o.echo    = v * 0.6;  break;   // uFeedback
           case "tear":    o.tear    = v * 0.8;  break;   // uScanTear
-          case "hue":     o.hue     = v * 0.35; break;   // uHueShift
+          case "hue":     o.hue     = v * 0.35 + (on.hue && live ? sc.hueJump * audioReactAmtRef.current : 0); break; // uHueShift (+ 8-beat jump)
         }
       }
     }
@@ -5591,12 +5712,59 @@ export default function SpectraAfter() {
       if (diag) {
         const sess = audioInMgrRef.current?.session;
         const f = audioFeaturesRef.current?.features;
-        const drive = audioSyntheticRef.current ? "SYNTH LFO" : f ? "LIVE" : sess ? "LIVE (legacy)" : "NO INPUT";
-        diag.textContent = `${drive} · ctx ${sess?.context.state ?? "—"} · gain ×${f ? f.gain.toFixed(1) : "—"} · flux ${f ? f.flux.toFixed(2) : "—"}`;
+        const drive = audioSyntheticRef.current ? "SYNTH LFO" : f ? (f.gated ? "LIVE · GATED (quiet)" : "LIVE") : sess ? "LIVE (legacy)" : "NO INPUT";
+        diag.textContent = `${drive} · ctx ${sess?.context.state ?? "—"} · gain ×${f ? f.gain.toFixed(1) : "—"} · in ${f ? (f.rawLevel * 1000).toFixed(0) : "—"}‰`;
       }
     }, 120);
     return () => window.clearInterval(id);
   }, [vjPanelOpen]);
+
+  // v1.6.0 — AUDIO HUD painter (30 Hz, 2D, tiny). Reads the analyser's FFT
+  // straight from the feature tap; no React state.
+  useEffect(() => {
+    if (uiHidden) return;
+    const bars = 24;
+    const id = window.setInterval(() => {
+      const cv = audioHudCanvasRef.current; const lbl = audioHudLabelRef.current;
+      if (!cv) return;
+      const g = cv.getContext("2d"); if (!g) return;
+      const W = cv.width, H = cv.height;
+      g.clearRect(0, 0, W, H);
+      const feat = audioFeaturesRef.current;
+      const f = feat?.features;
+      const synth = audioSyntheticRef.current;
+      const beat = audioBeatRef.current;
+      const on = audioReactOnRef.current;
+      if (feat && f && !f.gated) {
+        const fft = feat.fft; const N = fft.length;
+        for (let b = 0; b < bars; b++) {
+          // log-spaced bins: 1 .. N
+          const lo = Math.floor(Math.pow(N, b / bars)); const hi = Math.max(lo + 1, Math.floor(Math.pow(N, (b + 1) / bars)));
+          let s = 0; for (let i = lo; i < hi && i < N; i++) s += fft[i];
+          const v = (s / (hi - lo)) / 255;
+          const h = Math.max(1.5, v * (H - 4));
+          const x = (b / bars) * W;
+          const hue = 280 - b * 4;
+          g.fillStyle = `hsla(${hue}, 95%, ${62 + v * 25}%, ${0.55 + v * 0.45})`;
+          g.fillRect(x + 1, H - 2 - h, W / bars - 2, h);
+        }
+        // beat lamp: full-width glow line
+        if (beat > 0.05) { g.fillStyle = `rgba(255,180,80,${Math.min(0.95, beat)})`; g.fillRect(0, 0, W * Math.min(1, beat), 2); }
+        if (lbl) lbl.textContent = f.gain > 12 ? "♪ quiet" : "♪";
+      } else {
+        // idle / gated / synthetic: a faint baseline so the HUD reads as "listening"
+        const t = performance.now() * 0.002;
+        for (let b = 0; b < bars; b++) {
+          const v = synth ? 0.25 + 0.2 * Math.sin(t + b * 0.6) : 0.06;
+          const h = Math.max(1.5, v * (H - 4));
+          g.fillStyle = synth ? "rgba(174,255,231,0.55)" : "rgba(231,174,255,0.28)";
+          g.fillRect((b / bars) * W + 1, H - 2 - h, W / bars - 2, h);
+        }
+        if (lbl) lbl.textContent = !on ? "♪ off" : synth ? "♪ auto" : feat ? "♪ …" : "♪ tap";
+      }
+    }, 33);
+    return () => window.clearInterval(id);
+  }, [uiHidden]);
 
   // ♪ in the top bar: quick link to the VJ · Audio In row (and switches
   // AUDIO REACT on if it was off).
@@ -6674,8 +6842,11 @@ export default function SpectraAfter() {
       render,
       onScaleChange: () => resize(),
       onFps: (fps) => setFps(fps),
-      // v1.3.49: fxQuality / renderScale pinned at 1.0 — no adaptive scaling.
-      adaptiveResolution: false,
+      // v1.6.0: stepped adaptive render scale (1 → .75 → .55 → .42). The
+      // phone that showed 5 fps with DATAMOSH on was pushing full-DPR pixels
+      // through the feedback + GPU sort passes; the scheduler now steps the
+      // backing store down until the loop moves and back up when it can.
+      adaptiveResolution: true,
     });
     schedulerRef.current = sched;
     resize();
@@ -7081,7 +7252,82 @@ export default function SpectraAfter() {
       <style>{`
         /* v1.2.76 — IMMERSIVE / HIDE-UI mode. */
         .ui-hidden .sp-panel-glass { display: none !important; }
+        .ui-hidden .sp-dock, .ui-hidden .sp-topbar, .ui-hidden .sp-flourish, .ui-hidden .sp-audio-hud { display: none !important; }
         .ui-hidden .sp-canvas-pane { height: 100dvh !important; flex: 1 1 auto !important; }
+
+        /* ── v1.6.0 STAGE UI ──
+           The picture is the screen. Top bar floats over it (gradient, no
+           slab), the dock floats at the bottom, the rack is a sheet that
+           slides up between them. */
+        :root { --sp-dock-h: ${DOCK_H}px; }
+        .neon-mode .sp-topbar {
+          position: absolute !important; top: 0; left: 0; right: 0; z-index: 40 !important;
+          background: linear-gradient(180deg, rgba(10,0,22,0.82) 0%, rgba(10,0,22,0.55) 60%, rgba(10,0,22,0) 100%) !important;
+          border-bottom: none !important; box-shadow: none !important;
+          padding-top: calc(6px + env(safe-area-inset-top, 0px)) !important;
+          padding-bottom: 14px !important;
+          pointer-events: none;
+        }
+        .neon-mode .sp-topbar > * { pointer-events: auto; }
+        .neon-mode .sp-flourish { display: none !important; }
+        .neon-mode .sp-body { flex: 1 1 auto !important; min-height: 0; }
+        .sp-dock {
+          position: absolute; left: 0; right: 0; z-index: 45;
+          bottom: 0;
+          height: calc(var(--sp-dock-h) + env(safe-area-inset-bottom, 0px));
+          padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+          display: grid; grid-template-columns: 48px 1fr 48px; gap: 8px; align-items: center;
+          background: linear-gradient(0deg, rgba(8,0,18,0.92) 0%, rgba(8,0,18,0.72) 70%, rgba(8,0,18,0) 100%);
+          pointer-events: none;
+        }
+        .sp-dock > * { pointer-events: auto; }
+        .sp-dock-tabs {
+          display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px;
+          padding: 4px; border-radius: 14px;
+          background: linear-gradient(180deg, rgba(15,0,28,0.78) 0%, rgba(10,0,22,0.86) 100%);
+          border: 1px solid rgba(231,174,255,0.32);
+          backdrop-filter: blur(12px) saturate(1.2); -webkit-backdrop-filter: blur(12px) saturate(1.2);
+          box-shadow: 0 8px 28px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.12);
+        }
+        .sp-dock-snap, .sp-dock-rec {
+          width: 48px; height: 48px; border-radius: 50% !important; padding: 0 !important;
+          display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0;
+          font-size: 15px; line-height: 1;
+          background: linear-gradient(180deg, rgba(15,0,28,0.78) 0%, rgba(10,0,22,0.86) 100%) !important;
+          border: 1px solid rgba(231,174,255,0.42) !important;
+          backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+          box-shadow: 0 8px 24px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.14) !important;
+          color: #F4F6FF !important;
+        }
+        .sp-dock-snap .lbl, .sp-dock-rec .lbl { font-size: 7px; letter-spacing: 1.2px; margin-top: 2px; opacity: 0.85; }
+        .sp-dock-rec { color: #FF6A6A !important; border-color: rgba(255,106,106,0.55) !important; }
+        .sp-dock-rec.is-rec { background: rgba(224,61,61,0.92) !important; color: #fff !important; border-color: #E03D3D !important; }
+        .sp-dock-snap { order: 3; }
+        .sp-dock-rec { order: 1; }
+        .sp-dock-tabs { order: 2; }
+        .sp-audio-hud {
+          position: absolute; left: 50%; transform: translateX(-50%);
+          bottom: calc(var(--sp-dock-h) + env(safe-area-inset-bottom, 0px) + 6px);
+          z-index: 7; width: min(60vw, 220px); height: 34px;
+          display: flex; align-items: center; gap: 6px; padding: 2px 8px 2px 6px;
+          border-radius: 10px; border: 1px solid rgba(231,174,255,0.28);
+          background: rgba(8,0,18,0.42); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+          cursor: pointer; opacity: 0.92;
+          transition: opacity 0.25s ease, transform 0.25s ease;
+        }
+        .sp-audio-hud canvas { flex: 1 1 auto; width: 100%; height: 28px; display: block; }
+        .sp-audio-hud .lbl { flex: none; font-size: 9px; letter-spacing: 1px; color: rgba(231,174,255,0.9); font-family: var(--font-space-mono,'Space Mono','Courier New',monospace); white-space: nowrap; }
+        .sp-tab-track { display: contents; }
+        .sp-tab-track > [data-tab] { display: contents; }
+        .sp-sheet-handle {
+          position: sticky; top: 0; z-index: 31;
+          display: flex; align-items: center; justify-content: center; gap: 10px;
+          padding: 10px 0 8px; cursor: grab; touch-action: none; user-select: none;
+          background: linear-gradient(180deg, rgba(15,0,28,0.95) 0%, rgba(15,0,28,0.6) 100%);
+        }
+        .sp-sheet-handle:active { cursor: grabbing; }
+        .sp-sheet-handle .bar { width: 48px; height: 5px; border-radius: 3px; background: rgba(231,174,255,0.55); box-shadow: 0 0 10px rgba(231,174,255,0.35); }
+        .sp-sheet-handle .lbl { font-family: var(--font-space-mono,'Space Mono','Courier New',monospace); font-size: 8px; letter-spacing: 1.6px; color: rgba(231,174,255,0.8); }
 
         /* v1.2.76 — PHONE LANDSCAPE reflow (Tailwind lg: is desktop-only).
            v1.2.77 — widened: drop the 600px height clamp so taller phones
@@ -7210,17 +7456,18 @@ export default function SpectraAfter() {
              EXPORT panel's RECORD button isn't swallowed by the system
              gesture area. Falls back to 0 on iOS/desktop where the env
              var is 0. */
-          bottom: env(safe-area-inset-bottom, 0px);
-          /* Carousel is capped to 1/4 of the viewport so the camera/FX
-             always reads at ≥ 75% full. The wheel uses heavy z-depth
-             (see .sp-rack transform in JS) so off-center racks recede
-             instead of needing more vertical scroll real-estate. */
-          /* v1.5.4 — the rack gets half the screen (was 24dvh, which left a
-             sliver under the tabs). The camera stays full-bleed behind it. */
-          max-height: 56dvh;
+          /* v1.6.0 — SHEET. Sits on the dock, slides up/down on transform.
+             closed = translated fully off the bottom (kept mounted so knob
+             loops and the e2e harness keep working); half = 46dvh; full = 82dvh. */
+          bottom: calc(var(--sp-dock-h) + env(safe-area-inset-bottom, 0px) - 10px);
+          height: 46dvh;
+          max-height: none;
+          border-radius: 18px 18px 0 0;
           overflow-y: auto;
           overscroll-behavior: contain;
-          z-index: 5;
+          z-index: 44;
+          transform: translateY(0);
+          transition: transform 340ms cubic-bezier(.22,1,.36,1), height 300ms cubic-bezier(.22,1,.36,1), background 0.3s ease;
           /* v1.2.49 — full glass-bottom-boat: drop the panel tint to a
              whisper so the FX layer reads through almost unobstructed.
              The blur + tilt do the heavy visual lifting now. */
@@ -7234,9 +7481,13 @@ export default function SpectraAfter() {
             0 -10px 36px rgba(176,20,240,0.25),
             inset 0 1px 0 rgba(255,255,255,0.18),
             inset 0 -1px 0 rgba(0,0,0,0.4);
-          transform: none;
-          transition: background 0.3s ease, max-height 0.28s ease;
           will-change: transform;
+        }
+        .neon-mode .sp-panel-glass.sheet-full { height: 82dvh; }
+        .neon-mode .sp-panel-glass.sheet-closed { transform: translateY(calc(100% + 120px)); pointer-events: none; box-shadow: none; }
+        @media (orientation: landscape) and (max-height: 600px) {
+          .neon-mode .sp-panel-glass { height: calc(100dvh - var(--sp-dock-h)) !important; width: auto !important; flex: none !important; }
+          .neon-mode .sp-panel-glass.sheet-full { height: calc(100dvh - var(--sp-dock-h)) !important; }
         }
 
         /* v1.2.49 — racks themselves were fully-opaque deep purple
@@ -7405,13 +7656,10 @@ export default function SpectraAfter() {
         .neon-mode .sp-photo-btn-neon {
           position: fixed !important;
           right: 12px !important;
-          bottom: calc(56dvh + 12px) !important;
+          /* v1.6.0 — only shown in HIDE-UI mode now (dock gone): thumb-reach bottom corners. */
+          bottom: calc(18px + env(safe-area-inset-bottom, 0px)) !important;
           z-index: 10 !important;
           transition: bottom 0.28s ease;
-        }
-        .neon-mode .sp-panel-glass.glass-expanded ~ * .sp-photo-btn-neon,
-        body:has(.neon-mode .sp-panel-glass.glass-expanded) .sp-photo-btn-neon {
-          bottom: calc(55dvh + 12px) !important;
         }
         /* v1.5.0 — SELECTED state. The glass rule above pins background /
            border / color with !important on every rack button, which hid
@@ -7829,7 +8077,7 @@ export default function SpectraAfter() {
            so everything fits without wrapping to a second line.
            v1.2.76 — hidden when uiHidden is true (immersive view). */}
       {!uiHidden && (
-      <div style={{
+      <div className="sp-topbar" style={{
         background: "linear-gradient(180deg, #3A0852 0%, #1A0224 100%)",
         borderBottom: "1px solid rgba(231,174,255,0.45)",
         display: "flex", flexDirection: "row",
@@ -8056,7 +8304,7 @@ export default function SpectraAfter() {
 
       {/* ── TE gradient flourish strip (OP-1 knob color language) */}
       {!uiHidden && (
-      <div style={{
+      <div className="sp-flourish" style={{
         height: 3, flexShrink: 0,
         background: `linear-gradient(90deg, ${TE.blue} 0%, ${TE.green} 30%, ${TE.amber} 58%, ${TE.lilac} 78%, ${TE.red} 100%)`,
         opacity: 0.72,
@@ -8102,6 +8350,8 @@ export default function SpectraAfter() {
               // the live image visibly distorts under touch.
               onPointerDown={(e) => {
                 e.preventDefault();
+                // v1.6.0 — a tap on the picture while the sheet is up puts it away.
+                if (sheet !== "closed") setSheet("closed");
                 const r = (e.currentTarget as HTMLCanvasElement).getBoundingClientRect();
                 touchRef.current.x = Math.max(0, Math.min(1, (e.clientX - r.left) / Math.max(1, r.width)));
                 touchRef.current.y = Math.max(0, Math.min(1, 1 - (e.clientY - r.top) / Math.max(1, r.height)));
@@ -8185,6 +8435,20 @@ export default function SpectraAfter() {
               title={recording ? "Stop recording" : "Start recording"}
             >{recording ? "■ STOP" : "● REC"}</button>
             </>)}
+            {/* v1.6.0 — AUDIO HUD: a live 24-band spectrum + beat lamp drawn
+                over the picture just above the dock. If the bars don't move,
+                the app is not hearing anything — tap it to go to Audio In. */}
+            {!uiHidden && (
+              <button
+                className="sp-audio-hud"
+                onClick={() => { openVjAudioPanel(); playSfx("click"); }}
+                title="Audio react — tap for input, rack and REACT settings"
+                aria-label="Audio react status"
+              >
+                <canvas ref={audioHudCanvasRef} width={192} height={28} />
+                <span ref={audioHudLabelRef} className="lbl">♪</span>
+              </button>
+            )}
             {/* v1.3.66 — capture-mode toggle removed; PHOTO and REC are
                 now distinct buttons on opposite sides of the canvas. */}
             {/* v1.2.76 — floating eye toggle, always over the canvas, so
@@ -8228,8 +8492,8 @@ export default function SpectraAfter() {
             {/* Flash feedback on capture */}
             {flashVisible && <div style={{ position: "absolute", inset: 0, background: "white", opacity: 0.6, zIndex: 10, pointerEvents: "none" }}/>}
 
-            {/* HUD */}
-            <div style={{ position: "absolute", top: 12, left: 12, zIndex: 4, pointerEvents: "none" }}>
+            {/* HUD — v1.6.0: sits under the floating top bar */}
+            <div className="sp-hud" style={{ position: "absolute", top: uiHidden ? 12 : 60, left: 12, zIndex: 4, pointerEvents: "none" }}>
               <div style={{ fontSize: 13, letterSpacing: "2px", color: "rgba(231,174,255,0.98)", textShadow: "0 0 12px rgba(176,20,240,0.7)", textTransform: "uppercase" }}>
                 {modeLabel}
               </div>
@@ -8258,7 +8522,7 @@ export default function SpectraAfter() {
 
             {cameraRequesting && !cameraActive && !sourceError && (
               <div style={{
-                position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)",
+                position: "absolute", bottom: uiHidden ? 12 : DOCK_H + 52, left: "50%", transform: "translateX(-50%)",
                 background: "rgba(80,50,10,0.12)", border: "1px solid rgba(232,160,32,0.3)",
                 borderRadius: 10, padding: "6px 14px", fontSize: 11, letterSpacing: "1px",
                 color: "#E8A020", zIndex: 5, maxWidth: "85%", textAlign: "center",
@@ -8269,7 +8533,7 @@ export default function SpectraAfter() {
             )}
             {sourceError && (
               <div style={{
-                position: "absolute", bottom: 12, left: "50%", transform: "translateX(-50%)",
+                position: "absolute", bottom: uiHidden ? 12 : DOCK_H + 52, left: "50%", transform: "translateX(-50%)",
                 background: "rgba(192,90,42,0.15)", border: "1px solid rgba(192,90,42,0.4)",
                 borderRadius: 10, padding: "6px 14px", fontSize: 11, letterSpacing: "1px",
                 color: "#E86040", zIndex: 5, maxWidth: "85%", textAlign: "center",
@@ -8287,7 +8551,7 @@ export default function SpectraAfter() {
             )}
             {!recording && (
               <div style={{
-                position: "absolute", bottom: 12, left: 12, zIndex: 4,
+                position: "absolute", bottom: uiHidden ? 12 : DOCK_H + 48, left: 12, zIndex: 4,
                 background: "rgba(18,0,31,0.52)", border: "1px solid rgba(176,20,240,0.32)", borderRadius: 8,
                 padding: "5px 8px", fontSize: 10, letterSpacing: "0.5px", color: "rgba(243,238,255,0.9)",
               }}>
@@ -8310,7 +8574,8 @@ export default function SpectraAfter() {
         {/* Settings panel — bottom half on mobile (scrollable), right pane on desktop */}
         <div
           ref={panelRef}
-          className={"sp-panel-glass flex-1 min-h-0 overflow-y-auto lg:w-[23rem] lg:flex-none"}
+          className={"sp-panel-glass flex-1 min-h-0 overflow-y-auto lg:w-[23rem] lg:flex-none sheet-" + sheet}
+          aria-hidden={sheet === "closed"}
           style={isLandscape
             ? { background: "linear-gradient(180deg,#0F001C 0%,#080012 100%)", borderTop: `1px solid rgba(61,10,92,0.9)`, position: "relative", flex: "0 0 17rem", width: "17rem", height: "100%" }
             : { background: "linear-gradient(180deg,#0F001C 0%,#080012 100%)", borderTop: `1px solid rgba(61,10,92,0.9)`, position: "relative" }}
@@ -8351,49 +8616,12 @@ export default function SpectraAfter() {
           {/* v1.5.4 — no accordion: every rack on a tab is open, the tab scrolls.
               (The accordion context stays defined for SynthPanel's prop types.) */}
           {((children: React.ReactNode) => <>{children}</>)(<>
-          {/* v1.3.72 — sticky SNAP / REC strip pinned to the TOP of the
-              bottom panel. On mobile this is exactly where the user's
-              thumbs naturally rest while holding the phone in shooting
-              position, so the two most-used capture controls are always
-              one tap away even as the panel scrolls underneath. */}
-          <div
-            className="sp-snap-rec-strip"
-            style={{
-              position: "sticky", top: 0, zIndex: 30,
-              display: "flex", flexDirection: "row", gap: 8,
-              padding: "6px 10px",
-              background: "linear-gradient(180deg, rgba(15,0,28,0.96) 0%, rgba(15,0,28,0.82) 100%)",
-              borderBottom: "1px solid rgba(231,174,255,0.35)",
-              backdropFilter: "blur(8px)",
-              WebkitBackdropFilter: "blur(8px)",
-            }}
-          >
-            <button
-              className="sp-btn"
-              onClick={() => { playSfx("shutter"); captureStillRef.current(); }}
-              style={{
-                ...topBtnStyle,
-                flex: 1, height: 44, padding: 0, fontSize: 12, borderRadius: 10, letterSpacing: "1.2px", fontWeight: 700,
-              }}
-              title="SNAP — capture a still"
-            >○ SNAP</button>
-            <button
-              className="sp-btn"
-              onClick={() => {
-                if (recording) { playSfx("recStop"); stopRecordingRef.current(); }
-                else { playSfx("recStart"); startRecordingRef.current(); }
-              }}
-              style={{
-                ...topBtnStyle,
-                flex: 1, height: 44, padding: 0, fontSize: 12, borderRadius: 10, letterSpacing: "1.2px", fontWeight: 700,
-                background: recording ? "rgba(224,61,61,0.92)" : (topBtnStyle.background as string | undefined),
-                borderColor: recording ? "#E03D3D" : (topBtnStyle.borderColor as string | undefined),
-                boxShadow: recording ? "0 0 14px rgba(224,61,61,0.85)" : topBtnStyle.boxShadow,
-                color: recording ? "#fff" : undefined,
-                animation: recording ? "spRecPulse 1.05s ease-in-out infinite" : undefined,
-              }}
-              title={recording ? `Stop ${exportFormat.toUpperCase()} recording` : `Start ${exportFormat.toUpperCase()} recording`}
-            >{recording ? "■ STOP" : "● REC"}</button>
+          {/* v1.6.0 — sheet grab handle: drag to resize / dismiss, tap to
+              toggle half ↔ full. REC / SNAP live in the dock below. */}
+          <div className="sp-sheet-handle" role="button" aria-label="Drag to resize the rack"
+            onPointerDown={onSheetHandleDown} onPointerMove={onSheetHandleMove} onPointerUp={onSheetHandleUp} onPointerCancel={onSheetHandleUp}>
+            <span className="bar" />
+            <span className="lbl">{RACK_TABS.find(t => t.id === activeTab)?.label} · {sheet === "full" ? "▼ HALF" : "▲ FULL"}</span>
           </div>
           <div style={{
             height: pullDistance,
@@ -8416,18 +8644,9 @@ export default function SpectraAfter() {
             }}
           />
 
-          {/* v1.5.0 — five tabs: SOURCE · FX · LOOK · VJ · EXPORT */}
-          <div className="sp-rack-tabs" role="tablist">
-            {RACK_TABS.map(t => (
-              <button key={t.id} role="tab" aria-selected={activeTab === t.id} data-active={activeTab === t.id} className="sp-rack-tab"
-                onClick={() => { setActiveTab(t.id); playSfx("click"); }} style={{ color: activeTab === t.id ? "#fff" : undefined }}>
-                <span className="pip" style={{ background: t.pip, color: t.pip }} />
-                {t.label}
-              </button>
-            ))}
-          </div>
-
-          <div style={{ display: activeTab === "source" ? "contents" : "none" }}>
+          {/* v1.6.0 — tab content track (slides sideways on tab change) */}
+          <div ref={tabTrackRef} className="sp-tab-track">
+          <div data-tab="source" style={{ display: activeTab === "source" ? "contents" : "none" }}>
 
             {/* ── INPUT ───────────────────────────────────────────────
                 v1.3.4 — split the old 4-way SOURCE picker into two
@@ -8783,7 +9002,7 @@ export default function SpectraAfter() {
 
           </div>
 
-          <div style={{ display: activeTab === "fx" ? "contents" : "none" }}>
+          <div data-tab="fx" style={{ display: activeTab === "fx" ? "contents" : "none" }}>
             {/* v1.5.3 — the two things people reach for most on the FX tab. */}
             <div style={{ display: "flex", gap: 6, padding: "8px 10px 2px" }}>
               <button className="sp-tile" onClick={() => document.getElementById("gps-randomize-btn")?.click()}
@@ -9000,7 +9219,7 @@ export default function SpectraAfter() {
             </SynthPanel>
           </div>
 
-          <div style={{ display: activeTab === "look" ? "contents" : "none" }}>
+          <div data-tab="look" style={{ display: activeTab === "look" ? "contents" : "none" }}>
             {/* ── COLOR (master color bus — every color control lives here) ── */}
             <SynthPanel title="COLOR" subtitle={`PAL · ${genPalette}`} accent="rgba(255,180,255,0.95)">
               {/* Palette selector — moved from PIXEL GENERATOR */}
@@ -9273,7 +9492,7 @@ export default function SpectraAfter() {
             </div>
           </Section>}
 
-          <div style={{ display: activeTab === "vj" ? "contents" : "none" }}>
+          <div data-tab="vj" style={{ display: activeTab === "vj" ? "contents" : "none" }}>
             <SynthPanel title="VJ" subtitle="AUTO-VJ · AUDIO IN · DISPLAY OUT" accent="rgba(82,201,122,0.95)">
               <div style={{ display: "grid", gap: 10 }}>
               <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>Auto-VJ</div>
@@ -9333,6 +9552,18 @@ export default function SpectraAfter() {
                   </button>
                 ))}
               </div>
+              {/* v1.6.0 — one-tap react presets */}
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {([["SUBTLE", 0.4, ["punch", "chroma", "sort"]], ["PUNCHY", 0.75, ["punch", "strobe", "chroma", "shatter", "sort", "mosh"]], ["WILD", 1.0, AUDIO_RACK.map(e => e.id)]] as [string, number, AudioRackId[]][]).map(([lbl, amt, ids]) => {
+                  const active = Math.abs(audioReactAmt - amt) < 0.03 && AUDIO_RACK.every(e => !!audioRackOn[e.id] === ids.includes(e.id));
+                  return (
+                    <button key={lbl} className="sp-tile" aria-pressed={active}
+                      onClick={() => { setAudioReactAmt(amt); setAudioRackAll(ids); playSfx("toggle"); }}
+                      title={`REACT ${amt} · ${ids.length} rack slots`}
+                      style={{ ...modeBtnStyle, ...(active ? modeBtnActive : {}), minWidth: 80 }}>{lbl}</button>
+                  );
+                })}
+              </div>
               <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 10, alignItems: "center" }}>
                 <Knob label="REACT" value={audioReactAmt} min={0} max={1} step={0.01} defaultValue={0.75} onChange={setAudioReactAmt} size={46} />
                 <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(200,180,220,0.6)", lineHeight: 1.35, textTransform: "uppercase" }}>
@@ -9388,7 +9619,7 @@ export default function SpectraAfter() {
             </SynthPanel>
           </div>
 
-          <div style={{ display: activeTab === "export" ? "contents" : "none" }}>
+          <div data-tab="export" style={{ display: activeTab === "export" ? "contents" : "none" }}>
             <SynthPanel title="EXPORT" subtitle="GIF · VIDEO · CAMERA · PROJECT" accent="rgba(232,160,32,0.95)">
             <div style={{ display: "grid", gap: 10 }}>
               <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>Format</div>
@@ -9596,8 +9827,48 @@ export default function SpectraAfter() {
           </div>
 
           <div style={{ height: 28 }}/>
+          </div>{/* /sp-tab-track */}
           </>)}
         </div>
+
+        {/* v1.6.0 — DOCK: REC · SOURCE FX LOOK VJ EXPORT · SNAP. Floats over
+            the picture, stays above the sheet. Tapping the active tab puts
+            the sheet away; tapping another slides its racks in. The class
+            name sp-snap-rec-strip is kept for the capture harness. */}
+        {!uiHidden && (
+        <div className="sp-dock sp-snap-rec-strip" role="tablist">
+          <button
+            className="sp-btn sp-dock-snap"
+            onClick={() => { playSfx("shutter"); captureStillRef.current(); }}
+            title="SNAP — capture a still"
+          >○<span className="lbl">SNAP</span></button>
+          <button
+            className={"sp-btn sp-dock-rec" + (recording ? " is-rec" : "")}
+            onClick={() => {
+              if (recording) { playSfx("recStop"); stopRecordingRef.current(); }
+              else { playSfx("recStart"); startRecordingRef.current(); }
+            }}
+            style={recording ? { animation: "spRecPulse 1.05s ease-in-out infinite" } : undefined}
+            title={recording ? `Stop ${exportFormat.toUpperCase()} recording` : `Start ${exportFormat.toUpperCase()} recording`}
+          >{recording ? "■" : "●"}<span className="lbl">{recording ? "STOP" : "REC"}</span></button>
+          <div className="sp-dock-tabs">
+            {RACK_TABS.map(t => {
+              const active = activeTab === t.id && sheet !== "closed";
+              return (
+                <button key={t.id} role="tab" aria-selected={active} data-active={active} className="sp-rack-tab"
+                  onClick={() => {
+                    if (activeTab === t.id) { setSheet(sheet === "closed" ? sheetMemoRef.current : "closed"); if (sheet === "closed") animateTabChange(t.id); }
+                    else setActiveTab(t.id);
+                    playSfx("click");
+                  }}>
+                  <span className="pip" style={{ background: t.pip, color: t.pip }} />
+                  {t.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        )}
       </div>
 
       <style>{`
@@ -9613,15 +9884,14 @@ export default function SpectraAfter() {
            hover styles only for mice (see @media (hover: hover) above). */
         button { -webkit-tap-highlight-color: transparent; }
         .sp-btn:focus:not(:focus-visible), .sp-tile:focus:not(:focus-visible) { outline: none; }
-        .sp-rack-tabs { position: sticky; top: 56px; z-index: 29; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; padding: 6px 10px 8px;
-          background: linear-gradient(180deg, rgba(15,0,28,0.96) 0%, rgba(15,0,28,0.86) 100%); border-bottom: 1px solid rgba(231,174,255,0.25); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
-        .sp-rack-tab { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 2px 6px; border-radius: 8px; cursor: pointer;
+        .sp-rack-tab { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px 2px 5px; border-radius: 10px; cursor: pointer;
           font-family: var(--font-space-mono,'Space Mono','Courier New',monospace); font-size: 9px; font-weight: 700; letter-spacing: 1.4px;
-          color: rgba(237,232,248,0.6); background: linear-gradient(180deg,#1a1a22 0%,#0e0e14 100%); border: 1px solid rgba(0,0,0,0.7); }
-        .sp-rack-tab[data-active="true"] { color: #fff; background: linear-gradient(180deg,#3a1a4d 0%,#1a0a25 100%); border-color: rgba(231,174,255,0.85);
-          box-shadow: inset 0 1px 1px rgba(255,220,255,0.18), 0 0 10px rgba(231,174,255,0.35); text-shadow: 0 0 6px rgba(231,174,255,0.7); }
-        .sp-rack-tab .pip { width: 6px; height: 6px; border-radius: 50%; opacity: 0.55; }
-        .sp-rack-tab[data-active="true"] .pip { opacity: 1; box-shadow: 0 0 6px currentColor; }
+          color: rgba(237,232,248,0.68); background: transparent; border: 1px solid transparent;
+          transition: background 180ms ease, border-color 180ms ease, color 180ms ease, transform 180ms cubic-bezier(.22,1,.36,1); }
+        .sp-rack-tab[data-active="true"] { color: #fff; background: linear-gradient(180deg, rgba(200,64,255,0.42) 0%, rgba(90,10,140,0.42) 100%); border-color: rgba(231,174,255,0.85);
+          box-shadow: inset 0 1px 1px rgba(255,220,255,0.18), 0 0 14px rgba(200,64,255,0.45); text-shadow: 0 0 6px rgba(231,174,255,0.7); transform: translateY(-2px); }
+        .sp-rack-tab .pip { width: 6px; height: 6px; border-radius: 50%; opacity: 0.55; transition: transform 180ms ease, opacity 180ms ease; }
+        .sp-rack-tab[data-active="true"] .pip { opacity: 1; box-shadow: 0 0 8px currentColor; transform: scale(1.35); }
         input[type=range] { -webkit-appearance:none; appearance:none; height:12px; border-radius:7px; cursor:pointer; outline:none; }
         input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:28px; height:28px; border-radius:50%; cursor:grab; background:#B014F0; border:3px solid #D34BFF; box-shadow:0 2px 10px rgba(0,0,0,0.7),0 0 10px rgba(176,20,240,0.5); transition:transform .1s,box-shadow .1s; }
         input[type=range]:active::-webkit-slider-thumb { transform:scale(1.28); box-shadow:0 0 18px 4px rgba(211,75,255,0.7); cursor:grabbing; }

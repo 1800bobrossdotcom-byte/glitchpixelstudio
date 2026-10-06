@@ -25,6 +25,23 @@ export interface AudioFeatures {
   flow: number;
   /** current analysis-tap gain (auto-gain), for diagnostics */
   gain: number;
+  /** pre-gain RMS level (0..1); below `gate` everything else is held at zero */
+  rawLevel: number;
+  /** true while the input is below the noise gate */
+  gated: boolean;
+  /** running count of detected beats (monotonic) */
+  beatCount: number;
+}
+
+/** What the render loop reads: the latest features plus everything transient
+ *  that happened since the previous `consume()` — peak-held, so a 5 fps
+ *  renderer still sees every beat the 60 Hz analysis found. */
+export interface AudioFrame extends AudioFeatures {
+  /** beats detected since the last consume() */
+  beatsSince: number;
+  /** peak transient values since the last consume() */
+  beatPeak: number; bassHitPeak: number; midHitPeak: number; trebleHitPeak: number;
+  bassDeltaPeak: number; midDeltaPeak: number; trebDeltaPeak: number; fluxPeak: number;
 }
 
 export interface AudioFeatureAnalyser {
@@ -34,6 +51,16 @@ export interface AudioFeatureAnalyser {
   readonly wave: Uint8Array;
   /** Analyse the current frame. Cheap (256 bins). Returns `features`. */
   sample(): AudioFeatures;
+  /**
+   * v1.6.0 — run `sample()` on its own clock (default 60 Hz) so analysis no
+   * longer depends on the render frame rate. A WebView rendering at 5–18 fps
+   * with datamosh on was sampling the beat detector five times a second;
+   * the beats fell between frames and the picture "did nothing".
+   */
+  startTicker(hz?: number): void;
+  stopTicker(): void;
+  /** Latest features + peak-held transients since the previous consume(). */
+  consume(): AudioFrame;
   dispose(): void;
 }
 
@@ -44,6 +71,9 @@ export interface AudioFeatureOptions {
   initialGain?: number;
   /** Per-band EMA for level/bass/mid/treble. TV uses 0.65. */
   bandSmoothing?: number;
+  /** Noise gate on the PRE-gain RMS (0..1). Room tone on a phone mic sits
+   *  around 0.002–0.006; a kick in the room is > 0.02. Default 0.012. */
+  gate?: number;
 }
 
 export function createAudioFeatures(
@@ -52,6 +82,7 @@ export function createAudioFeatures(
   opts: AudioFeatureOptions = {},
 ): AudioFeatureAnalyser {
   const target = opts.targetPeak ?? 0.55;
+  const gate = opts.gate ?? 0.008;
   const gainNode = context.createGain();
   gainNode.gain.value = opts.initialGain ?? 4.5;
   const analyser = context.createAnalyser();
@@ -65,14 +96,30 @@ export function createAudioFeatures(
   const N = analyser.frequencyBinCount;
   const fft = new Uint8Array(N);
   const wave = new Uint8Array(N);
+  const waveF = new Float32Array(analyser.fftSize);
   const last = new Uint8Array(N);
+  let gateOpenUntil = 0;
   const a = opts.bandSmoothing ?? 0.65;
 
   const f: AudioFeatures = {
     level: 0, bass: 0, mid: 0, treble: 0, flux: 0, centroid: 0, rolloff: 0, depth: 0,
     beat: 0, beatHold: 0, bassHit: 0, midHit: 0, trebleHit: 0,
-    bassDelta: 0, midDelta: 0, trebDelta: 0, flow: 0, gain: gainNode.gain.value,
+    bassDelta: 0, midDelta: 0, trebDelta: 0, flow: 0, gain: gainNode.gain.value, rawLevel: 0, gated: true, beatCount: 0,
   };
+  // Peak-hold accumulators between consume() calls.
+  const held = { beats: 0, beat: 0, bassHit: 0, midHit: 0, trebleHit: 0, bassDelta: 0, midDelta: 0, trebDelta: 0, flux: 0 };
+  const hold = () => {
+    if (f.beat > held.beat) held.beat = f.beat;
+    if (f.bassHit > held.bassHit) held.bassHit = f.bassHit;
+    if (f.midHit > held.midHit) held.midHit = f.midHit;
+    if (f.trebleHit > held.trebleHit) held.trebleHit = f.trebleHit;
+    if (f.bassDelta > held.bassDelta) held.bassDelta = f.bassDelta;
+    if (f.midDelta > held.midDelta) held.midDelta = f.midDelta;
+    if (f.trebDelta > held.trebDelta) held.trebDelta = f.trebDelta;
+    if (f.flux > held.flux) held.flux = f.flux;
+  };
+  let ticker: number | null = null;
+  let lastBeatCount = 0;
   const sm = { level: 0, bass: 0, mid: 0, treble: 0, centroid: 0, rolloff: 0, depth: 0 };
   let bassAvg = -1, midAvg = -1, trebAvg = -1;
   let bassPrev = 0, midPrev = 0, trebPrev = 0;
@@ -82,6 +129,35 @@ export function createAudioFeatures(
   const sample = (): AudioFeatures => {
     analyser.getByteFrequencyData(fft);
     analyser.getByteTimeDomainData(wave);
+    // Noise gate on the pre-gain signal. The time-domain buffer is post-gain,
+    // so divide its RMS by the current tap gain. Terminal Velocity never
+    // needed this (desktop audio is never silent); a phone in a quiet room is,
+    // and without the gate auto-gain turns room tone into a full-time beat.
+    // Float samples: the byte buffer quantises anything under −42 dBFS to
+    // flat 128, which read a quiet line-in as silence.
+    let rms2 = 0;
+    try { analyser.getFloatTimeDomainData(waveF); for (let i = 0; i < waveF.length; i++) rms2 += waveF[i] * waveF[i]; rms2 /= waveF.length; }
+    catch { for (let i = 0; i < N; i++) { const v = (wave[i] - 128) / 128; rms2 += v * v; } rms2 /= N; }
+    const raw = Math.sqrt(rms2) / Math.max(1, gainNode.gain.value || 1);
+    f.rawLevel = Math.max(raw, f.rawLevel * 0.8 + raw * 0.2);
+    const nowMs = (typeof performance !== "undefined" ? performance.now() : Date.now());
+    // The gate releases 450 ms after the last above-threshold sample so the
+    // silence between two kicks never closes it.
+    if (raw >= gate) gateOpenUntil = nowMs + 450;
+    if (f.rawLevel < gate && nowMs > gateOpenUntil) {
+      f.gated = true;
+      // decay everything toward zero, hold the auto-gain where it is
+      sm.level *= 0.85; sm.bass *= 0.85; sm.mid *= 0.85; sm.treble *= 0.85;
+      f.level = sm.level; f.bass = sm.bass; f.mid = sm.mid; f.treble = sm.treble;
+      f.flux = 0; f.bassDelta = 0; f.midDelta = 0; f.trebDelta = 0;
+      f.beat = Math.max(0, f.beat - 0.14); f.beatHold = Math.max(0, f.beatHold - 1);
+      f.bassHit = Math.max(0, f.bassHit - 0.16); f.midHit = Math.max(0, f.midHit - 0.16); f.trebleHit = Math.max(0, f.trebleHit - 0.18);
+      f.flow = f.flow * 0.96;
+      f.gain = gainNode.gain.value;
+      hold();
+      return f;
+    }
+    f.gated = false;
     let sumB = 0, nB = 0, sumM = 0, nM = 0, sumT = 0, nT = 0, sumAll = 0;
     let centNum = 0, centDen = 0, fluxSum = 0;
     for (let i = 1; i < N; i++) {
@@ -143,7 +219,7 @@ export function createAudioFeatures(
     midAvg = midAvg < 0 ? mid : midAvg * 0.985 + mid * 0.015;
     trebAvg = trebAvg < 0 ? treble : trebAvg * 0.985 + treble * 0.015;
     const beatNow = bass > bassAvg * 1.12 && bass > 0.18;
-    if (beatNow && f.beatHold <= 0) { f.beat = 1; f.beatHold = 3; }
+    if (beatNow && f.beatHold <= 0) { f.beat = 1; f.beatHold = 3; f.beatCount++; }
     else { f.beat = Math.max(0, f.beat - 0.14); f.beatHold = Math.max(0, f.beatHold - 1); }
     const bassHitNow = bass > bassAvg * 1.08 && bass > 0.10;
     const midHitNow = mid > midAvg * 1.08 && mid > 0.08;
@@ -151,12 +227,34 @@ export function createAudioFeatures(
     if (bassHitNow && bassHold <= 0) { f.bassHit = 1; bassHold = 2; } else { f.bassHit = Math.max(0, f.bassHit - 0.16); bassHold = Math.max(0, bassHold - 1); }
     if (midHitNow && midHold <= 0) { f.midHit = 1; midHold = 2; } else { f.midHit = Math.max(0, f.midHit - 0.16); midHold = Math.max(0, midHold - 1); }
     if (trebHitNow && trebHold <= 0) { f.trebleHit = 1; trebHold = 2; } else { f.trebleHit = Math.max(0, f.trebleHit - 0.18); trebHold = Math.max(0, trebHold - 1); }
+    hold();
     return f;
   };
 
+  const stopTicker = () => { if (ticker != null) { clearInterval(ticker); ticker = null; } };
+  const startTicker = (hz = 60) => {
+    stopTicker();
+    ticker = window.setInterval(() => { if (context.state === "running") sample(); }, Math.max(8, Math.round(1000 / hz)));
+  };
+  const consume = (): AudioFrame => {
+    if (ticker == null) sample();
+    const out: AudioFrame = {
+      ...f,
+      beatsSince: f.beatCount - lastBeatCount,
+      beatPeak: Math.max(held.beat, f.beat), bassHitPeak: Math.max(held.bassHit, f.bassHit),
+      midHitPeak: Math.max(held.midHit, f.midHit), trebleHitPeak: Math.max(held.trebleHit, f.trebleHit),
+      bassDeltaPeak: held.bassDelta, midDeltaPeak: held.midDelta, trebDeltaPeak: held.trebDelta, fluxPeak: held.flux,
+    };
+    lastBeatCount = f.beatCount;
+    held.beat = 0; held.bassHit = 0; held.midHit = 0; held.trebleHit = 0;
+    held.bassDelta = 0; held.midDelta = 0; held.trebDelta = 0; held.flux = 0;
+    return out;
+  };
+
   return {
-    features: f, analyser, fft, wave, sample,
+    features: f, analyser, fft, wave, sample, startTicker, stopTicker, consume,
     dispose() {
+      stopTicker();
       try { source.disconnect(gainNode); } catch { /* ignore */ }
       try { gainNode.disconnect(); } catch { /* ignore */ }
       try { analyser.disconnect(); } catch { /* ignore */ }
