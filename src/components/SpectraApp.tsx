@@ -7317,6 +7317,25 @@ export default function SpectraAfter() {
         body:has(.neon-mode .sp-panel-glass.glass-expanded) .sp-photo-btn-neon {
           bottom: calc(55dvh + 12px) !important;
         }
+        /* v1.5.0 — SELECTED state. The glass rule above pins background /
+           border / color with !important on every rack button, which hid
+           the inline "active" styles entirely in NEON: a chosen tile looked
+           exactly like its neighbours. Every selectable tile now carries
+           aria-pressed, and this rule (later, more specific) lights it. */
+        .neon-mode .sp-panel-glass button[aria-pressed="true"] {
+          background: linear-gradient(180deg,
+            rgba(200,64,255,0.62) 0%,
+            rgba(130,24,190,0.50) 50%,
+            rgba(60,0,100,0.58) 100%) !important;
+          border: 1px solid rgba(255,205,255,0.98) !important;
+          color: #FFFFFF !important;
+          box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.55),
+            inset 0 0 18px rgba(255,120,255,0.38),
+            0 0 14px rgba(200,64,255,0.75),
+            0 2px 6px rgba(0,0,0,0.6) !important;
+          text-shadow: 0 0 8px rgba(255,140,255,0.95), 0 1px 0 rgba(0,0,0,0.8) !important;
+        }
         /* SynthPanel borders + Knob caps in NEON mode also get a hint
            of glass so the rack chrome itself melts into the panel
            rather than staying opaque metal-textured slab. */
@@ -8352,6 +8371,7 @@ export default function SpectraAfter() {
                     sourceMode === "upload";
                   return (
                     <button
+                      aria-pressed={active}
                       key={sm}
                       onClick={() => {
                         if (sm === "camera") {
@@ -8785,6 +8805,7 @@ export default function SpectraAfter() {
                   const on = mode === id;
                   return (
                     <button
+                      aria-pressed={on}
                       key={`vm-${id}`}
                       onClick={() => { setMode(id); }}
                       style={{
@@ -8948,6 +8969,7 @@ export default function SpectraAfter() {
                   const active = glitchPreset === i;
                   return (
                     <button
+                      aria-pressed={active}
                       key={p.name}
                       onClick={() => setGlitchPreset(i)}
                       title={`${p.name} — ${p.signature}`}
@@ -9139,7 +9161,7 @@ export default function SpectraAfter() {
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <button className="sp-tile" onClick={() => { setVjMode(a => !a); playSfx("toggle"); }}
                   title="Autonomous FX blending — presets cycle on the beat of the selected audio input"
-                  style={{ ...modeBtnStyle, ...(vjMode ? modeBtnActive : {}), minWidth: 120, ...(vjMode ? { animation: "activeGlow 1.6s ease-in-out infinite" } : {}) }}>
+                  aria-pressed={!!(vjMode)} style={{ ...modeBtnStyle, ...(vjMode ? modeBtnActive : {}), minWidth: 120, ...(vjMode ? { animation: "activeGlow 1.6s ease-in-out infinite" } : {}) }}>
                   {vjMode ? "◉ AUTO-VJ ON" : "○ AUTO-VJ OFF"}</button>
               {/* v1.2.72 — HANDS-FREE compact button: 3-2-1 count-IN, then
                   60 s auto-record, then 3-2-1 count-OUT, then auto-stop.
@@ -9149,7 +9171,7 @@ export default function SpectraAfter() {
                 className="sp-tile"
                 onClick={startHandsFree}
                 title="3-2-1 countdown, then auto-record 60 s, then auto-stop"
-                style={{
+                aria-pressed={!!(handsFreeCountdown != null)} style={{
                   ...modeBtnStyle,
                   ...(handsFreeCountdown != null ? modeBtnActive : {}),
                   minWidth: 150, minHeight: 36, fontSize: 10, letterSpacing: "1.5px",
@@ -9170,11 +9192,11 @@ export default function SpectraAfter() {
               }}>VJ · Audio In</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", outline: vjRowFlash ? "1px solid rgba(174,255,231,0.8)" : "1px solid transparent", outlineOffset: 4, borderRadius: 6, transition: "outline-color 0.4s" }}>
                 <button className="sp-tile" onClick={() => setAudioReactOn(!audioReactOn)} title="Listen to the selected input and drive the racks from it"
-                  style={{ ...modeBtnStyle, ...(audioReactOn ? modeBtnActive : {}), minWidth: 110 }}>{audioReactOn ? "● AUDIO REACT ON" : "○ AUDIO REACT OFF"}</button>
+                  aria-pressed={!!(audioReactOn)} style={{ ...modeBtnStyle, ...(audioReactOn ? modeBtnActive : {}), minWidth: 110 }}>{audioReactOn ? "● AUDIO REACT ON" : "○ AUDIO REACT OFF"}</button>
                 <button className="sp-tile"
                   onClick={() => { if (trackName) toggleTrackPlayback(); else trackFileInputRef.current?.click(); }}
                   title={trackName ? `Track: ${trackName} — tap to ${trackPlaying ? "pause" : "play"}` : "Load an audio file from the phone and react to it (plays through the speaker)"}
-                  style={{ ...modeBtnStyle, ...(trackName ? modeBtnActive : {}), minWidth: 90 }}>{trackName ? (trackPlaying ? "▮▮ TRACK" : "▶ TRACK") : "LOAD TRACK"}</button>
+                  aria-pressed={!!(trackName)} style={{ ...modeBtnStyle, ...(trackName ? modeBtnActive : {}), minWidth: 90 }}>{trackName ? (trackPlaying ? "▮▮ TRACK" : "▶ TRACK") : "LOAD TRACK"}</button>
                 {trackName && (
                   <button className="sp-tile" onClick={() => stopTrack()} title="Unload the track and go back to the live input"
                     style={{ ...modeBtnStyle, minWidth: 70 }}>UNLOAD</button>
@@ -9182,12 +9204,12 @@ export default function SpectraAfter() {
               </div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <button className="sp-tile" onClick={() => setAudioInPref("auto")} title="External input whenever one is plugged in, phone mic otherwise"
-                  style={{ ...modeBtnStyle, ...(audioInPref === "auto" ? modeBtnActive : {}), minWidth: 70 }}>AUTO</button>
+                  aria-pressed={!!(audioInPref === "auto")} style={{ ...modeBtnStyle, ...(audioInPref === "auto" ? modeBtnActive : {}), minWidth: 70 }}>AUTO</button>
                 <button className="sp-tile" onClick={() => setAudioInPref("builtin")}
-                  style={{ ...modeBtnStyle, ...(audioInPref === "builtin" ? modeBtnActive : {}), minWidth: 70 }}>PHONE MIC</button>
+                  aria-pressed={!!(audioInPref === "builtin")} style={{ ...modeBtnStyle, ...(audioInPref === "builtin" ? modeBtnActive : {}), minWidth: 70 }}>PHONE MIC</button>
                 {audioInputs.filter(d => d.kind === "external").map(d => (
                   <button key={d.deviceId} className="sp-tile" onClick={() => setAudioInPref({ deviceId: d.deviceId })} title={d.label}
-                    style={{ ...modeBtnStyle, ...(typeof audioInPref === "object" && audioInPref.deviceId === d.deviceId ? modeBtnActive : {}), minWidth: 70, maxWidth: 170, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    aria-pressed={!!(typeof audioInPref === "object" && audioInPref.deviceId === d.deviceId)} style={{ ...modeBtnStyle, ...(typeof audioInPref === "object" && audioInPref.deviceId === d.deviceId ? modeBtnActive : {}), minWidth: 70, maxWidth: 170, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {d.label.replace(/\s*\([^)]*\)\s*$/, "").slice(0, 20).toUpperCase()}
                   </button>
                 ))}
@@ -9222,9 +9244,9 @@ export default function SpectraAfter() {
               <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>VJ · Display Out</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <button className="sp-tile" onClick={() => setVjOutAuto(true)} title="Hide the UI and keep the screen awake whenever an external display is connected"
-                  style={{ ...modeBtnStyle, ...(vjOutAuto ? modeBtnActive : {}), minWidth: 70 }}>AUTO</button>
+                  aria-pressed={!!(vjOutAuto)} style={{ ...modeBtnStyle, ...(vjOutAuto ? modeBtnActive : {}), minWidth: 70 }}>AUTO</button>
                 <button className="sp-tile" onClick={() => setVjOutAuto(false)}
-                  style={{ ...modeBtnStyle, ...(!vjOutAuto ? modeBtnActive : {}), minWidth: 70 }}>MANUAL</button>
+                  aria-pressed={!!(!vjOutAuto)} style={{ ...modeBtnStyle, ...(!vjOutAuto ? modeBtnActive : {}), minWidth: 70 }}>MANUAL</button>
               </div>
               <div style={{ fontSize: 8, letterSpacing: "1px", color: vjOutDisplay ? "rgba(174,255,231,0.8)" : "rgba(200,180,220,0.55)", textTransform: "uppercase" }}>
                 {vjOutDisplay
@@ -9244,49 +9266,49 @@ export default function SpectraAfter() {
                 <button
                   className="sp-tile"
                   onClick={() => setExportFormat("gif")}
-                  style={{ ...modeBtnStyle, ...(exportFormat === "gif" ? modeBtnActive : {}), minWidth: 80 }}
+                  aria-pressed={!!(exportFormat === "gif")} style={{ ...modeBtnStyle, ...(exportFormat === "gif" ? modeBtnActive : {}), minWidth: 80 }}
                 >GIF</button>
                 <button
                   className="sp-tile"
                   onClick={() => setExportFormat("video")}
-                  style={{ ...modeBtnStyle, ...(exportFormat === "video" ? modeBtnActive : {}), minWidth: 80 }}
+                  aria-pressed={!!(exportFormat === "video")} style={{ ...modeBtnStyle, ...(exportFormat === "video" ? modeBtnActive : {}), minWidth: 80 }}
                 >VIDEO</button>
               </div>
 
               <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>Quality</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <button className="sp-tile" onClick={() => setExportQuality("standard")} style={{ ...modeBtnStyle, ...(exportQuality === "standard" ? modeBtnActive : {}), minWidth: 70 }}>STD</button>
-                <button className="sp-tile" onClick={() => setExportQuality("high")} style={{ ...modeBtnStyle, ...(exportQuality === "high" ? modeBtnActive : {}), minWidth: 70 }}>HIGH</button>
-                <button className="sp-tile" onClick={() => setExportQuality("ultra")} style={{ ...modeBtnStyle, ...(exportQuality === "ultra" ? modeBtnActive : {}), minWidth: 70 }}>ULTRA</button>
+                <button className="sp-tile" onClick={() => setExportQuality("standard")} aria-pressed={!!(exportQuality === "standard")} style={{ ...modeBtnStyle, ...(exportQuality === "standard" ? modeBtnActive : {}), minWidth: 70 }}>STD</button>
+                <button className="sp-tile" onClick={() => setExportQuality("high")} aria-pressed={!!(exportQuality === "high")} style={{ ...modeBtnStyle, ...(exportQuality === "high" ? modeBtnActive : {}), minWidth: 70 }}>HIGH</button>
+                <button className="sp-tile" onClick={() => setExportQuality("ultra")} aria-pressed={!!(exportQuality === "ultra")} style={{ ...modeBtnStyle, ...(exportQuality === "ultra" ? modeBtnActive : {}), minWidth: 70 }}>ULTRA</button>
               </div>
 
               <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>Aspect</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <button className="sp-tile" onClick={() => setExportProfile("native")} style={{ ...modeBtnStyle, ...(exportProfile === "native" ? modeBtnActive : {}), minWidth: 70 }}>NATIVE</button>
-                <button className="sp-tile" onClick={() => setExportProfile("vertical")} style={{ ...modeBtnStyle, ...(exportProfile === "vertical" ? modeBtnActive : {}), minWidth: 70 }}>9:16</button>
-                <button className="sp-tile" onClick={() => setExportProfile("square")} style={{ ...modeBtnStyle, ...(exportProfile === "square" ? modeBtnActive : {}), minWidth: 70 }}>1:1</button>
-                <button className="sp-tile" onClick={() => setExportProfile("widescreen")} style={{ ...modeBtnStyle, ...(exportProfile === "widescreen" ? modeBtnActive : {}), minWidth: 70 }}>16:9</button>
+                <button className="sp-tile" onClick={() => setExportProfile("native")} aria-pressed={!!(exportProfile === "native")} style={{ ...modeBtnStyle, ...(exportProfile === "native" ? modeBtnActive : {}), minWidth: 70 }}>NATIVE</button>
+                <button className="sp-tile" onClick={() => setExportProfile("vertical")} aria-pressed={!!(exportProfile === "vertical")} style={{ ...modeBtnStyle, ...(exportProfile === "vertical" ? modeBtnActive : {}), minWidth: 70 }}>9:16</button>
+                <button className="sp-tile" onClick={() => setExportProfile("square")} aria-pressed={!!(exportProfile === "square")} style={{ ...modeBtnStyle, ...(exportProfile === "square" ? modeBtnActive : {}), minWidth: 70 }}>1:1</button>
+                <button className="sp-tile" onClick={() => setExportProfile("widescreen")} aria-pressed={!!(exportProfile === "widescreen")} style={{ ...modeBtnStyle, ...(exportProfile === "widescreen" ? modeBtnActive : {}), minWidth: 70 }}>16:9</button>
               </div>
 
               <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>Frame Rate</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <button className="sp-tile" onClick={() => setRecordFps(24)} style={{ ...modeBtnStyle, ...(recordFps === 24 ? modeBtnActive : {}), minWidth: 70 }}>24 FPS</button>
-                <button className="sp-tile" onClick={() => setRecordFps(30)} style={{ ...modeBtnStyle, ...(recordFps === 30 ? modeBtnActive : {}), minWidth: 70 }}>30 FPS</button>
-                <button className="sp-tile" onClick={() => setRecordFps(60)} style={{ ...modeBtnStyle, ...(recordFps === 60 ? modeBtnActive : {}), minWidth: 70 }}>60 FPS</button>
+                <button className="sp-tile" onClick={() => setRecordFps(24)} aria-pressed={!!(recordFps === 24)} style={{ ...modeBtnStyle, ...(recordFps === 24 ? modeBtnActive : {}), minWidth: 70 }}>24 FPS</button>
+                <button className="sp-tile" onClick={() => setRecordFps(30)} aria-pressed={!!(recordFps === 30)} style={{ ...modeBtnStyle, ...(recordFps === 30 ? modeBtnActive : {}), minWidth: 70 }}>30 FPS</button>
+                <button className="sp-tile" onClick={() => setRecordFps(60)} aria-pressed={!!(recordFps === 60)} style={{ ...modeBtnStyle, ...(recordFps === 60 ? modeBtnActive : {}), minWidth: 70 }}>60 FPS</button>
               </div>
 
               <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>Length</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <button className="sp-tile" onClick={() => setRecordMaxSec(5)}  style={{ ...modeBtnStyle, ...(recordMaxSec === 5  ? modeBtnActive : {}), minWidth: 60 }}>5s</button>
-                <button className="sp-tile" onClick={() => setRecordMaxSec(15)} style={{ ...modeBtnStyle, ...(recordMaxSec === 15 ? modeBtnActive : {}), minWidth: 60 }}>15s</button>
-                <button className="sp-tile" onClick={() => setRecordMaxSec(30)} style={{ ...modeBtnStyle, ...(recordMaxSec === 30 ? modeBtnActive : {}), minWidth: 60 }}>30s</button>
-                <button className="sp-tile" onClick={() => setRecordMaxSec(60)} style={{ ...modeBtnStyle, ...(recordMaxSec === 60 ? modeBtnActive : {}), minWidth: 60 }}>60s</button>
+                <button className="sp-tile" onClick={() => setRecordMaxSec(5)}  aria-pressed={!!(recordMaxSec === 5 )} style={{ ...modeBtnStyle, ...(recordMaxSec === 5  ? modeBtnActive : {}), minWidth: 60 }}>5s</button>
+                <button className="sp-tile" onClick={() => setRecordMaxSec(15)} aria-pressed={!!(recordMaxSec === 15)} style={{ ...modeBtnStyle, ...(recordMaxSec === 15 ? modeBtnActive : {}), minWidth: 60 }}>15s</button>
+                <button className="sp-tile" onClick={() => setRecordMaxSec(30)} aria-pressed={!!(recordMaxSec === 30)} style={{ ...modeBtnStyle, ...(recordMaxSec === 30 ? modeBtnActive : {}), minWidth: 60 }}>30s</button>
+                <button className="sp-tile" onClick={() => setRecordMaxSec(60)} aria-pressed={!!(recordMaxSec === 60)} style={{ ...modeBtnStyle, ...(recordMaxSec === 60 ? modeBtnActive : {}), minWidth: 60 }}>60s</button>
               </div>
 
               <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>Loop</div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <button className="sp-tile" onClick={() => setPerfectLoop(true)}  style={{ ...modeBtnStyle, ...(perfectLoop  ? modeBtnActive : {}), minWidth: 90 }}>PERFECT LOOP</button>
-                <button className="sp-tile" onClick={() => setPerfectLoop(false)} style={{ ...modeBtnStyle, ...(!perfectLoop ? modeBtnActive : {}), minWidth: 70 }}>FULL LEN</button>
+                <button className="sp-tile" onClick={() => setPerfectLoop(true)}  aria-pressed={!!(perfectLoop )} style={{ ...modeBtnStyle, ...(perfectLoop  ? modeBtnActive : {}), minWidth: 90 }}>PERFECT LOOP</button>
+                <button className="sp-tile" onClick={() => setPerfectLoop(false)} aria-pressed={!!(!perfectLoop)} style={{ ...modeBtnStyle, ...(!perfectLoop ? modeBtnActive : {}), minWidth: 70 }}>FULL LEN</button>
               </div>
 
               <div style={{
@@ -9313,7 +9335,7 @@ export default function SpectraAfter() {
               <button
                 className="sp-tile"
                 onClick={() => { if (recording) stopRecordingRef.current(); else startRecordingRef.current(); }}
-                style={{
+                aria-pressed={!!(recording)} style={{
                   ...modeBtnStyle,
                   ...(recording ? modeBtnActive : {}),
                   width: "100%", minHeight: 56, fontSize: 13, letterSpacing: "2px",
@@ -9330,7 +9352,7 @@ export default function SpectraAfter() {
                 <button
                   className="sp-tile"
                   onClick={cameraActive ? stopCamera : () => { void startCamera(); }}
-                  style={{ ...modeBtnStyle, ...(cameraActive ? modeBtnActive : {}), flex: 1, minWidth: 86 }}
+                  aria-pressed={!!(cameraActive)} style={{ ...modeBtnStyle, ...(cameraActive ? modeBtnActive : {}), flex: 1, minWidth: 86 }}
                 >{cameraActive ? "CAM ON" : "CAM OFF"}</button>
                 <button
                   className="sp-tile"
@@ -9397,7 +9419,7 @@ export default function SpectraAfter() {
                   className="sp-tile"
                   onClick={() => setLowPowerOn(v => !v)}
                   title="Cap render to ~30fps to reduce battery + heat"
-                  style={{
+                  aria-pressed={!!(lowPowerOn)} style={{
                     ...modeBtnStyle,
                     ...(lowPowerOn ? modeBtnActive : {}),
                     flex: 1, fontSize: 10, minWidth: 110,
@@ -9832,6 +9854,7 @@ function SynthSelector({
           const active = i === v;
           return (
             <button
+              aria-pressed={active}
               key={opt}
               onClick={() => onChange(i)}
               style={{
