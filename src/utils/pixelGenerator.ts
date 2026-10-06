@@ -21,7 +21,9 @@ export type GenStyleId =
   | "CIRCS" | "CROSS" | "WEAVE" | "DIAMOND" | "GLITCH"
   | "TRUCH" | "BAY8" | "STACK" | "FLOWL" | "RIBON" | "ORBIT"
   | "PLIFE" | "DLAUN" | "BOIDS" | "REACT" | "LSYST"
-  | "SDF3D" | "SDLAT" | "SDTOR" | "SDFRC";
+  | "SDF3D" | "SDLAT" | "SDTOR" | "SDFRC"
+  | "PHYSA" | "CA1D"
+  | "SPECTR" | "SEQGRD";
 
 export type GenParams = {
   style: GenStyleId;
@@ -51,6 +53,12 @@ export type GenParams = {
   // 0 OFF, 1 CHARS (.:-=+*#%@ Gysin ramp), 2 BLOCKS (░▒▓█),
   // 3 BRAILLE (⠁⠃⠇⠧⠿⣿), 4 SHADES (▁▂▃▄▅▆▇█), 5 EDGES (─│╱╲ on edges only).
   glyphMode?: number;
+  // ── v1.7.0 — AV inputs for the audio-native styles (SPECTR, SEQGRD) ──
+  bands?: ArrayLike<number>;  // 8 log-spaced spectrum bands, 0..1
+  beatPhase?: number;         // 0..1 inside the grid beat
+  barPhase?: number;          // 0..1 inside the 4-beat bar
+  beat?: number;              // beat impulse 0..1
+  bpmConf?: number;           // 0..1 tempo confidence
 };
 
 // v1.3.25 — typographic finisher glyph ramps (light → dark).
@@ -240,6 +248,12 @@ export function drawPixelGenerator(canvas: GenCanvas, p: GenParams): void {
     SDLAT:   [10, 1,  0.45, 1.00,  0.00, 0.10, 0.85, 0.00],
     SDTOR:   [10, 2,  0.88, 1.00,  0.00, 0.10, 1.00, 0.00],
     SDFRC:   [10, 3,  0.10, 1.00,  0.00, 0.20, 0.80, 0.00],
+    // ── family 11 — LIVING systems (v1.7.0): agents + automata with memory ──
+    PHYSA:   [11, 0,  0.42, 1.00,  0.00, 0.10, 1.00, 0.00], // Physarum slime-mould network
+    CA1D:    [11, 1,  0.66, 1.00,  0.00, 0.20, 1.00, 0.00], // elementary automaton, rule mutates
+    // ── family 12 — AV natives (v1.7.0): drawn from the music itself ──
+    SPECTR:  [12, 0,  0.55, 1.00,  0.00, 0.10, 1.00, 0.00], // spectrum garden: bands grow, waterfall history
+    SEQGRD:  [12, 1,  0.12, 1.00,  0.00, 0.30, 1.00, 0.00], // step-sequencer pads lit by the bar
   };
   const spec: StyleSpec = STYLE_SPECS[style] ?? [3, 0, 0, 1, 0, 0, 1, 0];
   const family = spec[0];
@@ -436,8 +450,16 @@ export function drawPixelGenerator(canvas: GenCanvas, p: GenParams): void {
   // ── ImageData buffer on small offscreen ──────────────────────────────
   let off = gsc.off;
   if (!off || off.width !== gw || off.height !== gh) {
-    off = document.createElement("canvas");
-    off.width = gw; off.height = gh;
+    // v1.7.0 — inside the Web Worker there is no `document`; use an
+    // OffscreenCanvas there. (Every worker frame used to throw here and the
+    // shell painted the zero buffer it got back → the generator flickered
+    // black whenever the worker path was taken.)
+    if (typeof document === "undefined" && typeof OffscreenCanvas !== "undefined") {
+      off = new OffscreenCanvas(gw, gh) as unknown as HTMLCanvasElement;
+    } else {
+      off = document.createElement("canvas");
+      off.width = gw; off.height = gh;
+    }
     gsc.off = off;
   }
   const offCtx = off.getContext("2d");
@@ -513,6 +535,163 @@ export function drawPixelGenerator(canvas: GenCanvas, p: GenParams): void {
     };
 
     switch (style) {
+      // ── PHYSA : Physarum polycephalum. Agents sense the trail ahead/left/
+      //    right, turn toward the strongest, deposit; the trail diffuses and
+      //    decays. Networks form, merge, starve and re-route — never twice
+      //    the same. (Jones 2010.) v1.7.0
+      case "PHYSA": {
+        const N = Math.max(300, Math.min(2600, Math.round(400 + density * 2200)));
+        const ps = gsc as _GenStateCache & { physa?: { x: Float32Array; y: Float32Array; h: Float32Array; n: number; trail: Float32Array; tmp: Float32Array; hash: number } };
+        const pHash = (seed * 31) ^ (gw * 7919) ^ (gh * 6151) ^ (N * 13);
+        if (!ps.physa || ps.physa.hash !== pHash) {
+          const x = new Float32Array(N), y = new Float32Array(N), h = new Float32Array(N);
+          for (let i = 0; i < N; i++) { x[i] = _h2(i, 1, seed) * gw; y[i] = _h2(i, 2, seed) * gh; h[i] = _h2(i, 3, seed) * Math.PI * 2; }
+          ps.physa = { x, y, h, n: N, trail: new Float32Array(gw * gh), tmp: new Float32Array(gw * gh), hash: pHash };
+        }
+        const S = ps.physa;
+        const trail = S.trail, tmp = S.tmp;
+        const decay = 0.90 + (1 - jitter) * 0.07; // jitter → shorter memory
+        for (let yy = 0; yy < gh; yy++) {
+          const ym = (yy > 0 ? yy - 1 : gh - 1) * gw, y0 = yy * gw, yp = (yy < gh - 1 ? yy + 1 : 0) * gw;
+          for (let xx = 0; xx < gw; xx++) {
+            const xm = xx > 0 ? xx - 1 : gw - 1, xp = xx < gw - 1 ? xx + 1 : 0;
+            const s = trail[ym + xm] + trail[ym + xx] + trail[ym + xp] + trail[y0 + xm] + trail[y0 + xx] + trail[y0 + xp] + trail[yp + xm] + trail[yp + xx] + trail[yp + xp];
+            tmp[y0 + xx] = (s / 9) * decay;
+          }
+        }
+        trail.set(tmp);
+        const sensD = 3 + scale * 4;
+        const sensA = 0.35 + warp * 0.6;
+        const turn = 0.25 + warp * 0.5;
+        const stepL = 0.8 + speed * 0.6 + push * 1.2;
+        const tBin = (tAnim * 60) | 0;
+        const sense = (x: number, y: number) => { let xi = x | 0, yi = y | 0; xi = ((xi % gw) + gw) % gw; yi = ((yi % gh) + gh) % gh; return trail[yi * gw + xi]; };
+        for (let i = 0; i < N; i++) {
+          let x = S.x[i], y = S.y[i], h = S.h[i];
+          const fwd = sense(x + Math.cos(h) * sensD, y + Math.sin(h) * sensD);
+          const lft = sense(x + Math.cos(h - sensA) * sensD, y + Math.sin(h - sensA) * sensD);
+          const rgt = sense(x + Math.cos(h + sensA) * sensD, y + Math.sin(h + sensA) * sensD);
+          if (fwd > lft && fwd > rgt) { /* straight on */ }
+          else if (fwd < lft && fwd < rgt) h += (_h2(i, tBin, seed) - 0.5) * 2 * turn;
+          else if (lft > rgt) h -= turn; else if (rgt > lft) h += turn;
+          h += (_h2(i, tBin + 7, seed) - 0.5) * jitter * 0.6 + dirAngle * 0.002;
+          x += Math.cos(h) * stepL + mx * 0.3; y += Math.sin(h) * stepL + my * 0.3;
+          if (x < 0) x += gw; else if (x >= gw) x -= gw;
+          if (y < 0) y += gh; else if (y >= gh) y -= gh;
+          S.x[i] = x; S.y[i] = y; S.h[i] = h;
+          const ti = (y | 0) * gw + (x | 0);
+          trail[ti] = Math.min(1, trail[ti] + 0.22);
+        }
+        for (let i = 0; i < gw * gh; i++) buf[i] = PAL[palIdx(Math.pow(trail[i], 0.7))];
+        handled = true; break;
+      }
+      // ── CA1D : elementary cellular automaton (Wolfram). New generations
+      //    enter at the bottom and scroll up; the RULE mutates every few
+      //    hundred generations, so 30 becomes 110 becomes 90 while you watch.
+      case "CA1D": {
+        const cs = gsc as _GenStateCache & { ca1d?: { rows: Uint8Array; rule: number; hash: number; acc: number; gen: number } };
+        const cHash = (seed * 31) ^ (gw * 7919) ^ (gh * 6151);
+        const RULES = [30, 90, 110, 150, 184, 54, 60, 73, 105, 126, 182];
+        if (!cs.ca1d || cs.ca1d.hash !== cHash) {
+          const rows = new Uint8Array(gw * gh);
+          for (let x = 0; x < gw; x++) rows[(gh - 1) * gw + x] = _h2(x, 1, seed) < 0.5 ? 1 : 0;
+          cs.ca1d = { rows, rule: RULES[seed % RULES.length], hash: cHash, acc: 0, gen: 0 };
+        }
+        const C = cs.ca1d;
+        C.acc += 0.35 + speed * 0.9 + push * 2.0;
+        const mutEvery = Math.max(40, Math.round(420 - jitter * 360));
+        let steps = 0;
+        while (C.acc >= 1 && steps < 6) {
+          C.acc -= 1; C.gen++; steps++;
+          if (C.gen % mutEvery === 0) C.rule = RULES[(_h2(C.gen, 3, seed) * RULES.length) | 0];
+          C.rows.copyWithin(0, gw, gw * gh);
+          const src = (gh - 2) * gw, dst = (gh - 1) * gw;
+          for (let x = 0; x < gw; x++) {
+            const l = C.rows[src + ((x - 1 + gw) % gw)], c = C.rows[src + x], r = C.rows[src + ((x + 1) % gw)];
+            let v = (C.rule >> ((l << 2) | (c << 1) | r)) & 1;
+            if (_h2(x, C.gen, seed) < Math.max(0, density - 0.5) * 0.03) v ^= 1; // density → noise injection
+            C.rows[dst + x] = v;
+          }
+        }
+        for (let y = 0; y < gh; y++) {
+          const age = 1 - y / gh;
+          for (let x = 0; x < gw; x++) {
+            const on = C.rows[y * gw + x];
+            const v = on ? 0.55 + 0.45 * (1 - age * warp) : 0.04 + age * 0.08 * (1 - warp);
+            buf[y * gw + x] = PAL[palIdx(v)];
+          }
+        }
+        handled = true; break;
+      }
+      // ── SPECTR : spectrum garden. Eight bands grow pixel columns from the
+      //    floor (fast attack, slow release, peak caps); the tops deposit
+      //    into a history that scrolls upward — a waterfall of what was
+      //    played. Without audio it breathes on a slow LFO. v1.7.0
+      case "SPECTR": {
+        const bands = p.bands && p.bands.length >= 8 ? p.bands : null;
+        const cols = 8 * Math.max(1, Math.min(6, Math.round(1 + density * 5)));
+        const ss = gsc as _GenStateCache & { spectr?: { h: Float32Array; peak: Float32Array; hist: Float32Array; hash: number } };
+        const sHash = (seed * 31) ^ (cols * 17) ^ (gw * 7919) ^ (gh * 6151);
+        if (!ss.spectr || ss.spectr.hash !== sHash) ss.spectr = { h: new Float32Array(cols), peak: new Float32Array(cols), hist: new Float32Array(gw * gh), hash: sHash };
+        const S = ss.spectr;
+        const rows = Math.max(1, Math.round(0.4 + speed * 1.2));
+        for (let r = 0; r < rows; r++) { S.hist.copyWithin(0, gw, gw * gh); S.hist.fill(0, (gh - 1) * gw); }
+        const fade = 0.97 + (1 - jitter) * 0.025;
+        for (let i = 0; i < S.hist.length; i++) S.hist[i] *= fade;
+        const beat = p.beat || 0;
+        for (let c = 0; c < cols; c++) {
+          const b = bands ? bands[Math.min(7, Math.floor((c * 8) / cols))] : 0.3 + 0.3 * Math.sin(tAnim * 1.7 + c * 0.9);
+          const target = Math.min(1, b * (1 + warp * 0.8) + beat * 0.12);
+          S.h[c] = target > S.h[c] ? S.h[c] * 0.4 + target * 0.6 : S.h[c] * 0.88 + target * 0.12;
+          S.peak[c] = Math.max(S.h[c], S.peak[c] - 0.010);
+        }
+        const colW = gw / cols;
+        for (let x = 0; x < gw; x++) {
+          const c = Math.min(cols - 1, (x / colW) | 0);
+          const inCol = (x % colW) / colW;
+          const gap = cols > 8 && (inCol < 0.08 || inCol > 0.92) ? 0.35 : 1;
+          const hgt = S.h[c] * gh * 0.92, pk = S.peak[c] * gh * 0.92;
+          for (let y = 0; y < gh; y++) {
+            const fromBottom = gh - 1 - y;
+            const i = y * gw + x;
+            let v = S.hist[i] * 0.85;
+            if (fromBottom < hgt) v = Math.max(v, 0.3 + 0.7 * (fromBottom / Math.max(1, hgt)));
+            if (Math.abs(fromBottom - pk) < 1.0) v = 1;
+            if (fromBottom < hgt && fromBottom > hgt - 2.5) S.hist[i] = Math.max(S.hist[i], 0.75);
+            buf[i] = PAL[palIdx(v > 0.02 ? v * gap : 0.03)];
+          }
+        }
+        handled = true; break;
+      }
+      // ── SEQGRD : step-sequencer grid. A grid of pads; each pad owns one of
+      //    sixteen steps and lights when the bar reaches it, decaying after.
+      //    Pattern mutates every so often; density = more pads. v1.7.0
+      case "SEQGRD": {
+        const conf = p.bpmConf ?? 0;
+        const barPhase = conf > 0.3 && p.barPhase != null ? p.barPhase : (tAnim * 0.22) % 1;
+        const beatPhase = conf > 0.3 && p.beatPhase != null ? p.beatPhase : (tAnim * 0.88) % 1;
+        const steps = 16; const step = Math.floor(barPhase * steps) % steps;
+        const gcols = 4 + Math.round(density * 4);
+        const grows = Math.max(3, Math.round((gcols * gh) / gw));
+        const cellW = gw / gcols, cellH = gh / grows;
+        const tBin = Math.floor(tAnim * 0.04);
+        const muteFrac = 0.15 + jitter * 0.35;
+        for (let y = 0; y < gh; y++) {
+          const cy = (y / cellH) | 0; const fy = Math.abs(((y % cellH) / cellH) - 0.5) * 2;
+          for (let x = 0; x < gw; x++) {
+            const cx = (x / cellW) | 0; const fx = Math.abs(((x % cellW) / cellW) - 0.5) * 2;
+            const padStep = (_h2(cx, cy, seed + tBin) * steps) | 0;
+            const lit = padStep === step;
+            const age = ((step - padStep + steps) % steps) / steps;
+            const edge = Math.max(fx, fy) > 0.82 - warp * 0.3 ? 0 : 1;
+            let v = 0.05 + (1 - age) * 0.28;
+            if (lit) v = 0.72 + 0.28 * (1 - beatPhase);
+            if (_h2(cx, cy, seed) < muteFrac) v *= 0.35;
+            buf[y * gw + x] = PAL[palIdx(v * edge)];
+          }
+        }
+        handled = true; break;
+      }
       // ── BAYER : classic 8×8 ordered dither of the field ────────────
       case "BAYER": {
         const M8 = [

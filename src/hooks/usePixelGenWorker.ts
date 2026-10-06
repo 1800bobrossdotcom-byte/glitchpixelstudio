@@ -41,7 +41,7 @@ export function usePixelGenWorker(
   onResult: (result: GenerationResult) => void
 ) {
   const workerRef = useRef<Worker | null>(null);
-  const pendingRef = useRef<Map<string, (result: GenerationResult) => void>>(new Map());
+  const pendingRef = useRef<Map<string, (result: GenerationResult, failed?: boolean) => void>>(new Map());
 
   useEffect(() => {
     // Initialize worker
@@ -62,11 +62,9 @@ export function usePixelGenWorker(
           const cb = pendingRef.current.get(id);
           if (cb) {
             pendingRef.current.delete(id);
-            cb({
-              data: new Uint8ClampedArray((width || 0) * (height || 0) * 4),
-              width: width || 0,
-              height: height || 0,
-            });
+            // v1.7.0 — a failed frame must NOT be painted (it used to hand back
+            // a zero buffer, which drew the generator black). Resolve only.
+            cb({ data: new Uint8ClampedArray(0), width: 0, height: 0 }, true);
           }
           return;
         }
@@ -110,8 +108,8 @@ export function usePixelGenWorker(
         }
 
         const id = Math.random().toString(36).slice(2);
-        pendingRef.current.set(id, (result) => {
-          onResult(result);
+        pendingRef.current.set(id, (result, failed) => {
+          if (!failed && result.width > 0 && result.height > 0) onResult(result);
           resolve(result);
         });
 

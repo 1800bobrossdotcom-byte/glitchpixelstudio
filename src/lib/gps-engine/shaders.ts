@@ -1552,6 +1552,11 @@ uniform sampler2D uTex;
 // half-float path); the engine passes 0.0 otherwise so WebGL1 output is
 // untouched. Static per pixel (no temporal jitter) so exports don't flicker.
 uniform float uDither;
+// v1.7.0 — display-only flash (0..1). Applied here, AFTER the feedback
+// ping-pong, so a beat strobe brightens what you see without the brightened
+// frame being fed back into datamosh / echo next frame (that loop was the
+// white-out). 1.0 = 50 % toward white.
+uniform float uFlash;
 // Interleaved gradient noise (Jimenez 2014): cheap, unstructured, in [0,1).
 float ign(vec2 p) {
   return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
@@ -1559,6 +1564,7 @@ float ign(vec2 p) {
 void main() {
   vec4 c = texture2D(uTex, vUv);
   c.rgb += (ign(gl_FragCoord.xy) - 0.5) * (uDither / 255.0);
+  c.rgb = mix(c.rgb, vec3(1.0), clamp(uFlash, 0.0, 1.0) * 0.5);
   gl_FragColor = c;
 }
 `;

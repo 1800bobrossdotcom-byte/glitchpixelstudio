@@ -148,6 +148,12 @@ export interface RenderOptions {
    */
   sortMix?: number;
   /**
+   * v1.7.0 — display-only flash (0..1) applied in the present pass, outside
+   * the feedback loop. A function is read after the uniform block ran, so a
+   * value computed there is used in the same frame.
+   */
+  flash?: number | (() => number);
+  /**
    * The shell's uniform block. Called with the effects program bound, after
    * textures are bound to their units; sampler uniforms are already set.
    * `u` has every active uniform of the program (plus `uModeParams` for

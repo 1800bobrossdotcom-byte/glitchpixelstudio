@@ -116,6 +116,7 @@ export function createEngine(
   const presentTexLoc = gl.getUniformLocation(present.program, "uTex");
   if (presentTexLoc) gl.uniform1i(presentTexLoc, PRESENT_UNIT);
   const presentDitherLoc = gl.getUniformLocation(present.program, "uDither");
+  const presentFlashLoc = gl.getUniformLocation(present.program, "uFlash");
   const presentQuad = createFullscreenQuad(gl, gl.getAttribLocation(present.program, "aPosition"));
 
   // ── textures (all CLAMP_TO_EDGE + LINEAR, sort is NEAREST — as shipped) ──
@@ -305,6 +306,10 @@ export function createEngine(
       gl.viewport(0, 0, width, height);
       gl.useProgram(present.program);
       if (presentDitherLoc) gl.uniform1f(presentDitherLoc, outputDither && halfFloatFeedback ? 1.0 : 0.0);
+      if (presentFlashLoc) {
+        const fl = typeof opts.flash === "function" ? opts.flash() : (opts.flash ?? 0);
+        gl.uniform1f(presentFlashLoc, fl > 0 ? Math.min(1, fl) : 0);
+      }
       bind(PRESENT_UNIT, pp.write.tex);
       presentQuad.draw();
 

@@ -92,6 +92,10 @@ const GEN_STYLE_META: Record<string, { font: string; color: string; bg: string; 
   BOIDS:   { font:"var(--font-nunito,'Nunito',sans-serif)",          color:"#FFAB00", bg:"linear-gradient(135deg,#1a1000,#2e2000)",   glow:"#FFAB00" },
   REACT:   { font:"var(--font-nunito,'Nunito',sans-serif)",          color:"#FF1744", bg:"linear-gradient(135deg,#1a0000,#300000)",   glow:"#FF1744" },
   LSYST:   { font:"var(--font-nunito,'Nunito',sans-serif)",          color:"#00E676", bg:"linear-gradient(135deg,#001200,#003000)",   glow:"#00E676" },
+  PHYSA:   { font:"var(--font-nunito,'Nunito',sans-serif)",          color:"#FFE766", bg:"linear-gradient(135deg,#1a1600,#302800)",   glow:"#FFE766", italic:true },
+  CA1D:    { font:"var(--font-nunito,'Nunito',sans-serif)",          color:"#66F0FF", bg:"linear-gradient(135deg,#001a1e,#002a30)",   glow:"#66F0FF" },
+  SPECTR:  { font:"var(--font-nunito,'Nunito',sans-serif)",          color:"#AEFFE7", bg:"linear-gradient(135deg,#00201a,#003a2e)",   glow:"#AEFFE7" },
+  SEQGRD:  { font:"var(--font-nunito,'Nunito',sans-serif)",          color:"#FFB450", bg:"linear-gradient(135deg,#1e1200,#342000)",   glow:"#FFB450" },
   // ── SDF / raymarched 3D fields (hg_sdf-inspired) ───────────────
   // CPU sphere-tracer that unions primitives with smooth-min and feeds
   // the resulting depth/normal field through the existing pixel palette
@@ -581,6 +585,26 @@ interface SpectraPreset {
   // Phase 1B (rack port): optional per-mode parameter snapshots. Older saved
   // presets predate the rack and will simply omit this field.
   paramsByMode?: Record<number, Record<string, number>>;
+  // v1.7.0 — LOOK extension: everything else that makes a picture what it is.
+  ext?: LookExt;
+  /** share metadata */
+  id?: string;
+  createdAt?: number;
+}
+interface LookExt {
+  art?: number[];        // 9 artist FX amounts
+  artFam?: number[];     // 9 artist FX families
+  rgb?: number[];        // rgbR, rgbG, rgbB, rgbBars, rupture, hsync
+  glitchOn?: boolean; glitchIdx?: number;
+  sortInterval?: number; sortAngle?: number; glyph?: number; sortMix?: number; reactD?: number; voroSort?: number; moshFamily?: number;
+  gen?: { style: string; res: number; density: number; scale: number; speed: number; warp: number; jitter: number; seed: number; invert: boolean; mix: number; blend: string; palette: string; hue: number; spread: number; sat: number; contrast: number };
+  audio?: { react: number; rack: Record<string, boolean> };
+  motion?: { amt: number; trail: number; spread: number; mode: number };
+  av?: number[];         // shock, stutter, slices, eq, bulge
+  face?: { mode: string; expand: number; feather: number; snap: boolean };
+  macros?: number[];
+  vjMode?: boolean;
+  source?: string;
 }
 
 type ExportProfile = "native" | "vertical" | "square" | "widescreen";
@@ -686,6 +710,29 @@ const AUDIO_RACK: ReadonlyArray<{ id: AudioRackId; label: string; src: string; g
   { id: "hue",     label: "HUE",     src: "FLOW",   gain: 0.6,  on: false, hint: "Slow hue drift with the 3 s flow envelope" },
 ];
 const AUDIO_RACK_KEY = "gps.vj.audioRack.v1";
+// v1.7.0 — LOOKS (named, shareable full-state favourites) + generator gene pool
+const LOOKS_KEY = "gps.looks.v1";
+const GENE_POOL_KEY = "gps.genePool.v1";
+const MOTION_MODES = ["SMEAR", "TEAR", "SHATTER", "PAINT"] as const;
+/** Share-code codec: "GPSL1." + base64url(JSON). Short keys keep it pasteable. */
+function encodeLook(p: SpectraPreset): string {
+  const json = JSON.stringify(p);
+  const bytes = new TextEncoder().encode(json);
+  let bin = ""; for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return "GPSL1." + btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function decodeLook(code: string): SpectraPreset | null {
+  try {
+    const m = code.trim().match(/GPSL1\.([A-Za-z0-9_-]+)/);
+    if (!m) return null;
+    const b64 = m[1].replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (m[1].length % 4)) % 4);
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const p = JSON.parse(new TextDecoder().decode(bytes)) as SpectraPreset;
+    if (!p || typeof p !== "object" || typeof p.name !== "string") return null;
+    return p;
+  } catch { return null; }
+}
 function loadAudioInPref(): AudioInputPref {
   try {
     const v = localStorage.getItem(AUDIO_IN_PREF_KEY);
@@ -1525,7 +1572,14 @@ export default function SpectraAfter() {
     const audioPrevBandsRef = useRef({ bass: 0, mid: 0, treb: 0 });
     // v1.6.0 — latest consumed analysis frame + beat-scene envelopes.
     const audioFrameRef = useRef<AudioFrame | null>(null);
-    const audioSceneRef = useRef({ beatN: 0, kick: 0, shard: 0, hueJump: 0, lastBeatMs: 0, lastMs: 0 });
+    const audioSceneRef = useRef({ beatN: 0, barN: 0, kick: 0, shard: 0, hueJump: 0, lastBeatMs: 0, lastMs: 0, beatPhase: 0, barPhase: 0, conf: 0 });
+    // v1.7.0 — 8 log-spaced spectrum bands (0..1, smoothed) for the AV FX rack + AV generators.
+    const audioBandsRef = useRef<Float32Array>(new Float32Array(8));
+    // AV FX rack knobs
+    const [avShock, setAvShock] = useState(0); const [avStutter, setAvStutter] = useState(0); const [avSlices, setAvSlices] = useState(0);
+    const [avEq, setAvEq] = useState(0); const [avBulge, setAvBulge] = useState(0);
+    const avRef = useRef({ shock: 0, stutter: 0, slices: 0, eq: 0, bulge: 0 });
+    useEffect(() => { avRef.current = { shock: avShock, stutter: avStutter, slices: avSlices, eq: avEq, bulge: avBulge }; }, [avShock, avStutter, avSlices, avEq, avBulge]);
     // The WebView can only service one permission prompt at a time: opening the
     // mic while the camera is still being granted makes Capacitor deny the mic.
     // Arm the audio input once the camera is live, or 4 s after mount if the
@@ -1746,6 +1800,7 @@ export default function SpectraAfter() {
     "CIRCS", "CROSS", "WEAVE", "DIAMOND", "GLITCH",
     "TRUCH", "BAY8", "STACK", "FLOWL", "RIBON", "ORBIT",
     "PLIFE", "DLAUN", "BOIDS", "REACT", "LSYST",
+    "PHYSA", "CA1D", "SPECTR", "SEQGRD",
   ] as const;
   type GenStyle = typeof GEN_STYLES[number];
 
@@ -1754,7 +1809,7 @@ export default function SpectraAfter() {
   // a 36-button preset grid. Empty slots fall back to slot 0 of that family.
   const FAMILY_NAMES = [
     "AUTOMATA","REACT-DIFF","FLOW-WAVE","DITHER","FRACTAL",
-    "PIXSORT","FLOWFLD","VORONOI","TRUCHET","GLITCH",
+    "PIXSORT","FLOWFLD","VORONOI","TRUCHET","GLITCH","LIVING","AV",
   ] as const;
   const STYLE_BY_FV: ReadonlyArray<ReadonlyArray<GenStyle>> = [
     ["PLIFE",  "WAVES", "CHECK",  "LSYST"],
@@ -1767,6 +1822,8 @@ export default function SpectraAfter() {
     ["VORON",  "DOTS",  "HALFT",  "HEX"],
     ["TRUCH",  "GRID",  "ISO",    "TRUCH"],
     ["GLITCH", "GLITCH","ASCII",  "GLITCH"],
+    ["PHYSA",  "CA1D",  "PHYSA",  "CA1D"],
+    ["SPECTR", "SEQGRD","SPECTR", "SEQGRD"],
   ];
   const FV_BY_STYLE: Record<string, [number, number]> = {
     PLIFE:[0,0], WAVES:[0,1], CHECK:[0,2], LSYST:[0,3],
@@ -1779,6 +1836,8 @@ export default function SpectraAfter() {
     VORON:[7,0], DOTS:[7,1], HALFT:[7,2], HEX:[7,3],
     TRUCH:[8,0], GRID:[8,1], ISO:[8,2],
     GLITCH:[9,0], ASCII:[9,2],
+    PHYSA:[10,0], CA1D:[10,1],
+    SPECTR:[11,0], SEQGRD:[11,1],
   };
 
   // Color palettes for the generator. MONO is pure grayscale (true monochrome).
@@ -2078,6 +2137,15 @@ export default function SpectraAfter() {
   const [maskExpand, setMaskExpand] = useState(0.0);
   const maskExpandRef = useRef(0.0);
   useEffect(() => { maskExpandRef.current = maskExpand; }, [maskExpand]);
+  // v1.7.0 — mask FEATHER (edge softness) + EDGE SNAP (guided refinement).
+  const [maskFeather, setMaskFeather] = useState(0.12);
+  const maskFeatherRef = useRef(0.12);
+  useEffect(() => { maskFeatherRef.current = maskFeather; }, [maskFeather]);
+  const [maskSnap, setMaskSnap] = useState(true);
+  const maskSnapRef = useRef(true);
+  useEffect(() => { maskSnapRef.current = maskSnap; }, [maskSnap]);
+  // temporal smoothing buffer for the segmenter confidence mask
+  const maskEmaRef = useRef<Float32Array | null>(null);
   const faceFxRef = useRef<{ active: boolean; invert: boolean; texValid: boolean; cx: number; cy: number; r: number; }>({
     active: false, invert: false, texValid: false, cx: 0.5, cy: 0.42, r: 0.28,
   });
@@ -2349,20 +2417,29 @@ export default function SpectraAfter() {
                 scratchW = mw; scratchH = mh;
               }
               const rgba = scratchImg.data;
+              // v1.7.0 — temporal EMA on the matte. The segmenter flickers
+              // along hair / shoulders tick to tick; blending with the previous
+              // matte (less when the subject is moving fast, so it never lags)
+              // steadies the edge. Alpha = mask too (v1.2.51) for 2D compositing.
+              const nPx = u8 ? u8.length : (f32 ? f32.length : 0);
+              let ema = maskEmaRef.current;
+              if (!ema || ema.length !== nPx) { ema = new Float32Array(nPx); ema.fill(-1); maskEmaRef.current = ema; }
+              const mE = Math.min(1, motionEnergyRef.current * 3);
+              const keep = 0.55 - 0.45 * mE; // 0.55 still .. 0.10 moving
               if (u8) {
                 for (let i = 0, j = 0; i < u8.length; i++, j += 4) {
-                  const m = u8[i] > 0 ? 255 : 0;
-                  // v1.2.51 — alpha = mask too, so faceMaskCanvas is
-                  // also usable as an alpha matte for 2D-canvas
-                  // compositing (source-in / destination-in) when we
-                  // cut the camera-person out for the gen/upload
-                  // composite path. Shader still reads .r so behavior
-                  // there is unchanged.
+                  const cur = u8[i] > 0 ? 1 : 0;
+                  const v = ema[i] < 0 ? cur : ema[i] * keep + cur * (1 - keep);
+                  ema[i] = v;
+                  const m = Math.round(v * 255);
                   rgba[j] = m; rgba[j+1] = m; rgba[j+2] = m; rgba[j+3] = m;
                 }
               } else if (f32) {
                 for (let i = 0, j = 0; i < f32.length; i++, j += 4) {
-                  const m = Math.round(Math.min(1, Math.max(0, f32[i])) * 255);
+                  const cur = Math.min(1, Math.max(0, f32[i]));
+                  const v = ema[i] < 0 ? cur : ema[i] * keep + cur * (1 - keep);
+                  ema[i] = v;
+                  const m = Math.round(v * 255);
                   rgba[j] = m; rgba[j+1] = m; rgba[j+2] = m; rgba[j+3] = m;
                 }
               }
@@ -2572,6 +2649,38 @@ export default function SpectraAfter() {
   const motionEnergyRef = useRef(0);
   const motionFrameRef = useRef(0);
   const accelEnergyRef = useRef(0);
+  // v1.7.0 — MOTION RACK. Per-pixel motion map (64x36, trail-held), the
+  // centroid of moving pixels and its smoothed velocity (= direction the
+  // subject is moving), and the knobs. The map goes to the engine's mask
+  // texture every detector tick; the shader turns it into glitch.
+  const motionMapRef = useRef<Float32Array | null>(null);
+  const motionCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const motionImgRef = useRef<ImageData | null>(null);
+  const motionCentroidRef = useRef({ x: 0.5, y: 0.5, vx: 0, vy: 0, has: false });
+  const motionDirRef = useRef({ x: 0, y: 0 });
+  const motionMeterRef = useRef<HTMLDivElement | null>(null);
+  const [motionAmt, setMotionAmt] = useState(0.0);
+  const [motionTrail, setMotionTrail] = useState(0.5);
+  const [motionSpread, setMotionSpread] = useState(0.4);
+  const [motionMode, setMotionMode] = useState(0);
+  const motionAmtRef = useRef(0.0); const motionTrailRef = useRef(0.5); const motionSpreadRef = useRef(0.4); const motionModeRef = useRef(0);
+  useEffect(() => { motionAmtRef.current = motionAmt; }, [motionAmt]);
+  useEffect(() => { motionTrailRef.current = motionTrail; }, [motionTrail]);
+  useEffect(() => { motionSpreadRef.current = motionSpread; }, [motionSpread]);
+  useEffect(() => { motionModeRef.current = motionMode; }, [motionMode]);
+  // v1.7.0 — EVOLVE (generator genetics) + LOOKS (named shareable favourites)
+  const [evolveOn, setEvolveOn] = useState(false);
+  const [evolveRate, setEvolveRate] = useState(0.5);
+  const [genePool, setGenePool] = useState<LookExt["gen"][]>([]);
+  useEffect(() => { try { const raw = localStorage.getItem(GENE_POOL_KEY); if (raw) { const v = JSON.parse(raw); if (Array.isArray(v)) setGenePool(v.slice(0, 24)); } } catch { /* ignore */ } }, []);
+  const [looks, setLooks] = useState<SpectraPreset[]>([]);
+  useEffect(() => { try { const raw = localStorage.getItem(LOOKS_KEY); if (raw) { const v = JSON.parse(raw); if (Array.isArray(v)) setLooks(v); } } catch { /* ignore */ } }, []);
+  const [lookDraft, setLookDraft] = useState("");
+  const [lookEditing, setLookEditing] = useState<string | null>(null);
+  const [lookToast, setLookToast] = useState<string | null>(null);
+  const lookInputRef = useRef<HTMLInputElement | null>(null);
+  const evolveLastBarRef = useRef(-1);
+  const evolveLastMotionMsRef = useRef(0);
   const accelTiltXRef = useRef(0);
   const accelTiltYRef = useRef(0);
   const accelPushRef = useRef(0);
@@ -3920,14 +4029,9 @@ export default function SpectraAfter() {
     // but without the visible app-wide stutter that pulsed the FX state.
     // Upload mask canvas to the engine's mask texture (texSubImage2D fast
     // path inside the engine; re-seeded only when the canvas is resized).
-    const engM = engineRef.current;
-    const maskCanvas = maskCanvasRef.current;
-    if (engM && maskCanvas && maskCanvas.width > 0 && maskCanvas.height > 0) {
-      if (!engM.setMask(maskCanvas, maskCanvas.width, maskCanvas.height)) {
-        console.warn("[mask upload] disabled after error");
-        touchRef.current.active = false;
-      }
-    }
+    // (v1.7.0 — the touch-paint mask upload is gone; the engine's mask
+    //  texture now carries the camera MOTION MAP, uploaded by the detector
+    //  below whenever the MOTION rack is on.)
 
     // --- Audio analyser: update audioLevelRef ---
     // v1.2.57 — Run the FFT + RMS pass every other frame (~30 Hz at
@@ -3957,12 +4061,31 @@ export default function SpectraAfter() {
       // shard burst every 4th beat, a hue jump every 8th (when those rack
       // slots are on). This is what makes a beat *read* instead of nudge.
       const sc = audioSceneRef.current;
-      if (f.beatsSince > 0 && !f.gated) {
-        sc.beatN += f.beatsSince;
+      // v1.7.0 — when the tempo tracker is confident, scene events follow the
+      // phase-locked GRID (keeps time through gaps and never double-fires on
+      // a flam); otherwise they follow the raw onsets as before.
+      const _onGrid = f.tempoConf > 0.45 && f.bpm > 0;
+      const _evBeats = _onGrid ? f.gridBeatsSince : (f.gated ? 0 : f.beatsSince);
+      if (_evBeats > 0) {
+        sc.beatN += _evBeats;
         sc.kick = 1;
-        if (sc.beatN % 4 === 0) sc.shard = 1;
-        if (sc.beatN % 8 === 0) sc.hueJump = (sc.hueJump + 0.125) % 1;
+        if (_onGrid ? f.barsSince > 0 : sc.beatN % 4 === 0) sc.shard = 1;
+        if (_onGrid ? (f.barsSince > 0 && f.barCount % 2 === 0) : sc.beatN % 8 === 0) sc.hueJump = (sc.hueJump + 0.125) % 1;
         sc.lastBeatMs = _nowMs;
+      }
+      if (_onGrid) sc.barN = f.barCount; else if (_evBeats > 0) sc.barN = Math.floor(sc.beatN / 4);
+      sc.beatPhase = _onGrid ? f.beatPhase : Math.min(1, (_nowMs - sc.lastBeatMs) / 500);
+      sc.barPhase = _onGrid ? f.barPhase : ((sc.beatN % 4) + sc.beatPhase) / 4;
+      sc.conf = _onGrid ? f.tempoConf : 0;
+      // 8 log-spaced bands from the 256-bin FFT (bins 1..255), smoothed.
+      {
+        const fftB = _feat.fft; const Nb = fftB.length; const bands = audioBandsRef.current;
+        for (let b = 0; b < 8; b++) {
+          const lo = Math.max(1, Math.floor(Math.pow(Nb, b / 8))); const hi = Math.max(lo + 1, Math.floor(Math.pow(Nb, (b + 1) / 8)));
+          let s = 0; for (let i = lo; i < hi && i < Nb; i++) s += fftB[i];
+          const v = f.gated ? 0 : (s / (hi - lo)) / 255;
+          bands[b] = v > bands[b] ? bands[b] * 0.45 + v * 0.55 : bands[b] * 0.82 + v * 0.18;
+        }
       }
       // frame-rate independent decay (~180 ms kick, ~260 ms shard)
       const _dtS = Math.min(0.25, Math.max(0.001, (_nowMs - (sc.lastMs || _nowMs)) / 1000));
@@ -4097,6 +4220,48 @@ export default function SpectraAfter() {
             for (let i = 0; i < N; i += 2) sum += Math.abs(luma[i] - prev[i]);
             const norm = Math.min(1, sum / ((N / 2) * 28));
             motionEnergyRef.current = motionEnergyRef.current * 0.84 + norm * 0.16;
+            // v1.7.0 — per-pixel motion map with trail + centroid velocity.
+            const wantMap = motionAmtRef.current > 0.001 || evolveOn;
+            if (wantMap) {
+              let map = motionMapRef.current;
+              if (!map || map.length !== N) { map = new Float32Array(N); motionMapRef.current = map; }
+              const trail = 0.55 + motionTrailRef.current * 0.42; // 0.55 (snappy) .. 0.97 (long comet)
+              let cxs = 0, cys = 0, wsum = 0;
+              for (let i = 0; i < N; i++) {
+                const d = Math.abs(luma[i] - prev[i]);
+                const m = d > 14 ? Math.min(1, (d - 14) / 70) : 0;
+                const v = Math.max(m, map[i] * trail);
+                map[i] = v;
+                if (m > 0.05) { const x = i % MW, y = (i / MW) | 0; cxs += x * m; cys += y * m; wsum += m; }
+              }
+              const c = motionCentroidRef.current;
+              if (wsum > 1.5) {
+                const nx = cxs / wsum / MW, ny = cys / wsum / MH;
+                if (c.has) { c.vx = c.vx * 0.6 + (nx - c.x) * 0.4; c.vy = c.vy * 0.6 + (ny - c.y) * 0.4; }
+                c.x = nx; c.y = ny; c.has = true;
+              } else { c.vx *= 0.8; c.vy *= 0.8; }
+              // direction in FX uv space == video space (adjustUv maps the
+              // screen into video coordinates, mirror included), so no flip.
+              const spd = Math.hypot(c.vx, c.vy);
+              const dx = c.vx, dy = c.vy;
+              const dRef = motionDirRef.current;
+              if (spd > 0.002) { dRef.x = dRef.x * 0.7 + (dx / spd) * 0.3; dRef.y = dRef.y * 0.7 + (dy / spd) * 0.3; }
+              // paint → 64x36 RGBA → engine mask texture
+              let mcv = motionCanvasRef.current;
+              if (!mcv) { mcv = document.createElement("canvas"); mcv.width = MW; mcv.height = MH; motionCanvasRef.current = mcv; }
+              const mg = mcv.getContext("2d");
+              if (mg) {
+                let img = motionImgRef.current;
+                if (!img || img.width !== MW) { img = mg.createImageData(MW, MH); motionImgRef.current = img; }
+                const px2 = img.data;
+                for (let i = 0, p = 0; i < N; i++, p += 4) { const v = (map[i] * 255) | 0; px2[p] = v; px2[p + 1] = v; px2[p + 2] = v; px2[p + 3] = 255; }
+                mg.putImageData(img, 0, 0);
+                const engMo = engineRef.current;
+                if (engMo) engMo.setMask(mcv, MW, MH);
+              }
+              const meter = motionMeterRef.current;
+              if (meter) meter.style.width = `${Math.round(Math.min(1, motionEnergyRef.current * 2.5) * 100)}%`;
+            }
           }
           // Swap buffers (double-buffered) so next frame's "prev" is what we just computed.
           motionPrevLumaRef.current = luma;
@@ -4274,6 +4439,12 @@ export default function SpectraAfter() {
         motionX: tiltX * 0.7 + flowX + audioBass * 0.18 - audioTreb * 0.10,
         motionY: tiltY * 0.7 + flowY + audioBeat * 0.22,
         depthPush: Math.min(1, push * 0.6 + audioBeat * 0.55 + audioAny * 0.20),
+        // v1.7.0 — AV inputs for the audio-native generators
+        bands: audioBandsRef.current,
+        beatPhase: audioSceneRef.current.beatPhase,
+        barPhase: audioSceneRef.current.barPhase,
+        beat: audioBeat,
+        bpmConf: audioSceneRef.current.conf,
       };
       // Map a layer's own params into a full GenParams record, plus the
       // shared environment + motion-driven boosts (jitter, warp, density).
@@ -5120,6 +5291,7 @@ export default function SpectraAfter() {
 
     eng.render({
       sortMix: sortMixRef.current,
+      flash: () => audioRackOutRef.current.strobe,
       uniforms: (u, w) => {
         const { setF1, setF2, setI1, setFv } = w;
 
@@ -5136,6 +5308,32 @@ export default function SpectraAfter() {
     setF1(u.uABass, audioBassRef.current || 0.0);
     setF1(u.uATreb, audioTrebleRef.current || 0.0);
     setF1(u.uABeat, audioBeatRef.current || 0.0);
+    // v1.7.0 — tempo grid + motion rack uniforms
+    {
+      const sc = audioSceneRef.current;
+      const synth = audioSyntheticRef.current;
+      const _t = performance.now() * 0.001;
+      setF1(u.uBeatPhase, synth ? ((_t * 1.07) % 1) : sc.beatPhase);
+      setF1(u.uBarPhase, synth ? ((_t * 1.07 / 4) % 1) : sc.barPhase);
+      setF1(u.uTempoConf, synth ? 1.0 : sc.conf);
+      setF1(u.uMotionAmt, cameraActiveRef.current ? motionAmtRef.current : 0.0);
+      setF1(u.uMotionMode, motionModeRef.current);
+      setF1(u.uMotionSpread, motionSpreadRef.current);
+      setF2(u.uMotionDir, motionDirRef.current.x, motionDirRef.current.y);
+      setF1(u.uMotionEnergy, motionEnergyRef.current);
+      setF1(u.uMaskSnap, maskSnapRef.current ? 1.0 : 0.0);
+      // AV FX rack
+      const av = avRef.current;
+      const camOn = cameraActiveRef.current;
+      const mc = motionCentroidRef.current;
+      setF2(u.uMotionCenter, camOn && mc.has ? mc.x : 0.5, camOn && mc.has ? mc.y : 0.5);
+      setF1(u.uAvShock, av.shock); setF1(u.uAvStutter, av.stutter); setF1(u.uAvSlices, av.slices); setF1(u.uAvEq, av.eq); setF1(u.uAvBulge, av.bulge);
+      if (u.uBands) {
+        // synthetic drive when AUTO-VJ runs without a signal
+        if (synth) { const bb = new Float32Array(8); for (let b = 0; b < 8; b++) bb[b] = 0.35 + 0.35 * Math.sin(_t * (1.3 + b * 0.37) + b); setFv(u.uBands, bb); }
+        else setFv(u.uBands, audioBandsRef.current);
+      }
+    }
     // v1.3.43 — macro multipliers, resolved once per frame.
     // mI/mM/mC/mB pass through user-set per-knob values when all 4 dials
     // sit at 1.0 (the defaults), so behavior is byte-identical to v1.3.42
@@ -5158,7 +5356,10 @@ export default function SpectraAfter() {
       ? _preset.modulate(timeRef.current, presetStateRef.current)
       : undefined;
     const PB = (k: UniformBoostKey): number => ((_pb && _pb[k]) || 0) * (_pbActive ? 1 : 0);
-    setF1(u.uBrightness, 1 + (brightnessRef.current - 1) * _mC + audioRackOutRef.current.strobe);
+    // v1.7.0 — STROBE no longer rides uBrightness (that frame is fed back
+    // through datamosh/echo and compounded to white); it is a display-only
+    // flash in the engine's present pass — see eng.render({ flash }).
+    setF1(u.uBrightness, 1 + (brightnessRef.current - 1) * _mC);
     setF1(u.uContrast,   1 + (contrastRef.current   - 1) * _mC);
     setF1(u.uSaturation, 1 + (saturationRef.current - 1) * _mC);
     setF1(u.uHueShift,   hueShiftRef.current * _mC + audioRackOutRef.current.hue);
@@ -5193,7 +5394,10 @@ export default function SpectraAfter() {
       pb.bass = bass; pb.mid = mid; pb.treb = treb;
       // Transient sources ride the scene envelopes too, so a kick is a kick
       // regardless of how small the per-tick delta happened to be.
-      const kick = live ? sc.kick : (audioSyntheticRef.current ? _aBeat : 0);
+      // Phase-locked kick: when the grid is confident the punch eases out of
+      // every grid beat even if the onset detector missed it.
+      const gridKick = live && sc.conf > 0.45 ? Math.pow(1 - sc.beatPhase, 2.6) * sc.conf : 0;
+      const kick = Math.max(live ? sc.kick : (audioSyntheticRef.current ? _aBeat : 0), gridKick);
       const srcV = (src: string) => src === "BASS" ? bass : src === "MID" ? mid : src === "TREB" ? treb : src === "LEVEL" ? _aLvl
         : src === "BASS-D" ? Math.max(Math.min(1, bassD * 2.4), kick) : src === "MID-D" ? Math.max(Math.min(1, midD * 2.4), kick * 0.7, live ? sc.shard : 0) : src === "TREB-D" ? Math.max(Math.min(1, trebD * 2.4), kick * 0.5)
         : src === "BEAT" ? Math.max(beat, kick) : src === "FLOW" ? flow : 0;
@@ -5205,11 +5409,11 @@ export default function SpectraAfter() {
         const v = I(e);
         switch (e.id) {
           case "punch":   o.punch   = v * 0.34; break;   // uZoom units (0..2)
-          case "strobe":  o.strobe  = v * 0.36; break;   // brightness lift — never a white-out
+          case "strobe":  o.strobe  = v * 0.8;  break;   // present-pass flash (0..1), outside the feedback loop
           case "chroma":  o.chroma  = v * 0.26; break;   // ±uRgbR / uRgbB
           case "shatter": o.shatter = v * 1.0;  break;   // uBlockGlitch
           case "sort":    o.sort    = v * 0.6;  break;   // uSortAmt
-          case "mosh":    o.mosh    = v * 1.8;  break;   // uDatamosh (0..5.5 scale)
+          case "mosh":    o.mosh    = v * 1.4;  break;   // uDatamosh (0..5.5 scale)
           case "echo":    o.echo    = v * 0.6;  break;   // uFeedback
           case "tear":    o.tear    = v * 0.8;  break;   // uScanTear
           case "hue":     o.hue     = v * 0.35 + (on.hue && live ? sc.hueJump * audioReactAmtRef.current : 0); break; // uHueShift (+ 8-beat jump)
@@ -5328,8 +5532,8 @@ export default function SpectraAfter() {
     setF2(u.uFaceCenter, faceFxRef.current.cx, faceFxRef.current.cy);
     setF1(u.uFaceRadius, faceFxRef.current.r);
     setF1(u.uFaceInvert, faceFxRef.current.invert ? 1.0 : 0.0);
-    // v1.3.28 — minimal feather; user wants a near-hard mask edge
-    setF1(u.uFaceFeather, 0.008);
+    // v1.7.0 — FEATHER knob: 0 = razor (0.005), 1 = very soft (0.30)
+    setF1(u.uFaceFeather, 0.005 + Math.max(0, Math.min(1, maskFeatherRef.current)) * 0.295);
     // v1.3.29 — faraday-style GPU dilation. MASK EXPAND slider 0..1 → 2.5..38.5 px outer ring.
     // Replaces the (now removed) CPU separable max-filter on the 256x144 mask buffer:
     //   (a) zero JS cost, so segmenter callback returns instantly and never blocks the
@@ -5713,7 +5917,8 @@ export default function SpectraAfter() {
         const sess = audioInMgrRef.current?.session;
         const f = audioFeaturesRef.current?.features;
         const drive = audioSyntheticRef.current ? "SYNTH LFO" : f ? (f.gated ? "LIVE · GATED (quiet)" : "LIVE") : sess ? "LIVE (legacy)" : "NO INPUT";
-        diag.textContent = `${drive} · ctx ${sess?.context.state ?? "—"} · gain ×${f ? f.gain.toFixed(1) : "—"} · in ${f ? (f.rawLevel * 1000).toFixed(0) : "—"}‰`;
+        const tempo = (f && f.bpm > 0 ? ` · ${f.bpm.toFixed(1)} bpm (${Math.round(f.tempoConf * 100)}%) · bar ${((f.barCount % 4) + 4) % 4 + 1}` : " · bpm —") + (f ? ` · tick ${Math.round(f.tickHz)} Hz` : "");
+        diag.textContent = `${drive} · ctx ${sess?.context.state ?? "—"} · gain ×${f ? f.gain.toFixed(1) : "—"} · in ${f ? (f.rawLevel * 1000).toFixed(0) : "—"}‰${tempo}`;
       }
     }, 120);
     return () => window.clearInterval(id);
@@ -5750,7 +5955,12 @@ export default function SpectraAfter() {
         }
         // beat lamp: full-width glow line
         if (beat > 0.05) { g.fillStyle = `rgba(255,180,80,${Math.min(0.95, beat)})`; g.fillRect(0, 0, W * Math.min(1, beat), 2); }
-        if (lbl) lbl.textContent = f.gain > 12 ? "♪ quiet" : "♪";
+        // beat-grid tick marks: 4 pips along the top, the current beat lit
+        if (f.tempoConf > 0.45 && f.bpm > 0) {
+          const bi = Math.floor(f.barPhase * 4);
+          for (let k = 0; k < 4; k++) { g.fillStyle = k === bi ? "rgba(174,255,231,0.95)" : "rgba(174,255,231,0.25)"; g.fillRect(W - 4 - (3 - k) * 7, 0, 5, 3); }
+        }
+        if (lbl) lbl.textContent = f.tempoConf > 0.45 && f.bpm > 0 ? `♪ ${Math.round(f.bpm)}` : f.gain > 12 ? "♪ quiet" : "♪";
       } else {
         // idle / gated / synthetic: a faint baseline so the HUD reads as "listening"
         const t = performance.now() * 0.002;
@@ -6154,6 +6364,11 @@ export default function SpectraAfter() {
     setGenMix(0); setGenScatter(0);
     setIntensityMacro(1.0); setMotionMacro(1.0); setColorMacro(1.0); setBreakMacro(1.0);
     setFaceFxMode("OFF");
+    // v1.7.0 — motion rack + evolve off, mask controls to defaults
+    setMotionAmt(0); setMotionTrail(0.5); setMotionSpread(0.4); setMotionMode(0);
+    setAvShock(0); setAvStutter(0); setAvSlices(0); setAvEq(0); setAvBulge(0);
+    setEvolveOn(false);
+    setMaskExpand(0); setMaskFeather(0.12); setMaskSnap(true);
     setFaceFxToast("RESET → RAW CAMERA");
     window.setTimeout(() => setFaceFxToast(null), 1800);
   }, [clearUploadSource, startCamera]);
@@ -6561,7 +6776,27 @@ export default function SpectraAfter() {
     moshMap,
     moshDistort,
     paramsByMode,
-  }), [mode, gain, brightness, contrast, saturation, hueShift, scanlines, zoom, speed, sortAmt, scanTear, blockGlitch, datamosh, moshHard, chrash, liquid, feedback, contour, ascii, venetian, sortKey, sortLow, sortHigh, sortMode, sortSegment, sortRandom, sortWobble, moshIFrame, moshMotion, moshBleed, moshMap, moshDistort, paramsByMode, kaleido, disrupt, disruptCount, disruptSize, disruptContrary, tile, invertSym, droste, spiral, yantra, mandala, rosette, starfold, hexfold]);
+    // v1.7.0 — LOOK extension: the rest of the picture.
+    ext: {
+      art: [menkmanFX, molnarFX, ucnvFX, gysinFX, asendorfFX, jodiFX, arcangelFX, paikFX, fentonFX],
+      artFam: [menkmanFam, molnarFam, ucnvFam, gysinFam, asendorfFam, jodiFam, arcangelFam, paikFam, fentonFam],
+      rgb: [rgbR, rgbG, rgbB, rgbBars, rupture, hsync],
+      glitchOn: glitchPresetEnabled, glitchIdx: glitchPreset,
+      sortInterval, sortAngle, glyph, sortMix, reactD, voroSort, moshFamily,
+      gen: { style: genStyle, res: genResolution, density: genDensity, scale: genScale, speed: genSpeed, warp: genWarp, jitter: genJitter, seed: genSeed, invert: genInvert, mix: genMix, blend: genBlend, palette: genPaletteRef.current, hue: genHue, spread: genHueSpread, sat: genSat, contrast: genContrastG },
+      audio: { react: audioReactAmt, rack: { ...audioRackOn } },
+      motion: { amt: motionAmt, trail: motionTrail, spread: motionSpread, mode: motionMode },
+      av: [avShock, avStutter, avSlices, avEq, avBulge],
+      face: { mode: faceFxMode, expand: maskExpand, feather: maskFeather, snap: maskSnap },
+      macros: [intensityMacro, motionMacro, colorMacro, breakMacro],
+      vjMode,
+      source: sourceMode,
+    },
+  }), [mode, gain, brightness, contrast, saturation, hueShift, scanlines, zoom, speed, sortAmt, scanTear, blockGlitch, datamosh, moshHard, chrash, liquid, feedback, contour, ascii, venetian, sortKey, sortLow, sortHigh, sortMode, sortSegment, sortRandom, sortWobble, moshIFrame, moshMotion, moshBleed, moshMap, moshDistort, paramsByMode, kaleido, disrupt, disruptCount, disruptSize, disruptContrary, tile, invertSym, droste, spiral, yantra, mandala, rosette, starfold, hexfold,
+    menkmanFX, molnarFX, ucnvFX, gysinFX, asendorfFX, jodiFX, arcangelFX, paikFX, fentonFX, menkmanFam, molnarFam, ucnvFam, gysinFam, asendorfFam, jodiFam, arcangelFam, paikFam, fentonFam,
+    rgbR, rgbG, rgbB, rgbBars, rupture, hsync, glitchPresetEnabled, glitchPreset, sortInterval, sortAngle, glyph, sortMix, reactD, voroSort, moshFamily,
+    genStyle, genResolution, genDensity, genScale, genSpeed, genWarp, genJitter, genSeed, genInvert, genMix, genBlend, genHue, genHueSpread, genSat, genContrastG,
+    audioReactAmt, audioRackOn, motionAmt, motionTrail, motionSpread, motionMode, avShock, avStutter, avSlices, avEq, avBulge, faceFxMode, maskExpand, maskFeather, maskSnap, intensityMacro, motionMacro, colorMacro, breakMacro, vjMode, sourceMode]);
 
   const applyPreset = useCallback((p: SpectraPreset) => {
     setMode(p.mode);
@@ -6622,6 +6857,41 @@ export default function SpectraAfter() {
     }
     setComboMode(true);
     setComboLayers([{mode:7,gain:1},{mode:9,gain:1}]);
+    // v1.7.0 — LOOK extension (older presets simply lack it → neutral).
+    const x = p.ext;
+    const artSet = [setMenkmanFX, setMolnarFX, setUcnvFX, setGysinFX, setAsendorfFX, setJodiFX, setArcangelFX, setPaikFX, setFentonFX];
+    const famSet = [setMenkmanFam, setMolnarFam, setUcnvFam, setGysinFam, setAsendorfFam, setJodiFam, setArcangelFam, setPaikFam, setFentonFam];
+    artSet.forEach((s, i) => s(x?.art?.[i] ?? 0));
+    famSet.forEach((s, i) => s(x?.artFam?.[i] ?? 0));
+    const rgb = x?.rgb ?? [0, 0, 0, 0, 0, 0];
+    setRgbR(rgb[0] ?? 0); setRgbG(rgb[1] ?? 0); setRgbB(rgb[2] ?? 0); setRgbBars(rgb[3] ?? 0); setRupture(rgb[4] ?? 0); setHsync(rgb[5] ?? 0);
+    setGlitchPresetEnabled(!!x?.glitchOn); if (typeof x?.glitchIdx === "number") setGlitchPreset(x.glitchIdx);
+    setSortInterval(x?.sortInterval ?? 0); setSortAngle(x?.sortAngle ?? 0);
+    setGlyph(x?.glyph ?? 0); setSortMix(x?.sortMix ?? 0); setReactD(x?.reactD ?? 0); setVoroSort(x?.voroSort ?? 0);
+    if (typeof x?.moshFamily === "number") setMoshFamily(x.moshFamily);
+    if (x?.gen) {
+      const g = x.gen;
+      if ((GEN_STYLES as readonly string[]).includes(g.style)) setGenStyle(g.style as GenStyle);
+      setGenResolution(g.res); setGenDensity(g.density); setGenScale(g.scale); setGenSpeed(g.speed); setGenWarp(g.warp); setGenJitter(g.jitter);
+      setGenSeed(g.seed); setGenInvert(!!g.invert); setGenMix(g.mix);
+      if ((GEN_BLEND_KEYS as readonly string[]).includes(g.blend)) setGenBlend(g.blend as GenBlend);
+      if ((GEN_PALETTE_KEYS as readonly string[]).includes(g.palette)) setGenPalette(g.palette as GenPalette);
+      setGenHue(g.hue); setGenHueSpread(g.spread); setGenSat(g.sat); setGenContrastG(g.contrast);
+    }
+    if (x?.audio) { setAudioReactAmt(x.audio.react); setAudioRackAll(Object.keys(x.audio.rack).filter(k => x.audio!.rack[k]) as AudioRackId[]); }
+    const mo = x?.motion;
+    setMotionAmt(mo?.amt ?? 0); setMotionTrail(mo?.trail ?? 0.5); setMotionSpread(mo?.spread ?? 0.4); setMotionMode(mo?.mode ?? 0);
+    const av = x?.av ?? [0, 0, 0, 0, 0];
+    setAvShock(av[0] ?? 0); setAvStutter(av[1] ?? 0); setAvSlices(av[2] ?? 0); setAvEq(av[3] ?? 0); setAvBulge(av[4] ?? 0);
+    if (x?.face) {
+      if (x.face.mode === "OFF" || x.face.mode === "FACE" || x.face.mode === "BG") setFaceFxMode(x.face.mode);
+      setMaskExpand(x.face.expand ?? 0); setMaskFeather(x.face.feather ?? 0.12); setMaskSnap(x.face.snap ?? true);
+    }
+    const mc = x?.macros ?? [1, 1, 1, 1];
+    setIntensityMacro(mc[0] ?? 1); setMotionMacro(mc[1] ?? 1); setColorMacro(mc[2] ?? 1); setBreakMacro(mc[3] ?? 1);
+    if (typeof x?.vjMode === "boolean") setVjMode(x.vjMode);
+    if (x?.source === "generator") setSourceMode("generator");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const savePreset = useCallback(() => {
@@ -6673,6 +6943,136 @@ export default function SpectraAfter() {
   }, []);
 
   const filteredPresets = presets;
+
+  // ── v1.7.0 LOOKS — named, shareable full-state favourites ──────────────
+  const persistLooks = useCallback((next: SpectraPreset[]) => {
+    setLooks(next);
+    try { localStorage.setItem(LOOKS_KEY, JSON.stringify(next)); } catch { /* ignore */ }
+  }, []);
+  const flashLook = useCallback((msg: string) => { setLookToast(msg); window.setTimeout(() => setLookToast(null), 2200); }, []);
+  const autoLookName = useCallback(() => {
+    const parts: string[] = [];
+    if (datamosh > 0.05) parts.push("MOSH");
+    if (sortAmt > 0.05 || sortMix > 0.05) parts.push("SORT");
+    if (motionAmt > 0.05) parts.push("MOTION");
+    if (genMix > 0.05 || sourceMode === "generator") parts.push(genStyle);
+    if (glitchPresetEnabled) parts.push("PALETTE");
+    if (feedback > 0.05) parts.push("ECHO");
+    if (!parts.length) parts.push(MODES.find(m => m.id === mode)?.label?.toUpperCase() ?? "LOOK");
+    return `${parts.slice(0, 3).join("+")} ${String(looks.length + 1).padStart(2, "0")}`;
+  }, [datamosh, sortAmt, sortMix, motionAmt, genMix, sourceMode, genStyle, glitchPresetEnabled, feedback, mode, looks.length]);
+  const saveLook = useCallback(() => {
+    if (lookEditing) {
+      const name = lookDraft.trim();
+      if (name) persistLooks(looks.map(l => (l.id ?? l.name) === lookEditing ? { ...l, name } : l));
+      setLookEditing(null); setLookDraft("");
+      flashLook("RENAMED");
+      return;
+    }
+    const name = lookDraft.trim() || autoLookName();
+    const look: SpectraPreset = { ...buildPreset(name), id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, createdAt: Date.now() };
+    persistLooks([look, ...looks].slice(0, 80));
+    setLookDraft("");
+    flashLook(`SAVED · ${name}`);
+  }, [lookEditing, lookDraft, looks, persistLooks, autoLookName, buildPreset, flashLook]);
+  const deleteLook = useCallback((id: string) => { persistLooks(looks.filter(l => (l.id ?? l.name) !== id)); }, [looks, persistLooks]);
+  const shareLook = useCallback(async (lk: SpectraPreset) => {
+    const code = encodeLook(lk);
+    const text = `Glitch Pixel Studio look "${lk.name}" — open GPS → FX → LOOKS → PASTE LOOK, or paste this code:\n${code}`;
+    const nav = navigator as Navigator & { share?: (d: { title?: string; text?: string }) => Promise<void> };
+    try {
+      if (nav.share) { await nav.share({ title: `GPS look · ${lk.name}`, text }); flashLook("SHARED"); return; }
+    } catch (e) { if ((e as { name?: string })?.name === "AbortError") return; }
+    try { await navigator.clipboard.writeText(code); flashLook("CODE COPIED — paste it anywhere"); return; } catch { /* fall through */ }
+    try { window.prompt("Copy this look code", code); } catch { /* ignore */ }
+  }, [flashLook]);
+  const importLookCode = useCallback((code: string, apply = true): boolean => {
+    const p = decodeLook(code);
+    if (!p) { flashLook("NOT A LOOK CODE"); return false; }
+    const look: SpectraPreset = { ...p, id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, createdAt: Date.now() };
+    if (!looks.some(l => l.name === look.name && JSON.stringify(l.ext) === JSON.stringify(look.ext))) persistLooks([look, ...looks].slice(0, 80));
+    if (apply) applyPreset(look);
+    flashLook(`IMPORTED · ${look.name}`);
+    return true;
+  }, [looks, persistLooks, applyPreset, flashLook]);
+  const importLookFromClipboard = useCallback(async () => {
+    let text = "";
+    try { text = await navigator.clipboard.readText(); } catch { /* clipboard read blocked */ }
+    if (!text || !/GPSL1\./.test(text)) {
+      try { text = window.prompt("Paste a look code (GPSL1.…)") ?? ""; } catch { /* ignore */ }
+    }
+    if (text) importLookCode(text);
+  }, [importLookCode]);
+  // Deep link: #look=GPSL1.… (the web mirror can hand a look straight to the app)
+  const deepLinkDoneRef = useRef(false);
+  useEffect(() => {
+    if (deepLinkDoneRef.current) return;
+    deepLinkDoneRef.current = true;
+    try {
+      const m = window.location.hash.match(/look=([^&]+)/);
+      if (m) { window.setTimeout(() => importLookCode(decodeURIComponent(m[1])), 1200); }
+    } catch { /* ignore */ }
+  }, [importLookCode]);
+
+  // ── v1.7.0 EVOLVE — generator genetics ───────────────────────────────────
+  const genePoolRef = useRef<LookExt["gen"][]>([]);
+  useEffect(() => { genePoolRef.current = genePool; }, [genePool]);
+  const keepGene = useCallback(() => {
+    const g: LookExt["gen"] = { style: genStyleRef.current, res: genResolutionRef.current, density: genDensityRef.current, scale: genScaleRef.current, speed: genSpeedRef.current, warp: genWarpRef.current, jitter: genJitterRef.current, seed: genSeedRef.current, invert: genInvertRef.current, mix: genMixRef.current, blend: genBlendRef.current, palette: genPaletteRef.current, hue: genHueRef.current, spread: genHueSpreadRef.current, sat: genSatRef.current, contrast: genContrastGRef.current };
+    setGenePool(prev => { const next = [g, ...prev].slice(0, 24); try { localStorage.setItem(GENE_POOL_KEY, JSON.stringify(next)); } catch { /* ignore */ } return next; });
+  }, []);
+  const mutateGenerator = useCallback((strength = 1) => {
+    const r = Math.random;
+    const pool = genePoolRef.current;
+    const nudge = (cur: number, lo: number, hi: number, amt: number) => Math.max(lo, Math.min(hi, cur + (r() - 0.5) * 2 * amt * (hi - lo)));
+    if (pool.length && r() < 0.4) {
+      // CROSSOVER with a kept gene: each trait comes from one parent.
+      const g = pool[(r() * pool.length) | 0]!;
+      if (r() < 0.5 && (GEN_STYLES as readonly string[]).includes(g.style)) setGenStyle(g.style as GenStyle);
+      if (r() < 0.5) setGenDensity(g.density); if (r() < 0.5) setGenScale(g.scale); if (r() < 0.5) setGenSpeed(g.speed);
+      if (r() < 0.5) setGenWarp(g.warp); if (r() < 0.5) setGenJitter(g.jitter); if (r() < 0.3) setGenSeed(g.seed);
+      if (r() < 0.4 && (GEN_PALETTE_KEYS as readonly string[]).includes(g.palette)) setGenPalette(g.palette as GenPalette);
+      if (r() < 0.3 && (GEN_BLEND_KEYS as readonly string[]).includes(g.blend)) setGenBlend(g.blend as GenBlend);
+      return;
+    }
+    // MUTATION: a few knobs drift, sometimes the style flips inside its family,
+    // rarely the family jumps. Strength scales the step.
+    const k = 0.18 * strength;
+    if (r() < 0.6) setGenDensity(nudge(genDensityRef.current, 0.05, 1, k));
+    if (r() < 0.5) setGenScale(nudge(genScaleRef.current, 0.3, 3.5, k));
+    if (r() < 0.5) setGenSpeed(nudge(genSpeedRef.current, 0.1, 2.5, k));
+    if (r() < 0.6) setGenWarp(nudge(genWarpRef.current, 0, 1, k * 1.4));
+    if (r() < 0.4) setGenJitter(nudge(genJitterRef.current, 0, 1, k));
+    if (r() < 0.35) setGenHue((genHueRef.current + 0.04 + r() * 0.1) % 1);
+    if (r() < 0.25 * strength) setGenSeed(Math.floor(r() * 999));
+    const fv = FV_BY_STYLE[genStyleRef.current] ?? [3, 0];
+    if (r() < 0.12 * strength) {
+      const fam = (r() * STYLE_BY_FV.length) | 0;
+      setGenStyle(STYLE_BY_FV[fam][(r() * 4) | 0]);
+    } else if (r() < 0.35 * strength) {
+      const variants = STYLE_BY_FV[fv[0]] ?? STYLE_BY_FV[3];
+      setGenStyle(variants[(r() * variants.length) | 0]);
+    }
+    if (r() < 0.12 * strength) setGenPalette(GEN_PALETTE_KEYS[(r() * (GEN_PALETTE_KEYS.length - 1)) | 0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!evolveOn) return;
+    let last = performance.now();
+    const id = window.setInterval(() => {
+      const now = performance.now();
+      const sc = audioSceneRef.current;
+      const live = !!audioFeaturesRef.current && !audioSyntheticRef.current && sc.conf > 0.3;
+      const bar = sc.barN;
+      let fire = false; let strength = 0.6 + evolveRate * 0.6;
+      if (live) {
+        if (bar !== evolveLastBarRef.current) { evolveLastBarRef.current = bar; if (Math.random() < 0.35 + evolveRate * 0.6) fire = true; }
+      } else if (now - last > 5200 - evolveRate * 4000) { last = now; fire = true; }
+      if (motionEnergyRef.current > 0.42 && now - evolveLastMotionMsRef.current > 2500) { evolveLastMotionMsRef.current = now; fire = true; strength = 0.9; }
+      if (fire) mutateGenerator(strength);
+    }, 200);
+    return () => window.clearInterval(id);
+  }, [evolveOn, evolveRate, mutateGenerator]);
 
   const captureAB = useCallback(() => {
     setAbSnapshot(buildPreset("__ab__"));
@@ -7318,6 +7718,7 @@ export default function SpectraAfter() {
         .sp-audio-hud canvas { flex: 1 1 auto; width: 100%; height: 28px; display: block; }
         .sp-audio-hud .lbl { flex: none; font-size: 9px; letter-spacing: 1px; color: rgba(231,174,255,0.9); font-family: var(--font-space-mono,'Space Mono','Courier New',monospace); white-space: nowrap; }
         .sp-tab-track { display: contents; }
+        .neon-mode .sp-panel-glass .sp-rack { scroll-margin-top: 44px; }
         .sp-tab-track > [data-tab] { display: contents; }
         .sp-sheet-handle {
           position: sticky; top: 0; z-index: 31;
@@ -8260,6 +8661,14 @@ export default function SpectraAfter() {
               setGenScatter(r() * 0.6);
               // POST
               setScanlines(tinyRoll(0.5));
+              // v1.7.0 — MOTION rack joins the roll (only matters on camera)
+              setMotionAmt(r() < 0.45 ? 0.3 + r() * 0.7 : 0);
+              setMotionMode(fam(4));
+              setMotionSpread(r());
+              setMotionTrail(0.2 + r() * 0.75);
+              // AV FX: one or two beat-locked effects per roll
+              setAvShock(r() < 0.4 ? 0.3 + r() * 0.6 : 0); setAvStutter(r() < 0.3 ? 0.3 + r() * 0.5 : 0);
+              setAvSlices(r() < 0.3 ? 0.3 + r() * 0.6 : 0); setAvEq(r() < 0.35 ? 0.3 + r() * 0.6 : 0); setAvBulge(r() < 0.35 ? 0.2 + r() * 0.6 : 0);
             }}
             style={{
               ...topBtnStyle,
@@ -8861,13 +9270,27 @@ export default function SpectraAfter() {
                   to fully cover the subject (the segmenter often
                   under-cuts shoulders/hair). 0 = raw matte, 1 = max. */}
               {(faceFxMode === "FACE" || faceFxMode === "BG") && (
-                <div style={{ marginBottom: 8 }}>
+                <div style={{ marginBottom: 8, display: "grid", gap: 6 }}>
                   <SliderRow
                     label="MASK EXPAND"
                     value={maskExpand}
                     min={0} max={1} step={0.01}
                     onChange={setMaskExpand}
                   />
+                  {/* v1.7.0 — FEATHER + EDGE SNAP */}
+                  <SliderRow
+                    label="MASK FEATHER"
+                    value={maskFeather}
+                    min={0} max={1} step={0.01}
+                    onChange={setMaskFeather}
+                    index={1}
+                  />
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <button className="sp-tile" aria-pressed={maskSnap} onClick={() => { setMaskSnap(!maskSnap); playSfx("toggle"); }}
+                      title="Pull the matte edge toward image edges (hair, shoulders) with a guided filter"
+                      style={{ ...modeBtnStyle, ...(maskSnap ? modeBtnActive : {}), minWidth: 110 }}>{maskSnap ? "● EDGE SNAP" : "○ EDGE SNAP"}</button>
+                    <span style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(255,210,140,0.6)", textTransform: "uppercase" }}>matte is time-smoothed · aspect-aligned</span>
+                  </div>
                 </div>
               )}
               <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6, alignItems: "center" }}>
@@ -8997,6 +9420,28 @@ export default function SpectraAfter() {
                   }}
                 >⟲ RANDOM</button>
               </div>
+              {/* v1.7.0 — EVOLVE: the generator breeds itself. Mutations land
+                  on the bar of the music (or every ~4 s without music) and
+                  when something moves in front of the camera; ♥ KEEP adds the
+                  current genome to a pool the mutations cross with. */}
+              <div style={{ marginTop: 12, padding: "8px 8px 6px", borderRadius: 6, border: "1px solid rgba(255,210,140,0.25)", background: "linear-gradient(180deg, rgba(255,210,140,0.06), rgba(0,0,0,0))" }}>
+                <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(255,210,140,0.7)", textTransform: "uppercase", marginBottom: 6 }}>Evolve · genetics on the bar</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                  <button className="sp-tile" aria-pressed={evolveOn} onClick={() => { setEvolveOn(!evolveOn); playSfx("toggle"); }}
+                    style={{ ...modeBtnStyle, ...(evolveOn ? modeBtnActive : {}), minWidth: 100, ...(evolveOn ? { animation: "activeGlow 1.6s ease-in-out infinite" } : {}) }}>{evolveOn ? "◉ EVOLVE ON" : "○ EVOLVE OFF"}</button>
+                  <button className="sp-tile" onClick={() => { mutateGenerator(1); playSfx("click"); }} title="Mutate the generator now" style={{ ...modeBtnStyle, minWidth: 90 }}>⚡ MUTATE</button>
+                  <button className="sp-tile" onClick={() => { keepGene(); playSfx("shutter"); }} title="Add this generator state to the gene pool" style={{ ...modeBtnStyle, minWidth: 90 }}>♥ KEEP · {genePool.length}</button>
+                  {genePool.length > 0 && (
+                    <button className="sp-tile" onClick={() => { setGenePool([]); try { localStorage.removeItem(GENE_POOL_KEY); } catch { /* ignore */ } }} title="Empty the gene pool" style={{ ...modeBtnStyle, minWidth: 44, color: "rgba(255,140,140,0.95)" }}>✕</button>
+                  )}
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 10, alignItems: "center", marginTop: 8 }}>
+                  <Knob label="RATE" value={evolveRate} min={0} max={1} step={0.01} defaultValue={0.5} onChange={setEvolveRate} size={40}/>
+                  <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(255,210,140,0.62)", lineHeight: 1.3, textTransform: "uppercase" }}>
+                    How often a bar mutates the knobs, a style flips in its family, or a gene from the pool is crossed in. Camera motion also triggers one.
+                  </div>
+                </div>
+              </div>
             </SynthPanel>
 
 
@@ -9012,6 +9457,51 @@ export default function SpectraAfter() {
                 title="Reset every rack to neutral and return to the plain camera view"
                 style={{ ...modeBtnStyle, flex: 1, minHeight: 40, fontSize: 11, letterSpacing: "1.6px", color: "rgba(255,140,140,0.95)" }}>RESET ALL FX</button>
             </div>
+
+            {/* ── v1.7.0 LOOKS — name it, keep it, send it ─────────────── */}
+            <SynthPanel title="LOOKS" subtitle={`SAVE · SHARE · ${looks.length} KEPT`} accent="rgba(255,120,200,0.95)">
+              <div style={{ display: "grid", gap: 8 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 6 }}>
+                  <input
+                    ref={lookInputRef}
+                    value={lookDraft}
+                    onChange={(e) => setLookDraft(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") saveLook(); }}
+                    placeholder={lookEditing ? "rename…" : "name this look (optional)"}
+                    maxLength={40}
+                    style={{
+                      background: "rgba(20,0,36,0.7)", border: "1px solid rgba(255,120,200,0.45)", color: "rgba(255,235,255,0.95)",
+                      borderRadius: 8, padding: "9px 10px", fontSize: 11, letterSpacing: "1px", textTransform: "uppercase",
+                      fontFamily: "var(--font-space-mono,'Space Mono','Courier New',monospace)",
+                    }}
+                  />
+                  <button className="sp-tile" onClick={() => saveLook()} title={lookEditing ? "Save the new name" : "Save the current picture as a look"}
+                    style={{ ...modeBtnStyle, minWidth: 100, color: "#FFD4F0" }}>{lookEditing ? "✓ RENAME" : "♥ SAVE LOOK"}</button>
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  <button className="sp-tile" onClick={() => { void importLookFromClipboard(); }} title="Paste a GPSL1 share code from a friend"
+                    style={{ ...modeBtnStyle, minWidth: 110 }}>⇩ PASTE LOOK</button>
+                  {lookEditing && (
+                    <button className="sp-tile" onClick={() => { setLookEditing(null); setLookDraft(""); }} style={{ ...modeBtnStyle, minWidth: 70 }}>CANCEL</button>
+                  )}
+                  {lookToast && <span style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(174,255,231,0.9)", textTransform: "uppercase", alignSelf: "center" }}>{lookToast}</span>}
+                </div>
+                {looks.length === 0 && (
+                  <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(255,200,230,0.6)", lineHeight: 1.35, textTransform: "uppercase" }}>
+                    Hit 🎲 until something hits, then ♥ SAVE LOOK. Every rack, the generator, the audio rack and motion are kept. ⇪ makes a code you can text to anyone with the app.
+                  </div>
+                )}
+                {looks.map((lk) => (
+                  <div key={lk.id ?? lk.name} style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 6 }}>
+                    <button className="sp-tile" onClick={() => { applyPreset(lk); playSfx("open"); setLookToast(`LOADED · ${lk.name}`); window.setTimeout(() => setLookToast(null), 1600); }}
+                      title={`Load ${lk.name}`} style={{ ...modeBtnStyle, textAlign: "left", padding: "10px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{lk.name}</button>
+                    <button className="sp-tile" onClick={() => { void shareLook(lk); }} style={{ ...modeBtnStyle, minWidth: 44 }} title="Share this look (code / share sheet)">⇪</button>
+                    <button className="sp-tile" onClick={() => { setLookEditing(lk.id ?? lk.name); setLookDraft(lk.name); lookInputRef.current?.focus(); }} style={{ ...modeBtnStyle, minWidth: 44 }} title="Rename">✎</button>
+                    <button className="sp-tile" onClick={() => deleteLook(lk.id ?? lk.name)} style={{ ...modeBtnStyle, minWidth: 44, color: "rgba(255,140,140,0.95)" }} title="Delete">✕</button>
+                  </div>
+                ))}
+              </div>
+            </SynthPanel>
 
             {/* ── PIXEL SORT RACK ───────────────────────────────────── */}
             <SynthPanel title="PIXEL SORT" subtitle="SORT · HOMAGE · 9 CTRL" accent="rgba(174,255,231,0.95)">
@@ -9119,6 +9609,50 @@ export default function SpectraAfter() {
                   style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }}
                   title="Reset every DATAMOSH control to null"
                 >HARD RESET</button>
+              </div>
+            </SynthPanel>
+
+            {/* ── v1.7.0 MOTION RACK — movement in the camera draws the glitch ── */}
+            <SynthPanel title="MOTION" subtitle="MOVE TO GLITCH · 3 CTRL + MODE" accent="rgba(255,180,80,0.95)">
+              <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(255,200,140,0.7)", lineHeight: 1.35, marginBottom: 8, paddingLeft: 2 }}>
+                Wherever something moves in front of the camera, the frame glitches there — along the direction it moves. Stand still and the picture settles.
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 8, justifyItems: "center" }}>
+                <Knob label="AMOUNT" value={motionAmt}    min={0} max={1} step={0.01} defaultValue={0.0} onChange={setMotionAmt}/>
+                <Knob label="TRAIL"  value={motionTrail}  min={0} max={1} step={0.01} defaultValue={0.5} onChange={setMotionTrail}/>
+                <Knob label="SPREAD" value={motionSpread} min={0} max={1} step={0.01} defaultValue={0.4} onChange={setMotionSpread}/>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 8, marginTop: 8, justifyItems: "center" }}>
+                <SynthSelector label="MODE" options={[...MOTION_MODES]} value={motionMode} onChange={(v) => setMotionMode(v)}/>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "44px 1fr", gap: "3px 8px", alignItems: "center", fontSize: 7, letterSpacing: "1px", color: "rgba(200,180,220,0.6)", textTransform: "uppercase", marginTop: 10 }}>
+                <span>MOTION</span>
+                <div style={{ height: 5, borderRadius: 3, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+                  <div ref={motionMeterRef} style={{ height: "100%", width: "0%", background: "rgba(255,180,80,0.9)", transition: "width 120ms linear" }} />
+                </div>
+              </div>
+              {!cameraActive && (
+                <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(255,140,140,0.8)", marginTop: 6, textTransform: "uppercase" }}>needs the live camera — tap FLIP / CAM up top</div>
+              )}
+            </SynthPanel>
+
+            {/* ── v1.7.0 AV FX RACK — effects born from the music ─────── */}
+            <SynthPanel title="AV FX" subtitle="BEAT-LOCKED · SPECTRUM · 5 CTRL" accent="rgba(174,255,231,0.95)">
+              <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(174,255,231,0.7)", lineHeight: 1.35, marginBottom: 8, paddingLeft: 2 }}>
+                Locked to the tempo grid (♪ shows the BPM) and the spectrum. SHOCK rings leave whatever is moving on every beat; STUTTER freezes and releases on the hit; SLICES re-edit the frame to 16ths; EQ WARP bends eight strips to eight bands; BULGE swells with the bass.
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,minmax(0,1fr))", gap: 6, justifyItems: "center" }}>
+                <Knob label="SHOCK"   value={avShock}   min={0} max={1} step={0.01} defaultValue={0} onChange={setAvShock}/>
+                <Knob label="STUTTER" value={avStutter} min={0} max={1} step={0.01} defaultValue={0} onChange={setAvStutter}/>
+                <Knob label="SLICES"  value={avSlices}  min={0} max={1} step={0.01} defaultValue={0} onChange={setAvSlices}/>
+                <Knob label="EQ WARP" value={avEq}      min={0} max={1} step={0.01} defaultValue={0} onChange={setAvEq}/>
+                <Knob label="BULGE"   value={avBulge}   min={0} max={1} step={0.01} defaultValue={0} onChange={setAvBulge}/>
+              </div>
+              <div style={{ display: "flex", justifyContent: "center", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+                <button className="sp-tile" onClick={() => { setAvShock(0.7); setAvStutter(0.0); setAvSlices(0.0); setAvEq(0.35); setAvBulge(0.5); playSfx("toggle"); }} style={{ ...modeBtnStyle, minWidth: 90 }} title="Shockwave + bulge + a little EQ warp">PULSE</button>
+                <button className="sp-tile" onClick={() => { setAvShock(0.0); setAvStutter(0.6); setAvSlices(0.7); setAvEq(0.0); setAvBulge(0.0); playSfx("toggle"); }} style={{ ...modeBtnStyle, minWidth: 90 }} title="Stutter + slice re-edit">CHOP</button>
+                <button className="sp-tile" onClick={() => { setAvShock(0.4); setAvStutter(0.25); setAvSlices(0.3); setAvEq(0.8); setAvBulge(0.3); playSfx("toggle"); }} style={{ ...modeBtnStyle, minWidth: 90 }} title="Everything, spectrum forward">FULL AV</button>
+                <button className="sp-btn" onClick={() => { setAvShock(0); setAvStutter(0); setAvSlices(0); setAvEq(0); setAvBulge(0); }} style={{ fontSize: 9, padding: "6px 12px", letterSpacing: "1.4px", color: "rgba(255,140,140,0.95)" }} title="All AV FX to zero">HARD RESET</button>
               </div>
             </SynthPanel>
 
@@ -9539,6 +10073,10 @@ export default function SpectraAfter() {
                   <button className="sp-tile" onClick={() => stopTrack()} title="Unload the track and go back to the live input"
                     style={{ ...modeBtnStyle, minWidth: 70 }}>UNLOAD</button>
                 )}
+                {/* v1.7.0 — TAP TEMPO: re-anchors the beat grid on your tap; 2+ taps set the BPM */}
+                <button className="sp-tile" onClick={() => { audioFeaturesRef.current?.tapTempo(); playSfx("click"); }}
+                  title="Tap on the beat: the first tap puts beat 1 here, more taps set the tempo"
+                  style={{ ...modeBtnStyle, minWidth: 90 }}>⏱ TAP</button>
               </div>
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                 <button className="sp-tile" onClick={() => setAudioInPref("auto")} title="External input whenever one is plugged in, phone mic otherwise"

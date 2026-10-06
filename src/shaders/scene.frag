@@ -58,6 +58,29 @@ uniform float uFaceMaskRadius; // v1.3.29 — outer-ring tap distance in OUTPUT 
 // stutter. At 1.0 nothing changes; at lower values every effects
 // intensity is analog-scaled in lockstep so the picture never goes dead.
 uniform float uFxQuality;
+// v1.7.0 — MOTION rack. uMask now carries the camera MOTION MAP (64x36,
+// trail-held frame difference, R channel) uploaded by the shell; the old
+// touch-paint mask is gone. Direction is the smoothed centroid velocity of
+// the moving pixels, in FX uv space (x already mirrored by the shell).
+uniform float uMotionAmt;      // 0..1 how hard motion glitches the frame
+uniform float uMotionMode;     // 0 SMEAR · 1 TEAR · 2 SHATTER · 3 PAINT
+uniform float uMotionSpread;   // 0..1 displacement / block size
+uniform vec2  uMotionDir;      // motion direction (unit-ish, uv space)
+uniform float uMotionEnergy;   // 0..1 global motion energy
+// v1.7.0 — tempo grid (phase-locked to the music, keeps ticking in gaps)
+uniform float uBeatPhase;      // 0..1 sawtooth inside the beat
+uniform float uBarPhase;       // 0..1 sawtooth inside the 4-beat bar
+uniform float uTempoConf;      // 0..1 confidence in the grid
+// v1.7.0 — mask edge snap (guided 5-tap pull of the matte toward image edges)
+uniform float uMaskSnap;
+// v1.7.0 — AV FX rack: effects born from the music and the movement.
+uniform float uAvShock;        // beat shockwave rings from the motion centre
+uniform float uAvStutter;      // beat freeze: hold the frame for part of each beat
+uniform float uAvSlices;       // slice sequencer: 16th-note slice shuffle
+uniform float uAvEq;           // EQ warp: 8 vertical bands stretch with their spectrum band
+uniform float uAvBulge;        // bass bulge: fisheye swell at the motion centre
+uniform float uBands[8];       // 8 log-spaced spectrum bands (0..1)
+uniform vec2  uMotionCenter;   // centroid of moving pixels (video uv), 0.5,0.5 when still
                                //   256x144 buffer (which cost ~10-20 ms/tick of JS time and
                                //   stalled the segmenter callback). Now the dilation runs
                                //   on the GPU as part of the fragment shader's existing
@@ -222,7 +245,10 @@ void main() {
   vec2 uv = adjustUv(vUv);
   // --- Glitch/Pixel Sorting/Datamosh FX ---
   // When touch is inactive, apply FX globally (mask=1); when active, use painted mask
-  float mask = uTouchActive > 0.5 ? texture2D(uMask, vUv).r : 1.0;
+  // v1.7.0 — the universal mask starts at 1. (It used to read the touch-paint
+  // texture while a finger was down; that canvas was never painted any more,
+  // so every effect vanished for as long as you touched the picture.)
+  float mask = 1.0;
   // Universal Face FX gate: multiplies into mask so EVERY downstream
   // effect (sort, RGB drift, melt, datamosh, contour, ascii, ...) is
   // automatically restricted to the AI person mask (or its inverse).
@@ -240,8 +266,11 @@ void main() {
       // person's mask landed on the OPPOSITE vertical half of the
       // screen ("image upside down"). Match the camera's Y flip so the
       // roto sits exactly where the person is in the rendered frame.
-      vec2 fUv = vec2(vUv.x, 1.0 - vUv.y);
-      if (uMirror > 0.5) fUv.x = 1.0 - fUv.x;
+      // v1.7.0 — sample the matte with the SAME uv the camera is fetched
+      // with (adjustUv: mirror, Y flip, zoom AND the aspect crop). The old
+      // mirrored-vUv lookup ignored zoom and the portrait aspect crop, so on
+      // a 19.5:9 phone the matte sat ~10 % off the person.
+      vec2 fUv = uv;
       // v1.3.29 — faraday-style scalable GPU dilation. Outer-ring tap
       // distance is driven by uFaceMaskRadius (output pixels), so the
       // MASK EXPAND slider grows the silhouette purely on the GPU. Inner
@@ -262,6 +291,23 @@ void main() {
       float m3  = texture2D(uFaceTex, fUv + vec2( 0.0,  pxm.y)).r;
       float m4  = texture2D(uFaceTex, fUv + vec2( 0.0, -pxm.y)).r;
       float avg = (p + p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8 + m1 + m2 + m3 + m4) * (1.0 / 13.0);
+      if (uMaskSnap > 0.5) {
+        // v1.7.0 — EDGE SNAP: guided pull. Neighbours whose luma matches this
+        // pixel vote on the mask value, so the matte edge follows the image
+        // edge (hair, shoulder) instead of the model's soft blob.
+        vec2 cpx = vec2(3.0) / max(uResolution, vec2(1.0));
+        float lc = lum(texture2D(uCamera, uv).rgb);
+        float wsum = 1.0; float msum = avg;
+        vec2 o0 = vec2( cpx.x, 0.0); vec2 o1 = vec2(-cpx.x, 0.0); vec2 o2 = vec2(0.0,  cpx.y); vec2 o3 = vec2(0.0, -cpx.y);
+        float w0 = exp(-abs(lum(texture2D(uCamera, clamp(uv + o0, 0.001, 0.999)).rgb) - lc) * 14.0);
+        float w1 = exp(-abs(lum(texture2D(uCamera, clamp(uv + o1, 0.001, 0.999)).rgb) - lc) * 14.0);
+        float w2 = exp(-abs(lum(texture2D(uCamera, clamp(uv + o2, 0.001, 0.999)).rgb) - lc) * 14.0);
+        float w3 = exp(-abs(lum(texture2D(uCamera, clamp(uv + o3, 0.001, 0.999)).rgb) - lc) * 14.0);
+        msum += texture2D(uFaceTex, fUv + o0 * 2.0).r * w0 + texture2D(uFaceTex, fUv + o1 * 2.0).r * w1
+              + texture2D(uFaceTex, fUv + o2 * 2.0).r * w2 + texture2D(uFaceTex, fUv + o3 * 2.0).r * w3;
+        wsum += w0 + w1 + w2 + w3;
+        avg = mix(avg, msum / wsum, 0.75);
+      }
       // Feathered threshold gives a controllable roto edge.
       // v1.2.71 — midpoint dropped further (0.42 → 0.36) so anything with
       // ~36% person-confidence counts as inside. Combined with the wider
@@ -283,6 +329,64 @@ void main() {
   // mix(...) so sustained heavy load smoothly dims compounded effects
   // instead of the device locking up or the skip-frame logic stuttering.
   mask *= uFxQuality;
+
+  // ── v1.7.0 AV FX — UV stage. Beat-locked / spectrum-driven warps that run
+  //    before everything else so sort, mosh and the rest chew on them. ──
+  {
+    vec2 avC = uMotionCenter;
+    float avAr = uResolution.x / max(uResolution.y, 1.0);
+    bool onGrid = uTempoConf > 0.3;
+    if (uAvBulge * mask > 0.001) {
+      // BASS BULGE — fisheye swell centred on whatever is moving, pumping with the bass.
+      vec2 d = (uv - avC) * vec2(avAr, 1.0);
+      float r = length(d);
+      float k = uAvBulge * mask * (0.18 + uABass * 0.9 + uABeat * 0.45);
+      float s = 1.0 - k * exp(-r * r * 5.0);
+      uv = avC + d * s / vec2(avAr, 1.0);
+    }
+    if (uAvShock * mask > 0.001) {
+      // BEAT SHOCKWAVE — on every grid beat a ring leaves the motion centre and travels
+      // outward, displacing pixels radially; the previous beat's ring is still fading.
+      float ph = onGrid ? uBeatPhase : fract(uTime * 1.3);
+      vec2 d = (uv - avC) * vec2(avAr, 1.0);
+      float r = length(d);
+      float w = 0.045 + 0.05 * uAvShock;
+      float ring = r - ph * 0.95;
+      float env = exp(-ring * ring / (w * w)) * (1.0 - ph * 0.55);
+      float ring2 = r - (ph + 1.0) * 0.95;
+      env += exp(-ring2 * ring2 / (w * w)) * 0.4 * (1.0 - ph * 0.55);
+      vec2 nrm = r > 0.0005 ? d / r : vec2(0.0, 1.0);
+      uv -= nrm * env * uAvShock * mask * 0.07 / vec2(avAr, 1.0);
+    }
+    if (uAvEq * mask > 0.001) {
+      // EQ WARP — eight vertical strips, one per spectrum band; a hot band pulls its
+      // strip toward the middle (stretch) and nudges it sideways.
+      float col = clamp(uv.x, 0.0, 0.9999) * 8.0;
+      float bi = floor(col);
+      float b0 = 0.0; float b1 = 0.0;
+      for (int i = 0; i < 8; i++) {
+        if (float(i) == bi) b0 = uBands[i];
+        if (float(i) == min(bi + 1.0, 7.0)) b1 = uBands[i];
+      }
+      float e = mix(b0, b1, fract(col));
+      uv.y = 0.5 + (uv.y - 0.5) * (1.0 - e * uAvEq * mask * 0.5);
+      uv.x += (hash(bi * 7.7 + 0.3) - 0.5) * e * e * uAvEq * mask * 0.08;
+    }
+    if (uAvSlices * mask > 0.001) {
+      // SLICE SEQUENCER — the frame is cut into horizontal slices; every 16th of the bar
+      // one slice is shoved sideways and another swaps places with it, so the picture
+      // re-edits itself to the grid like a beat-repeat.
+      float n = 6.0 + floor(uAvSlices * 10.0);
+      float sl = floor(uv.y * n);
+      float stepF = onGrid ? floor(uBarPhase * 16.0) + floor(uTime * 0.001) : floor(uTime * 4.0);
+      float within = onGrid ? fract(uBarPhase * 16.0) : fract(uTime * 4.0);
+      float pick = floor(hash(stepF * 3.1 + 0.7) * n);
+      float pick2 = floor(hash(stepF * 5.3 + 1.9) * n);
+      float gate = 1.0 - smoothstep(0.55, 1.0, within);
+      if (sl == pick) uv.x = fract(uv.x + (hash(stepF * 1.3 + 0.2) - 0.5) * 0.7 * uAvSlices * mask * (0.4 + 0.6 * gate));
+      if (sl == pick2 && pick2 != pick) uv.y = (pick + fract(uv.y * n)) / n;
+    }
+  }
   // v1.3.32 — UV-WARP FX CHAIN MOVED HERE (was below pixel sort).
   // Rationale: the pixel-sort scan further down samples uCamera at uv; if warps run AFTER
   // sort, sort decides which pixels are 'in band' from the original scene and paints streaks
@@ -765,12 +869,84 @@ void main() {
 
   vec4 color = texture2D(uCamera, uv);
 
+  // ── v1.7.0 AV FX — STUTTER (beat freeze). The frame is held for the first
+  //    part of every beat by re-sampling the previous rendered frame, and
+  //    released right on the hit so the new image lands with the kick. ──
+  if (uAvStutter * mask > 0.001) {
+    float ph = uTempoConf > 0.3 ? uBeatPhase : fract(uTime * 2.0);
+    float hold = 0.15 + uAvStutter * 0.7;
+    float frozen = step(0.03, ph) * step(ph, hold);
+    vec3 held = texture2D(uPrevFrame, uv).rgb;
+    color.rgb = mix(color.rgb, held, frozen * mask * smoothstep(0.0, 0.25, uAvStutter) * 0.97);
+  }
+
   // Apply the line-scan pixel sort computed up top. Doing this AFTER the
   // main fetch (rather than mutating uv) means the sort actually
   // REPLACES pixel colours instead of just sliding them around — which
   // is what makes it look like sort and not displacement.
   if (sortBlend > 0.001) {
     color.rgb = mix(color.rgb, sortedCol, clamp(sortBlend, 0.0, 1.0));
+  }
+
+  // ── v1.7.0 MOTION RACK — movement in the camera draws the glitch. ──
+  // The shell uploads a 64x36 trail-held frame-difference map into uMask
+  // (same orientation as the camera, so the same uv). Where the map is hot
+  // the frame is smeared / torn / shattered / painted along the direction
+  // the subject is moving; where nothing moves, nothing happens.
+  if (uMotionAmt * mask > 0.001) {
+    vec2 mpx = vec2(1.0 / 64.0, 1.0 / 36.0);
+    float mo = texture2D(uMask, uv).r * 2.0
+             + texture2D(uMask, clamp(uv + vec2(mpx.x, 0.0), 0.001, 0.999)).r
+             + texture2D(uMask, clamp(uv - vec2(mpx.x, 0.0), 0.001, 0.999)).r
+             + texture2D(uMask, clamp(uv + vec2(0.0, mpx.y), 0.001, 0.999)).r
+             + texture2D(uMask, clamp(uv - vec2(0.0, mpx.y), 0.001, 0.999)).r;
+    mo *= (1.0 / 6.0);
+    float mAmt = smoothstep(0.03, 0.45, mo) * uMotionAmt * mask;
+    if (mAmt > 0.002) {
+      float dl = length(uMotionDir);
+      vec2 dn = dl > 0.001 ? uMotionDir / dl : vec2(1.0, 0.0);
+      float rowId = floor(uv.y * uResolution.y / (3.0 + uMotionSpread * 14.0));
+      float rh = hash(rowId * 0.731 + floor(uTime * 7.0));
+      vec3 mc = color.rgb;
+      if (uMotionMode < 0.5) {
+        // SMEAR — drag the previous frame along the motion (comet trails).
+        vec2 off = dn * mAmt * (0.03 + uMotionSpread * 0.14) * (0.6 + rh * 0.8);
+        vec3 pv = texture2D(uPrevFrame, clamp(uv - off, 0.001, 0.999)).rgb;
+        pv.r = texture2D(uPrevFrame, clamp(uv - off * 1.35, 0.001, 0.999)).r;
+        mc = mix(color.rgb, pv, clamp(mAmt * 1.5, 0.0, 0.93));
+      } else if (uMotionMode < 1.5) {
+        // TEAR — rows shear sideways where it moves, pulsing with the beat grid.
+        float pulse = 0.7 + 0.6 * (1.0 - uBeatPhase) * uTempoConf;
+        float sh = (rh - 0.5) * mAmt * (0.08 + uMotionSpread * 0.32) * pulse * (dn.x < 0.0 ? -1.0 : 1.0);
+        vec2 tuv = clamp(uv + vec2(sh, 0.0), 0.001, 0.999);
+        mc = texture2D(uCamera, tuv).rgb;
+        mc.r = texture2D(uCamera, clamp(tuv + vec2(sh * 0.6, 0.0), 0.001, 0.999)).r;
+        mc.b = texture2D(uCamera, clamp(tuv - vec2(sh * 0.4, 0.0), 0.001, 0.999)).b;
+      } else if (uMotionMode < 2.5) {
+        // SHATTER — blocks inside the moving region jump and posterise.
+        float bs = 10.0 + uMotionSpread * 44.0;
+        vec2 bid = floor(uv * uResolution / bs);
+        float bh = hash2(bid + floor(uTime * 9.0));
+        if (bh < mAmt * 1.3) {
+          vec2 jump = (vec2(hash2(bid * 1.7 + 0.3), hash2(bid * 2.3 + 0.7)) - 0.5) * mAmt * 0.28 + dn * mAmt * 0.1;
+          mc = texture2D(uCamera, clamp(uv + jump, 0.001, 0.999)).rgb;
+          mc = floor(mc * 5.0 + 0.5) / 5.0;
+        }
+      } else {
+        // PAINT — moving pixels leave luminous streaks that trail behind the
+        // subject: the body becomes a brush on the previous frame.
+        vec2 off = dn * (0.004 + uMotionSpread * 0.024);
+        vec3 pv = texture2D(uPrevFrame, clamp(uv - off, 0.001, 0.999)).rgb;
+        float l = lum(color.rgb);
+        vec3 tint = hsl2rgb(fract(uTime * 0.04 + mo * 0.35 + uBarPhase), 0.92, 0.56);
+        // Bounded feedback: deposit fades as the trail gets bright, so sustained
+        // motion saturates to colour, never to white.
+        float room = 1.0 - clamp(lum(pv), 0.0, 1.0);
+        vec3 paint = pv * 0.955 + tint * (0.12 + l * 0.45) * mAmt * room;
+        mc = mix(color.rgb, clamp(paint, 0.0, 1.0), clamp(mAmt * 1.3, 0.0, 0.9));
+      }
+      color.rgb = mix(color.rgb, mc, clamp(mAmt * 1.6, 0.0, 1.0));
+    }
   }
 
   // 14. CPU REAL PIXEL SORT — per-row Asendorf threshold runs sorted by
