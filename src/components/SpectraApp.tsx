@@ -661,6 +661,24 @@ const TAB_FIRST_PANEL: Record<RackTab, string> = {
   source: "INPUT", fx: "PIXEL SORT", look: "COLOR", vj: "VJ", export: "EXPORT",
 };
 const RACK_TAB_KEY = "gps.rackTab.v1";
+// v1.5.5 — AUDIO RACK. Port of Terminal Velocity's KINETIC rack
+// (tv-vj-rack.js: PUNCH / CHROMA / SHATTER / ECHO / STROBE / MOSAIC) onto GPS's
+// own GPU uniforms, plus SORT / MOSH / HUE. Each effect has a fixed source
+// (the TV defaults) and a gain; the result is ADDED on top of the user's
+// knobs every frame, scaled by REACT. Manual knobs are the floor, audio adds.
+type AudioRackId = "punch" | "strobe" | "chroma" | "shatter" | "sort" | "mosh" | "echo" | "tear" | "hue";
+const AUDIO_RACK: ReadonlyArray<{ id: AudioRackId; label: string; src: string; gain: number; on: boolean; hint: string }> = [
+  { id: "punch",   label: "PUNCH",   src: "BASS-D", gain: 0.9,  on: true,  hint: "Zoom thump on every kick (TV PUNCH · BASS-D)" },
+  { id: "strobe",  label: "STROBE",  src: "BEAT",   gain: 1.0,  on: true,  hint: "Brightness flash on the beat (TV STROBE · BEAT)" },
+  { id: "chroma",  label: "CHROMA",  src: "TREB",   gain: 0.75, on: true,  hint: "RGB split that opens with treble (TV CHROMA · TREB)" },
+  { id: "shatter", label: "SHATTER", src: "MID-D",  gain: 0.85, on: true,  hint: "Block-glitch shards on mid transients (TV SHATTER · MID-D)" },
+  { id: "sort",    label: "SORT",    src: "BASS",   gain: 0.7,  on: true,  hint: "Pixel sort rides the bass" },
+  { id: "mosh",    label: "MOSH",    src: "BASS-D", gain: 0.8,  on: true,  hint: "Datamosh bursts on kicks (transient, never accumulates)" },
+  { id: "echo",    label: "ECHO",    src: "LEVEL",  gain: 0.55, on: false, hint: "Feedback trails with level (TV ECHO · LEVEL)" },
+  { id: "tear",    label: "TEAR",    src: "TREB-D", gain: 0.8,  on: false, hint: "Scanline tear on hi-hat transients" },
+  { id: "hue",     label: "HUE",     src: "FLOW",   gain: 0.6,  on: false, hint: "Slow hue drift with the 3 s flow envelope" },
+];
+const AUDIO_RACK_KEY = "gps.vj.audioRack.v1";
 function loadAudioInPref(): AudioInputPref {
   try {
     const v = localStorage.getItem(AUDIO_IN_PREF_KEY);
@@ -1476,6 +1494,19 @@ export default function SpectraAfter() {
     // 6 Hz update never re-renders the whole shell.
     const meterRefs = useRef<Array<HTMLDivElement | null>>([null, null, null]);
     const audioDiagRef = useRef<HTMLDivElement | null>(null);
+    // AUDIO RACK on/off per effect (persisted after mount).
+    const [audioRackOn, setAudioRackOnState] = useState<Record<AudioRackId, boolean>>(() => Object.fromEntries(AUDIO_RACK.map(e => [e.id, e.on])) as Record<AudioRackId, boolean>);
+    const audioRackOnRef = useRef(audioRackOn);
+    useEffect(() => { audioRackOnRef.current = audioRackOn; }, [audioRackOn]);
+    useEffect(() => {
+      try { const raw = localStorage.getItem(AUDIO_RACK_KEY); if (raw) { const v = JSON.parse(raw) as Partial<Record<AudioRackId, boolean>>; setAudioRackOnState(prev => ({ ...prev, ...v })); } } catch { /* ignore */ }
+    }, []);
+    const toggleAudioRack = useCallback((id: AudioRackId) => {
+      setAudioRackOnState(prev => { const next = { ...prev, [id]: !prev[id] }; try { localStorage.setItem(AUDIO_RACK_KEY, JSON.stringify(next)); } catch { /* ignore */ } return next; });
+    }, []);
+    // Per-frame rack output, and a fallback delta tracker for the legacy / synthetic drive.
+    const audioRackOutRef = useRef({ punch: 0, strobe: 0, chroma: 0, shatter: 0, sort: 0, mosh: 0, echo: 0, tear: 0, hue: 0 });
+    const audioPrevBandsRef = useRef({ bass: 0, mid: 0, treb: 0 });
     // The WebView can only service one permission prompt at a time: opening the
     // mic while the camera is still being granted makes Capacitor deny the mic.
     // Arm the audio input once the camera is live, or 4 s after mount if the
@@ -3082,8 +3113,8 @@ export default function SpectraAfter() {
   // Audio-react drive: how much the analyser RMS modulates the per-layer
   // mosh + scatter knobs in real time. 0 = audio button purely visual via
   // shader uAudio; 1 = full-range mosh swing on every beat.
-  const [audioReactAmt, setAudioReactAmt] = useState(0.6);
-  const audioReactAmtRef = useRef(0.6);
+  const [audioReactAmt, setAudioReactAmt] = useState(0.75);
+  const audioReactAmtRef = useRef(0.75);
   useEffect(() => { try { const v = parseFloat(localStorage.getItem("gps.vj.reactAmt.v1") ?? ""); if (Number.isFinite(v)) setAudioReactAmt(Math.min(1, Math.max(0, v))); } catch { /* ignore */ } }, []);
   useEffect(() => { try { localStorage.setItem("gps.vj.reactAmt.v1", String(audioReactAmt)); } catch { /* ignore */ } }, [audioReactAmt]);
   useEffect(() => { audioReactAmtRef.current = audioReactAmt; }, [audioReactAmt]);
@@ -5011,12 +5042,12 @@ export default function SpectraAfter() {
       ? _preset.modulate(timeRef.current, presetStateRef.current)
       : undefined;
     const PB = (k: UniformBoostKey): number => ((_pb && _pb[k]) || 0) * (_pbActive ? 1 : 0);
-    setF1(u.uBrightness, 1 + (brightnessRef.current - 1) * _mC);
+    setF1(u.uBrightness, 1 + (brightnessRef.current - 1) * _mC + audioRackOutRef.current.strobe);
     setF1(u.uContrast,   1 + (contrastRef.current   - 1) * _mC);
     setF1(u.uSaturation, 1 + (saturationRef.current - 1) * _mC);
-    setF1(u.uHueShift,   hueShiftRef.current * _mC);
+    setF1(u.uHueShift,   hueShiftRef.current * _mC + audioRackOutRef.current.hue);
     setF1(u.uScanlines, scanlinesRef.current * _mB);
-    setF1(u.uZoom, zoomRef.current);
+    setF1(u.uZoom, zoomRef.current + audioRackOutRef.current.punch);
     // v1.2.53 — universal audio reactivity for the two camera-source FX
     // racks (PIXEL SORT + DATAMOSH). Generator already has a deep audio
     // routing built into its evolution loop above; this brings the FX
@@ -5030,11 +5061,46 @@ export default function SpectraAfter() {
     const _aLvl   = audioLevelRef.current;
     // v1.5.0 — REACT knob scales how hard the input drives the racks (0 = uniforms only, no auto sort/mosh lift).
     const _aGate  = Math.min(1.0, _aBass * 1.4 + _aBeat * 0.9 + _aLvl * 0.5) * audioReactAmtRef.current;
+    // v1.5.5 — AUDIO RACK (Terminal Velocity KINETIC rack on GPS uniforms).
+    // intensity = gain × source × REACT (TV: intensityFor = i + gain·audioFor(src)).
+    {
+      const F = audioFeaturesRef.current?.features;
+      const pb = audioPrevBandsRef.current;
+      const bass = F ? F.bass : _aBass, mid = F ? F.mid : _aLvl, treb = F ? F.treble : audioTrebleRef.current;
+      const beat = F ? Math.max(F.beat, F.bassHit * 0.85) : _aBeat;
+      const bassD = F ? F.bassDelta : Math.max(0, bass - pb.bass);
+      const midD  = F ? F.midDelta  : Math.max(0, mid - pb.mid);
+      const trebD = F ? F.trebDelta : Math.max(0, treb - pb.treb);
+      const flow  = F ? F.flow : _aLvl;
+      pb.bass = bass; pb.mid = mid; pb.treb = treb;
+      const srcV = (src: string) => src === "BASS" ? bass : src === "MID" ? mid : src === "TREB" ? treb : src === "LEVEL" ? _aLvl
+        : src === "BASS-D" ? Math.min(1, bassD * 2.4) : src === "MID-D" ? Math.min(1, midD * 2.4) : src === "TREB-D" ? Math.min(1, trebD * 2.4)
+        : src === "BEAT" ? beat : src === "FLOW" ? flow : 0;
+      const on = audioRackOnRef.current;
+      const rk = audioReactAmtRef.current * 1.6; // REACT 0.6 ≈ TV's 1.0
+      const I = (e: typeof AUDIO_RACK[number]) => on[e.id] ? Math.min(1, e.gain * srcV(e.src) * rk) : 0;
+      const o = audioRackOutRef.current;
+      for (const e of AUDIO_RACK) {
+        const v = I(e);
+        switch (e.id) {
+          case "punch":   o.punch   = v * 0.55; break;   // uZoom units (0..2)
+          case "strobe":  o.strobe  = v > 0.6 ? 0.9 : v * 0.75; break; // brightness lift
+          case "chroma":  o.chroma  = v * 0.22; break;   // ±uRgbR / uRgbB
+          case "shatter": o.shatter = v * 0.9;  break;   // uBlockGlitch
+          case "sort":    o.sort    = v * 0.55; break;   // uSortAmt
+          case "mosh":    o.mosh    = v * 1.6;  break;   // uDatamosh (0..5.5 scale)
+          case "echo":    o.echo    = v * 0.6;  break;   // uFeedback
+          case "tear":    o.tear    = v * 0.8;  break;   // uScanTear
+          case "hue":     o.hue     = v * 0.35; break;   // uHueShift
+        }
+      }
+    }
+    const AR = audioRackOutRef.current;
     const _sortBase = sortAmtRef.current;
     // v1.5.3 — the beat glimmer only rides on a dialed-in sort (or AUTO-VJ), so
     // HARD RESET / RESET ALL really do return a still picture.
     const _glimmer = (_sortBase > 0.001 || vjModeRef.current) ? _aBeat * audioReactAmtRef.current * 0.22 : 0;
-    const _sortAudio = Math.min(1.0, _sortBase * (1 + _aGate * 0.7) + _glimmer);
+    const _sortAudio = Math.min(1.0, _sortBase * (1 + _aGate * 0.7) + _glimmer + AR.sort);
     // v1.2.68 — DECOUPLE the shader sort knobs from REALSORT. Previously
     // every shader knob (AMOUNT/LOW/HIGH/SEGMENT/NOISE/WOBBLE/TEAR/MODE/
     // INTERVAL/ANGLE) was multiplied by sortMix, so when REALSORT was at
@@ -5043,8 +5109,8 @@ export default function SpectraAfter() {
     // (uSortMix); AMOUNT directly drives the shader sort uniform so each
     // sub-knob produces a visible, independent change.
     setF1(u.uSortAmt, _sortAudio * _mI + PB("uSortAmt"));
-    setF1(u.uScanTear, scanTearRef.current * _mB + PB("uScanTear"));
-    setF1(u.uBlockGlitch, blockGlitchRef.current * _mB + PB("uBlockGlitch"));
+    setF1(u.uScanTear, scanTearRef.current * _mB + PB("uScanTear") + AR.tear);
+    setF1(u.uBlockGlitch, blockGlitchRef.current * _mB + PB("uBlockGlitch") + AR.shatter);
     // Datamosh INTENS slider is 0..2. v1.3.37 — the MOSH HARD toggle is
     // gone; hardness now derives smoothly from slider position so cranking
     // the knob naturally enters the old HARD territory. Below the
@@ -5063,7 +5129,7 @@ export default function SpectraAfter() {
     // meant any steady bass moshed a still image into noise through the
     // rendered feedback loop even with INTENS at 0. Sort keeps its glimmer
     // floor (it reads the source, so it never accumulates).
-    dmMapped = Math.min(5.5, dmMapped * (1 + _aGate * 0.9));
+    dmMapped = Math.min(5.5, dmMapped * (1 + _aGate * 0.9) + AR.mosh);
     setF1(u.uDatamosh, dmMapped * _mI + PB("uDatamosh"));
     setF1(u.uChrash, chrashRef.current * _mB + PB("uChrash"));
     setF1(u.uLiquid, liquidRef.current * _mI + PB("uLiquid"));
@@ -5095,7 +5161,7 @@ export default function SpectraAfter() {
     setF1(u.uPaikFam,     paikFamRef.current);
     setF1(u.uFentonFam,   fentonFamRef.current);
     setF1(u.uArtistTouch, artistTouchStrRef.current);
-    setF1(u.uFeedback, feedbackRef.current * _mB + PB("uFeedback"));
+    setF1(u.uFeedback, Math.min(1, feedbackRef.current * _mB + PB("uFeedback") + AR.echo));
     setF1(u.uContour, contourRef.current * _mI + PB("uContour"));
     setF1(u.uAscii, asciiRef.current * _mI + PB("uAscii"));
     setF1(u.uVenetian, venetianRef.current * _mI + PB("uVenetian"));
@@ -5123,9 +5189,9 @@ export default function SpectraAfter() {
     setF1(u.uSortWobble, sortWobbleRef.current * _mM + PB("uSortWobble"));
     setF1(u.uSortInterval, sortIntervalRef.current);
     setF1(u.uSortAngle, sortAngleRef.current);
-    setF1(u.uRgbR, rgbRRef.current * _mB);
+    setF1(u.uRgbR, rgbRRef.current * _mB + AR.chroma);
     setF1(u.uRgbG, rgbGRef.current * _mB);
-    setF1(u.uRgbB, rgbBRef.current * _mB);
+    setF1(u.uRgbB, rgbBRef.current * _mB - AR.chroma);
     setF1(u.uRgbBars, rgbBarsRef.current * _mB + PB("uRgbBars"));
     setF1(u.uRgbSwap, rgbSwapRef.current * _mB + PB("uRgbSwap"));
     setF1(u.uRupture, ruptureRef.current * _mB + PB("uRupture"));
@@ -9268,10 +9334,20 @@ export default function SpectraAfter() {
                 ))}
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 10, alignItems: "center" }}>
-                <Knob label="REACT" value={audioReactAmt} min={0} max={1} step={0.01} defaultValue={0.6} onChange={setAudioReactAmt} size={46} />
+                <Knob label="REACT" value={audioReactAmt} min={0} max={1} step={0.01} defaultValue={0.75} onChange={setAudioReactAmt} size={46} />
                 <div style={{ fontSize: 8, letterSpacing: "1px", color: "rgba(200,180,220,0.6)", lineHeight: 1.35, textTransform: "uppercase" }}>
                   How hard the input pushes SORT / MOSH on top of your knobs. 0 = shader-only reactivity, 1 = full lift on every beat.
                 </div>
+              </div>
+              <div style={{ fontSize: 9, letterSpacing: "1.4px", color: "rgba(231,174,255,0.55)", textTransform: "uppercase" }}>Audio Rack · what the sound drives</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 6 }}>
+                {AUDIO_RACK.map(e => (
+                  <button key={e.id} className="sp-tile" aria-pressed={!!audioRackOn[e.id]} onClick={() => toggleAudioRack(e.id)} title={e.hint}
+                    style={{ ...modeBtnStyle, ...(audioRackOn[e.id] ? modeBtnActive : {}), padding: "8px 4px 6px", display: "flex", flexDirection: "column", alignItems: "center", gap: 2, lineHeight: 1.1 }}>
+                    <span style={{ fontSize: 11, letterSpacing: "1.2px" }}>{e.label}</span>
+                    <span style={{ fontSize: 7, letterSpacing: "0.6px", opacity: 0.75 }}>{e.src}</span>
+                  </button>
+                ))}
               </div>
               {/* live meter: level / bass / beat straight from the render loop's analysis */}
               <div style={{ display: "grid", gridTemplateColumns: "34px 1fr", gap: "3px 8px", alignItems: "center", fontSize: 7, letterSpacing: "1px", color: "rgba(200,180,220,0.6)", textTransform: "uppercase" }}>
